@@ -18,59 +18,64 @@ fn drop(s: *Session, idx: *Index, name: []const u8) !void {
     s.markDirty();
 }
 
+/// True when the entry of `before` differs from the one in the index now, or is gone.
+fn entryChanged(idx: *Index, before: Index.Unit) bool {
+    const now = idx.findUnit(before.name) orelse return true;
+    if (now.state != before.state or now.origin != before.origin or now.files.len != before.files.len) return true;
+    for (now.files, before.files) |a, b| if (a.out_hash != b.out_hash or !std.mem.eql(u8, a.path, b.path)) return true;
+    return false;
+}
+
+/// Processes one entry and records it in `Session.changed` when its outcome differs from the index.
 fn syncEntry(s: *Session, idx: *Index, entry: Index.Unit) !void {
+    const full = try syncEntryInner(s, idx, entry);
+    if (full and (s.ctx.dry_run or entryChanged(idx, entry))) try s.changed.put(s.ctx.gpa, entry.name, {});
+}
+
+/// Returns true when the entry went through the full pipeline.
+fn syncEntryInner(s: *Session, idx: *Index, entry: Index.Unit) !bool {
     const gpa = s.ctx.gpa;
     const name = unit.name.parse(gpa, entry.name) catch {
         s.ctx.diag.warn("index entry '{s}' is not a valid unit name, skipped", .{entry.name});
-        return;
+        return false;
     };
     const resolved = unit.resolve.resolve(gpa, s.ctx.fs.*, s.resolveOptions(), name) catch |e| {
         s.ctx.diag.warn("{s}: cannot resolve unit: {t}", .{ entry.name, e });
-        return;
+        return false;
     };
     switch (try pipeline.fastCheck(s, entry, resolved)) {
-        .unchanged => return,
+        .unchanged => return false,
         .refresh => |fingerprint| {
-            if (s.ctx.dry_run) return;
+            if (s.ctx.dry_run) return false;
             var updated = entry;
             updated.src_stat = fingerprint;
             try idx.putUnit(gpa, updated);
             s.markDirty();
-            return;
+            return false;
         },
         .full => {},
     }
     const plan = pipeline.prepareResolved(s, name, resolved) catch |e| {
         s.ctx.diag.warn("{s}: cannot load unit: {t}", .{ entry.name, e });
-        return;
+        return false;
     };
     switch (plan.outcome) {
         .not_found, .unsupported => try drop(s, idx, entry.name),
         .masked, .timer, .template, .no_backend => {},
         .conflict => |n| s.ctx.diag.warn("{s}: the name is taken by native service '{s}'", .{ entry.name, n.name }),
-        .native => |n| if (entry.state != .native) try pipeline.adoptNative(s, &plan, n),
-        .generate => |g| {
+        .native => |n| if (entry.state != .native) try pipeline.adoptNative(s, &plan, n, entry.origin),
+        .generate => {
             if (entry.state == .native) {
                 if (!s.ctx.dry_run) {
                     _ = idx.removeUnit(entry.name);
                     s.markDirty();
                 }
-                return;
+                return false;
             }
-            var env = s.applyEnv(.daemon_reload);
-            _ = try reconcile.apply.syncUnit(&env, idx, gpa, .{
-                .name = entry.name,
-                .scope = s.ctx.scope,
-                .tier = plan.tier,
-                .src_hash = plan.src_hash,
-                .src_stat = plan.src_stat,
-                .generator_version = backend_pkg.interface.version,
-                .files = g.generated.files,
-            });
-            pipeline.reportIssues(s, plan.unit.?);
-            s.markDirty();
+            _ = try pipeline.syncPlan(s, &plan, .daemon_reload, entry.origin, .missing);
         },
     }
+    return true;
 }
 
 fn translateAll(s: *Session, idx: *Index) !void {
@@ -87,14 +92,55 @@ fn translateAll(s: *Session, idx: *Index) !void {
     }
 }
 
+/// Entries with the units they depend on first, following the `deps` lists; a cycle is cut where it closes.
+fn dependencyOrder(gpa: std.mem.Allocator, entries: []const Index.Unit) ![]const Index.Unit {
+    var out: std.ArrayList(Index.Unit) = .empty;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    for (entries) |e| try visit(gpa, entries, e, &seen, &out);
+    return out.items;
+}
+
+fn visit(gpa: std.mem.Allocator, entries: []const Index.Unit, e: Index.Unit, seen: *std.StringHashMapUnmanaged(void), out: *std.ArrayList(Index.Unit)) !void {
+    if (seen.contains(e.name)) return;
+    try seen.put(gpa, e.name, {});
+    for (e.deps) |d| {
+        for (entries) |other| if (std.mem.eql(u8, other.name, d)) try visit(gpa, entries, other, seen, out);
+    }
+    try out.append(gpa, e);
+}
+
 pub fn run(s: *Session) !u8 {
     if (s.deps.backend.caps().translates) {
         const idx = try s.index(.write);
         const entries = try s.ctx.gpa.dupe(Index.Unit, idx.units.items);
-        for (entries) |e| try syncEntry(s, idx, e);
+        for (try dependencyOrder(s.ctx.gpa, entries)) |e| try syncEntry(s, idx, e);
+        try pipeline.collectDependencies(s, idx, .daemon_reload);
         if (s.ctx.config.translate == .eager) try translateAll(s, idx);
+        try s.storeConfigHash();
     }
     if (s.ctx.offline) return Exit.success;
     s.deps.backend.reloadManager(s.env()) catch |e| return s.backendFailed("reload", "the init manager", e);
     return Exit.success;
+}
+
+test "entries are ordered with their dependencies first and cycles terminate" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const base: Index.Unit = .{ .name = "", .scope = .system, .tier = .vendor, .state = .managed, .src_hash = 0, .src_stat = 0, .files = &.{}, .generator_version = "" };
+    var a = base;
+    a.name = "a.service";
+    a.deps = &.{ "b.service", "missing.service" };
+    var b = base;
+    b.name = "b.service";
+    b.deps = &.{"c.service"};
+    var c = base;
+    c.name = "c.service";
+    c.deps = &.{"a.service"};
+    const ordered = try dependencyOrder(arena.allocator(), &.{ a, b, c });
+    try std.testing.expectEqual(@as(usize, 3), ordered.len);
+    try std.testing.expectEqualStrings("c.service", ordered[0].name);
+    try std.testing.expectEqualStrings("b.service", ordered[1].name);
+    try std.testing.expectEqualStrings("a.service", ordered[2].name);
+    const chain = try dependencyOrder(arena.allocator(), &.{ a, b, .{ .name = "c.service", .scope = .system, .tier = .vendor, .state = .managed, .src_hash = 0, .src_stat = 0, .files = &.{}, .generator_version = "" } });
+    try std.testing.expectEqualStrings("c.service", chain[0].name);
 }

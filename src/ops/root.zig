@@ -16,6 +16,8 @@ pub const query = @import("query.zig");
 pub const reload = @import("reload.zig");
 pub const edit = @import("edit.zig");
 pub const preset = @import("preset.zig");
+pub const journal = @import("journal.zig");
+pub const journal_time = @import("journal_time.zig");
 
 const Verb = cli.systemctl.Verb;
 const Exit = cli.output.Exit;
@@ -166,7 +168,11 @@ pub fn journalctl(ctx: *core.Context, deps: Deps, req: cli.journalctl.Request) u
     switch (req.mode) {
         .help => deps.out.writeAll(journalctl_help) catch return Exit.failure,
         .version => versionText(deps.out, deps.backend.name()) catch return Exit.failure,
-        .run => ctx.diag.notice("journalctl: log reading arrives with the first backend, nothing to show", .{}),
+        .run => {
+            const code = journal.show(ctx, .{ .out = deps.out, .runner = deps.runner, .detected = deps.detected }, req);
+            deps.out.flush() catch |e| ctx.diag.err("cannot write standard output: {t}", .{e});
+            return code;
+        },
     }
     deps.out.flush() catch |e| ctx.diag.err("cannot write standard output: {t}", .{e});
     return Exit.success;
@@ -188,5 +194,5 @@ pub fn journalctlArgs(ctx: *core.Context, deps: Deps, args: []const []const u8) 
 
 test {
     std.testing.refAllDecls(@This());
-    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset }) |m| std.testing.refAllDecls(m);
+    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset, journal, journal_time }) |m| std.testing.refAllDecls(m);
 }

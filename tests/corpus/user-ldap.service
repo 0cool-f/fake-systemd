@@ -1,0 +1,12 @@
+[Unit]
+Description=Daemon that runs as a directory-service account
+After=network.target
+
+[Service]
+User=svc-directory
+ExecStart=/usr/bin/dirsync --interval 300
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

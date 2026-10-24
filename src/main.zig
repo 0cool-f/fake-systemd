@@ -6,6 +6,7 @@ const config = @import("config/root.zig");
 const detect = @import("detect/root.zig");
 const backend = @import("backend/root.zig");
 const ops = @import("ops/root.zig");
+const exec = @import("exec/root.zig");
 
 const usage =
     \\usage: invoke as 'systemctl' or 'journalctl' (symlinks to fake-systemd)
@@ -19,7 +20,8 @@ const Runtime = struct {
     fs: core.Fs,
     diag: core.Diag,
     ctx: core.Context,
-    null_backend: backend.NullBackend = .{},
+    backends: backend.registry.Storage = .{},
+    profile: *const detect.profile.Profile = &detect.profile.generic,
     runner: backend.runner.Real,
     kind: detect.InitKind,
 };
@@ -62,13 +64,14 @@ fn build(
     const detection = try detect.init.detect(&rt.ctx, .{ .config_init = rt.ctx.config.init, .offline_root = root != null });
     rt.ctx.offline = root != null or !detection.running;
     const os = try detect.osrelease.load(arena, &rt.fs);
-    rt.kind = profileFor(rt, os, init.environ_map).refine(detection.kind);
+    rt.profile = profileFor(rt, os, init.environ_map);
+    rt.kind = rt.profile.refine(detection.kind);
     rt.runner = .{ .io = init.io, .out = stdout, .err = stderr };
 }
 
 fn deps(rt: *Runtime, stdout: *Io.Writer, stderr: *Io.Writer) ops.Deps {
     return .{
-        .backend = backend.registry.select(rt.kind, &rt.null_backend),
+        .backend = backend.registry.select(rt.kind, &rt.backends, .{ .ctx = &rt.ctx, .profile = rt.profile }),
         .runner = rt.runner.runner(),
         .out = stdout,
         .err = stderr,
@@ -114,6 +117,35 @@ fn runJournalctl(init: std.process.Init, args: []const [:0]const u8, stdout: *Io
     return ops.journalctl(&rt.ctx, deps(&rt, stdout, stderr), req);
 }
 
+/// `--exec` and `--log`: the executor and the logger of generated services.
+fn runService(init: std.process.Init, args: []const [:0]const u8, stderr: *Io.Writer) u8 {
+    const arena = init.arena.allocator();
+    const parsed = exec.args.parse(arena, args) catch |e| return fail(stderr, "cannot parse arguments: {t}", .{e});
+    const req = switch (parsed) {
+        .ok => |r| r,
+        .err => |message| {
+            stderr.print(core.Diag.prefix ++ "{s}\n{s}", .{ message, exec.args.usage }) catch return 1;
+            stderr.flush() catch return 1;
+            return 1;
+        },
+    };
+    var fs = core.Fs.initRoot(init.io, req.root orelse "/") catch |e| return fail(stderr, "cannot open the root: {t}", .{e});
+    defer fs.deinit();
+    var diag: core.Diag = .init(stderr, .notice);
+    var ctx = core.Context.init(arena, init.io, &fs, &diag, init.environ_map, req.scope, std.os.linux.getuid()) catch |e| {
+        return fail(stderr, "cannot initialise: {t}", .{e});
+    };
+    switch (req.mode) {
+        .exec => return exec.executor.run(&ctx, .{ .unit = req.unit, .phase = req.phase }),
+        .log => {
+            var opts: exec.logger.Options = .{};
+            if (req.max_size) |v| opts.max_size = v;
+            if (req.keep) |v| opts.keep = v;
+            return exec.logger.run(&ctx, init.gpa, req.unit, opts, 0);
+        },
+    }
+}
+
 const FailureFmt = struct {
     failure: cli.systemctl.Failure,
 
@@ -130,6 +162,7 @@ pub fn main(init: std.process.Init) !u8 {
     var stderr: Io.File.Writer = .init(.stderr(), init.io, &err_buf);
 
     const tool = std.meta.stringToEnum(Tool, std.fs.path.basename(args[0])) orelse {
+        if (exec.args.isServiceCommand(args[1..])) return runService(init, args[1..], &stderr.interface);
         try stderr.interface.writeAll(usage);
         try stderr.interface.flush();
         return 0;
@@ -150,4 +183,5 @@ test {
     _ = @import("detect/root.zig");
     _ = @import("backend/root.zig");
     _ = @import("ops/root.zig");
+    _ = @import("exec/root.zig");
 }

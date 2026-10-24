@@ -65,12 +65,22 @@ pub const Change = union(enum) {
 
 pub const Power = enum { reboot, poweroff, halt };
 
+/// How a unit named in `Requires=`, `BindsTo=` or `Wants=` resolves in the backend.
+pub const Dep = struct {
+    /// Full unit name.
+    unit: []const u8,
+    /// Service name, or null when the dependency cannot be a service and has to be left out.
+    service: ?[]const u8,
+};
+
 pub const GenerateInput = struct {
     unit: *const model.Unit,
     tier: core.Tier,
     /// Path of the unit fragment, recorded as `Source` in the marker.
     source: []const u8,
     src_hash: u64,
+    /// Resolution of the dependencies the pipeline translated; names missing here are judged by the backend.
+    deps: []const Dep = &.{},
 };
 
 pub const Generated = struct {

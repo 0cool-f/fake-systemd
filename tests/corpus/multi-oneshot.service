@@ -1,0 +1,11 @@
+[Unit]
+Description=Oneshot with several commands
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/step-one
+ExecStart=-/usr/bin/step-two --optional
+ExecStart=/usr/bin/step-three
+
+[Install]
+WantedBy=multi-user.target

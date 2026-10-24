@@ -1,0 +1,12 @@
+[Unit]
+Description=Daemon with user, group and supplementary groups
+
+[Service]
+User=app
+Group=app
+SupplementaryGroups=audio video
+ExecStart=/usr/bin/media-agent
+WorkingDirectory=-/srv/media
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Command lines with variable expansion
+
+[Service]
+Environment=OPTS=--verbose MODE=fast
+ExecStart=/usr/bin/vard $OPTS --mode=${MODE}
+
+[Install]
+WantedBy=multi-user.target

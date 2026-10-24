@@ -37,6 +37,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "fake_systemd", .module = lib }},
     });
+    const exe_options = b.addOptions();
+    exe_options.addOptionPath("exe_path", exe.getEmittedBin());
+    integration.addOptions("build_options", exe_options);
 
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = root })).step);

@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3c2838ea3757c592
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/sbin/agetty --noclear tty1 38400 linux
+restart = true
+smooth-recovery = true
+logfile = /var/log/fake-systemd/tpl-login@tty1.service/current
+logfile-permissions = 640

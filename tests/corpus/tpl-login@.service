@@ -1,0 +1,14 @@
+[Unit]
+Description=Login prompt on %I
+After=systemd-user-sessions.service
+
+[Service]
+ExecStart=-/usr/sbin/agetty --noclear %I 38400 linux
+Type=idle
+Restart=always
+UtmpIdentifier=%I
+TTYPath=/dev/%I
+
+[Install]
+WantedBy=getty.target
+DefaultInstance=tty1

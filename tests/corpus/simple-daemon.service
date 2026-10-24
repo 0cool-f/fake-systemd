@@ -1,0 +1,12 @@
+[Unit]
+Description=Example metrics exporter
+Documentation=man:exporter(8)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/exporter --listen 127.0.0.1:9100 --log.level=info
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

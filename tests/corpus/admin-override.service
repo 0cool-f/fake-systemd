@@ -1,0 +1,8 @@
+[Unit]
+Description=Unit written by the administrator
+
+[Service]
+ExecStart=/opt/site/bin/site-agent
+
+[Install]
+WantedBy=multi-user.target

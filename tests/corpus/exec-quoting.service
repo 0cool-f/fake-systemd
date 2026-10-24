@@ -1,0 +1,10 @@
+[Unit]
+Description=Command lines that need quoting
+
+[Service]
+Environment=PLAIN=1
+Environment="SPACED=a b" 'PRICE=cost $5' HASH=a#b
+ExecStart=/usr/bin/quoter --name "two words" --tag 'it''s' --path=/tmp/x#y --cost=$$5 --empty ""
+
+[Install]
+WantedBy=multi-user.target

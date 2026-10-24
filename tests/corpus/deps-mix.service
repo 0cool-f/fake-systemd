@@ -1,0 +1,15 @@
+[Unit]
+Description=Service with many dependency kinds
+Requires=dbus.service
+BindsTo=postgresql.service
+Wants=network-online.target ghost.service syslog.service
+After=network-online.target dbus.service postgresql.service syslog.service ghost.service basic.target
+Before=nginx.service multi-user.target
+Conflicts=rescue.target
+PartOf=graphical.target
+
+[Service]
+ExecStart=/usr/bin/depsvc
+
+[Install]
+WantedBy=multi-user.target

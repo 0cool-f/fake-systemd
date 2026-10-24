@@ -1,0 +1,11 @@
+[Unit]
+Description=Daemon with reload and stop hooks
+
+[Service]
+ExecStart=/usr/bin/hookd
+ExecReload=/usr/bin/hookd-ctl reload
+ExecStop=/usr/bin/hookd-ctl stop
+ExecStopPost=/usr/bin/hookd-cleanup
+
+[Install]
+WantedBy=multi-user.target

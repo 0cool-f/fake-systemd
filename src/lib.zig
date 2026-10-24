@@ -8,3 +8,4 @@ pub const config = @import("config/root.zig");
 pub const detect = @import("detect/root.zig");
 pub const backend = @import("backend/root.zig");
 pub const ops = @import("ops/root.zig");
+pub const exec = @import("exec/root.zig");

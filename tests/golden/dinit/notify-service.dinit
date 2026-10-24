@@ -1,0 +1,18 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:4c731793fbd652f1
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/dbd --foreground
+restart = false
+stop-timeout = 45
+term-signal = INT
+options: no-new-privs signal-process-only
+nice = -5
+rlimit-nofile = 65536
+rlimit-core = -
+waits-for = network
+logfile = /var/log/fake-systemd/notify-service.service/current
+logfile-permissions = 640

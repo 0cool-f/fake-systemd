@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c9cec2bab7687fde
+# Generator: fake-systemd 0.1.0 dinit/1
+type = scripted
+command = /usr/bin/backup --all
+restart = false
+nice = 10
+logfile = /var/log/fake-systemd/backup-job.service/current
+logfile-permissions = 640

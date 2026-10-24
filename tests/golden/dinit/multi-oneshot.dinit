@@ -1,0 +1,11 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6a93b38352d2174c
+# Generator: fake-systemd 0.1.0 dinit/1
+type = scripted
+command = /usr/bin/fake-systemd --exec multi-oneshot.service
+restart = false
+logfile = /var/log/fake-systemd/multi-oneshot.service/current
+logfile-permissions = 640

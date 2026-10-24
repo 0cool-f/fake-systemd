@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f4f5ea7de5d26d7a
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/hookd
+stop-command = /usr/bin/fake-systemd --exec reload-stop.service --phase stop
+restart = false
+logfile = /var/log/fake-systemd/reload-stop.service/current
+logfile-permissions = 640

@@ -1,0 +1,16 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e7cd9f0e7a94056c
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/worker --queue default
+restart = true
+smooth-recovery = true
+restart-delay = 5
+start-timeout = 0
+stop-timeout = 1.5
+term-signal = USR1
+logfile = /var/log/fake-systemd/restart-always.service/current
+logfile-permissions = 640

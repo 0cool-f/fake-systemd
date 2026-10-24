@@ -1,0 +1,14 @@
+[Unit]
+Description=Web application with a prepared environment
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/default/webapp
+Environment="APP_MODE=production" "GREETING=hello world"
+ExecStartPre=/usr/bin/webapp --check-config
+ExecStartPre=-/bin/mkdir -p /var/cache/webapp
+ExecStart=/usr/bin/webapp --port 8080
+WorkingDirectory=/var/lib/webapp
+
+[Install]
+WantedBy=multi-user.target

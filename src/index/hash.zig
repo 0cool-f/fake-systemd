@@ -2,6 +2,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Fs = @import("../core/Fs.zig");
+const Config = @import("../config/Config.zig");
 
 const XxHash3 = std.hash.XxHash3;
 
@@ -88,20 +89,74 @@ fn updateStat(h: *XxHash3, fs: Fs, path: []const u8, with_identity: bool) void {
     updateInt(h, i96, st.mtime_ns);
 }
 
-/// Hash over (path, inode, size, mtime) of every file plus the mtime of every drop-in directory.
+/// Hash over (path, inode, size, mtime) of every file plus the mtime of every drop-in directory
+/// and the given executable stats (`executableStat`).
 /// A path that cannot be stat'ed contributes a distinct sentinel, so its disappearance changes the result.
-pub fn statFingerprint(fs: Fs, files: []const []const u8, dropin_dirs: []const []const u8) u64 {
+pub fn statFingerprint(fs: Fs, files: []const []const u8, dropin_dirs: []const []const u8, executable_stats: []const u64) u64 {
     var h = XxHash3.init(0);
     for (files) |path| updateStat(&h, fs, path, true);
     h.update(&[_]u8{2});
     for (dropin_dirs) |path| updateStat(&h, fs, path, false);
+    h.update(&[_]u8{3});
+    for (executable_stats) |s| updateInt(&h, u64, s);
+    return h.final();
+}
+
+/// Hash over the state of every candidate path of one executable: missing, present but not
+/// executable, or executable with its (inode, size, mtime).
+pub fn executableStat(fs: Fs, candidates: []const []const u8) u64 {
+    var h = XxHash3.init(0);
+    for (candidates) |path| {
+        h.update(path);
+        h.update(&[_]u8{0});
+        const st = fs.stat(path) catch {
+            h.update(&[_]u8{0xff});
+            continue;
+        };
+        const runnable = st.kind == .file and st.mode & 0o111 != 0;
+        h.update(&[_]u8{if (runnable) 1 else 2});
+        updateInt(&h, u64, st.inode);
+        updateInt(&h, u64, st.size);
+        updateInt(&h, i96, st.mtime_ns);
+    }
+    return h.final();
+}
+
+/// Hash of the effective configuration that influences classification and translation:
+/// `Translate`, `Allow`, `Deny` and the aliases in key order.
+pub fn configHash(gpa: std.mem.Allocator, config: Config) !u64 {
+    var h = XxHash3.init(0);
+    h.update(@tagName(config.translate));
+    for ([_][]const []const u8{ config.allow, config.deny }) |list| {
+        h.update(&[_]u8{1});
+        for (list) |item| {
+            h.update(item);
+            h.update(&[_]u8{0});
+        }
+    }
+    h.update(&[_]u8{2});
+    const keys = try gpa.alloc([]const u8, config.aliases.count());
+    defer gpa.free(keys);
+    var it = config.aliases.keyIterator();
+    for (keys) |*k| k.* = it.next().?.*;
+    std.mem.sort([]const u8, keys, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.less);
+    for (keys) |k| {
+        h.update(k);
+        h.update(&[_]u8{0});
+        h.update(config.aliases.get(k).?);
+        h.update(&[_]u8{0});
+    }
     return h.final();
 }
 
 /// Stat fingerprint of one file; 0 when it does not exist.
 pub fn fileFingerprint(fs: Fs, path: []const u8) u64 {
     _ = fs.stat(path) catch return 0;
-    return statFingerprint(fs, &.{path}, &.{});
+    return statFingerprint(fs, &.{path}, &.{}, &.{});
 }
 
 const testing = std.testing;
@@ -147,16 +202,52 @@ test "stat fingerprint changes with content metadata, drop-in dir and removal" {
     try fs.makePath("/u/a.service.d");
     const files: []const []const u8 = &.{"/u/a.service"};
     const dirs: []const []const u8 = &.{"/u/a.service.d"};
-    const f0 = statFingerprint(fs, files, dirs);
-    try testing.expectEqual(f0, statFingerprint(fs, files, dirs));
+    const f0 = statFingerprint(fs, files, dirs, &.{});
+    try testing.expectEqual(f0, statFingerprint(fs, files, dirs, &.{}));
     try fs.writeFileAtomic("/u/a.service.d/o.conf", "y", 0o644);
-    const f1 = statFingerprint(fs, files, dirs);
+    const f1 = statFingerprint(fs, files, dirs, &.{});
     try testing.expect(f0 != f1);
     try fs.writeFileAtomic("/u/a.service", "xx", 0o644);
-    const f2 = statFingerprint(fs, files, dirs);
+    const f2 = statFingerprint(fs, files, dirs, &.{});
     try testing.expect(f1 != f2);
     try fs.deleteFile("/u/a.service");
-    try testing.expect(f2 != statFingerprint(fs, files, dirs));
+    try testing.expect(f2 != statFingerprint(fs, files, dirs, &.{}));
     try testing.expectEqual(@as(u64, 0), fileFingerprint(fs, "/u/a.service"));
     try testing.expect(fileFingerprint(fs, "/u/a.service.d/o.conf") != 0);
+}
+
+test "executable stat tells missing, non-executable and executable apart" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    const candidates: []const []const u8 = &.{ "/bin/a", "/usr/bin/a" };
+    const missing = executableStat(fs, candidates);
+    try fs.makePath("/usr/bin");
+    try fs.writeFileAtomic("/usr/bin/a", "x", 0o644);
+    const plain = executableStat(fs, candidates);
+    try testing.expect(missing != plain);
+    try fs.writeFileAtomic("/usr/bin/a", "x", 0o755);
+    const runnable = executableStat(fs, candidates);
+    try testing.expect(plain != runnable);
+    try fs.deleteFile("/usr/bin/a");
+    try testing.expectEqual(missing, executableStat(fs, candidates));
+}
+
+test "config hash follows Translate, Allow, Deny and aliases, not insertion order" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c1: Config = .{};
+    const base = try configHash(a, c1);
+    try testing.expectEqual(base, try configHash(a, .{ .log_level = .info, .init = "dinit" }));
+    try testing.expect(base != try configHash(a, .{ .translate = .eager }));
+    try testing.expect(base != try configHash(a, .{ .deny = &.{"x"} }));
+    try testing.expect(try configHash(a, .{ .deny = &.{"x"} }) != try configHash(a, .{ .allow = &.{"x"} }));
+    try c1.aliases.put(a, "a.service", "x");
+    try c1.aliases.put(a, "b.service", "y");
+    var c2: Config = .{};
+    try c2.aliases.put(a, "b.service", "y");
+    try c2.aliases.put(a, "a.service", "x");
+    try testing.expectEqual(try configHash(a, c1), try configHash(a, c2));
+    try testing.expect(base != try configHash(a, c1));
 }

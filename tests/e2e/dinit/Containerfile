@@ -1,0 +1,3 @@
+FROM docker.io/chimeralinux/chimera
+
+RUN apk update && apk add dinit chimerautils

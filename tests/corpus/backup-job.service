@@ -1,0 +1,8 @@
+[Unit]
+Description=Nightly backup (started by backup-job.timer)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/backup --all
+Nice=10
+IOSchedulingClass=idle

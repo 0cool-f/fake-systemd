@@ -1,0 +1,13 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:bf8a6abca057bad5
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/sandboxd
+restart = on-failure
+smooth-recovery = true
+after = network
+logfile = /var/log/fake-systemd/sandboxed.service/current
+logfile-permissions = 640

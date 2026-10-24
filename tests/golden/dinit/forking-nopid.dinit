@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-nopid.service
+# Source: /usr/lib/systemd/system/forking-nopid.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:91b76c24e88c919a
+# Generator: fake-systemd 0.1.0 dinit/1
+# Type=forking without PIDFile=: the daemon is started but not supervised
+type = scripted
+command = /usr/sbin/legacyd --daemonize
+restart = false
+logfile = /var/log/fake-systemd/forking-nopid.service/current
+logfile-permissions = 640

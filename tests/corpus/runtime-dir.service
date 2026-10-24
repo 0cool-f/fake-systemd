@@ -1,0 +1,15 @@
+[Unit]
+Description=Service with managed directories
+
+[Service]
+User=app
+Group=app
+RuntimeDirectory=appd
+RuntimeDirectoryMode=0750
+StateDirectory=appd
+CacheDirectory=appd
+ExecStart=/usr/bin/appd --socket /run/appd/appd.sock
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

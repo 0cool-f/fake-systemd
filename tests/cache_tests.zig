@@ -3,6 +3,7 @@ const h = @import("harness.zig");
 
 const testing = std.testing;
 const fake = h.backend.Fake;
+const native_scan = h.backend.native_scan;
 
 const generated_foo = "/usr/lib/fake.d/foo";
 
@@ -46,6 +47,7 @@ test "touching the source updates the fingerprint and leaves generated files alo
     var t: h.Harness = undefined;
     try setup(&t);
     defer t.deinit();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     const before_line = try unitLine(&t);
     const before_file = try t.read(generated_foo);
     const before_stat = try t.fs.stat(generated_foo);
@@ -133,4 +135,87 @@ test "a corrupted or absent index still gives correct results" {
     try testing.expectEqualStrings("enabled\n", t.stdout());
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     try testing.expectEqualStrings("", t.stderr());
+}
+
+test "a removed executable reclassifies the unit on the next daemon-reload" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try h.expectContains(try unitLine(&t), "/usr/bin/foo=xxh3:");
+    const before = try t.snapshot();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqualStrings(before, try t.snapshot());
+
+    try t.fs.deleteFile("/usr/bin/foo");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!t.exists(generated_foo));
+    try h.expectNotContains(try t.indexText(), "unit\tfoo.service");
+}
+
+test "an executable that appears earlier in the search path reruns the pipeline" {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    try t.write("/usr/lib/systemd/system/bare.service", "[Service]\nExecStart=tool --run\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/tool", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "bare" }));
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    const generated = t.fake.generate_count;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqual(generated, t.fake.generate_count);
+
+    try t.write("/usr/local/bin/tool", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(t.fake.generate_count > generated);
+}
+
+test "a Deny change is applied on the next daemon-reload" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    const generated = t.fake.generate_count;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqual(generated, t.fake.generate_count);
+
+    t.ctx.config.deny = try t.a().dupe([]const u8, &.{"foo*"});
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!t.exists(generated_foo));
+    try h.expectNotContains(try t.indexText(), "unit\tfoo.service");
+
+    // The new hash is stored, so the next reload changes nothing.
+    const stored = try t.indexText();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqualStrings(stored, try t.indexText());
+}
+
+test "an alias change is applied on the next daemon-reload" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try t.addNative("custom", "/usr/bin/foo");
+    try t.ctx.config.aliases.put(t.a(), "foo.service", "custom");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try h.expectContains(t.stderr(), "using native service 'custom'");
+    try testing.expect(!t.exists(generated_foo));
+}
+
+test "an unchanged native directory is not listed again" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try h.expectContains(try t.indexText(), "nativedir\t/etc/fake-native\t");
+    const listed = native_scan.list_calls;
+    const extracted = fake.extract_calls;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqual(listed, native_scan.list_calls);
+    try testing.expectEqual(extracted, fake.extract_calls);
+
+    try t.addNative("another", "/usr/bin/another");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqual(listed + 1, native_scan.list_calls);
+    try h.expectContains(try t.indexText(), "native\tanother\t");
 }

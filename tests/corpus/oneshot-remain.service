@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply firewall rules
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/fwctl load /etc/fw/rules
+ExecStop=/usr/bin/fwctl flush
+
+[Install]
+WantedBy=multi-user.target

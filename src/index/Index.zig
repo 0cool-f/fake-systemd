@@ -1,4 +1,4 @@
-//! In-memory index of generated units, native services and timers, with the v2 text format (§7.4).
+//! In-memory index of generated units, native services and timers, with the v4 text format (§7.4).
 //! Every slice stored in an index must outlive it; use one arena per invocation.
 const std = @import("std");
 const Io = std.Io;
@@ -9,13 +9,28 @@ const hash = @import("hash.zig");
 
 const Index = @This();
 
-pub const format_version = 2;
+pub const format_version = 4;
+
+/// Oldest format that is still read: v2 lacks executables, directory mtimes and the config hash,
+/// which load as empty and make every unit go through the full pipeline once; v2 and v3 lack
+/// the origin and the dependency list, so their units load as explicit.
+pub const min_format_version = 2;
 
 pub const State = enum { managed, native, missing };
+
+/// Why a unit is in the index: the user named it (enable, start, ...), or it was translated only
+/// because another unit depends on it.
+pub const Origin = enum { explicit, dependency };
 
 pub const FileEntry = struct {
     path: []const u8,
     out_hash: u64,
+    stat: u64,
+};
+
+/// An executable of a unit as written in the unit file, with the stat hash of its candidate paths.
+pub const Exec = struct {
+    name: []const u8,
     stat: u64,
 };
 
@@ -27,6 +42,11 @@ pub const Unit = struct {
     src_hash: u64,
     src_stat: u64,
     files: []const FileEntry,
+    /// Executables referenced by `Exec*=` lines, folded into `src_stat`.
+    executables: []const Exec = &.{},
+    origin: Origin = .explicit,
+    /// Units this unit pulled in as dependencies (`Requires=`, `BindsTo=`, `Wants=`) that are in the index.
+    deps: []const []const u8 = &.{},
     generator_version: []const u8,
 
     pub fn findFile(u: Unit, path: []const u8) ?FileEntry {
@@ -41,6 +61,12 @@ pub const Native = struct {
     file_hash: u64,
     file_stat: u64,
     exec: []const u8,
+};
+
+/// Modification time of a scanned native service directory.
+pub const NativeDir = struct {
+    path: []const u8,
+    mtime_ns: i96,
 };
 
 pub const Timer = struct {
@@ -71,8 +97,11 @@ pub const Loaded = struct {
 
 backend: []const u8,
 generator: u32,
+/// Hash of the effective configuration the entries were computed with (`hash.configHash`).
+config_hash: u64 = 0,
 units: std.ArrayList(Unit) = .empty,
 natives: std.ArrayList(Native) = .empty,
+native_dirs: std.ArrayList(NativeDir) = .empty,
 timers: std.ArrayList(Timer) = .empty,
 
 pub fn init(backend: []const u8, generator: u32) Index {
@@ -122,6 +151,11 @@ pub fn putNative(index: *Index, arena: std.mem.Allocator, native: Native) !void 
 
 pub fn removeNative(index: *Index, name: []const u8) bool {
     return removeByName(Native, &index.natives, name);
+}
+
+pub fn findNativeDir(index: *Index, path: []const u8) ?*NativeDir {
+    for (index.native_dirs.items) |*d| if (std.mem.eql(u8, d.path, path)) return d;
+    return null;
 }
 
 pub fn findTimer(index: *Index, name: []const u8) ?*Timer {
@@ -182,7 +216,7 @@ fn writeOptInt(w: *Io.Writer, v: ?i64) Io.Writer.Error!void {
 }
 
 pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
-    try w.print("# fake-systemd index v{d} backend={s} generator={d}\n", .{ format_version, index.backend, index.generator });
+    try w.print("# fake-systemd index v{d} backend={s} generator={d} config={f}\n", .{ format_version, index.backend, index.generator, hash.str(index.config_hash) });
     for (index.units.items) |u| {
         try w.writeAll("unit\t");
         try writeText(w, u.name);
@@ -191,6 +225,18 @@ pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
             if (i != 0) try w.writeByte(',');
             try writeEscaped(w, f.path, true);
             try w.print("={f}:{f}", .{ hash.str(f.out_hash), hash.str(f.stat) });
+        }
+        try w.writeByte('\t');
+        for (u.executables, 0..) |e, i| {
+            if (i != 0) try w.writeByte(',');
+            try writeEscaped(w, e.name, true);
+            try w.print("={f}", .{hash.str(e.stat)});
+        }
+        try w.writeByte('\t');
+        try w.print("{t}\t", .{u.origin});
+        for (u.deps, 0..) |d, i| {
+            if (i != 0) try w.writeByte(',');
+            try writeEscaped(w, d, true);
         }
         try w.writeByte('\t');
         try writeText(w, u.generator_version);
@@ -204,6 +250,11 @@ pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
         try w.print("\t{f}\t{f}\t", .{ hash.str(n.file_hash), hash.str(n.file_stat) });
         try writeText(w, n.exec);
         try w.writeByte('\n');
+    }
+    for (index.native_dirs.items) |d| {
+        try w.writeAll("nativedir\t");
+        try writeText(w, d.path);
+        try w.print("\t{d}\n", .{d.mtime_ns});
     }
     for (index.timers.items) |t| {
         try w.writeAll("timer\t");
@@ -240,7 +291,7 @@ const LineError = error{
     OutOfMemory,
 };
 
-const max_fields = 9;
+const max_fields = 12;
 
 fn splitFields(line: []const u8, buf: *[max_fields][]const u8) LineError![]const []const u8 {
     var n: usize = 0;
@@ -290,11 +341,36 @@ fn parseFileList(arena: std.mem.Allocator, s: []const u8) LineError![]const File
     return list.items;
 }
 
-fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8) LineError!void {
+fn parseNameList(arena: std.mem.Allocator, s: []const u8) LineError![]const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    if (s.len == 0) return list.items;
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |item| try list.append(arena, try textField(arena, item));
+    return list.items;
+}
+
+fn parseExecList(arena: std.mem.Allocator, s: []const u8) LineError![]const Exec {
+    var list: std.ArrayList(Exec) = .empty;
+    if (s.len == 0) return list.items;
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |item| {
+        const eq = std.mem.findScalarLast(u8, item, '=') orelse return error.BadFileList;
+        try list.append(arena, .{
+            .name = try textField(arena, item[0..eq]),
+            .stat = try hashField(item[eq + 1 ..]),
+        });
+    }
+    return list.items;
+}
+
+fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8, version: u32) LineError!void {
     var buf: [max_fields][]const u8 = undefined;
     const f = try splitFields(line, &buf);
     if (std.mem.eql(u8, f[0], "unit")) {
-        if (f.len != 9) return error.WrongFieldCount;
+        const has_execs = version >= 3;
+        const has_origin = version >= 4;
+        const want: usize = if (has_origin) 12 else if (has_execs) 10 else 9;
+        if (f.len != want) return error.WrongFieldCount;
         try index.putUnit(arena, .{
             .name = try textField(arena, f[1]),
             .scope = try enumField(types.Scope, f[2]),
@@ -303,7 +379,10 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8) LineErro
             .src_hash = try hashField(f[5]),
             .src_stat = try hashField(f[6]),
             .files = try parseFileList(arena, f[7]),
-            .generator_version = try textField(arena, f[8]),
+            .executables = if (has_execs) try parseExecList(arena, f[8]) else &.{},
+            .origin = if (has_origin) try enumField(Origin, f[9]) else .explicit,
+            .deps = if (has_origin) try parseNameList(arena, f[10]) else &.{},
+            .generator_version = try textField(arena, f[f.len - 1]),
         });
     } else if (std.mem.eql(u8, f[0], "native")) {
         if (f.len != 6) return error.WrongFieldCount;
@@ -314,6 +393,15 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8) LineErro
             .file_stat = try hashField(f[4]),
             .exec = try textField(arena, f[5]),
         });
+    } else if (std.mem.eql(u8, f[0], "nativedir")) {
+        if (f.len != 3) return error.WrongFieldCount;
+        const path = try textField(arena, f[1]);
+        const mtime_ns = std.fmt.parseInt(i96, f[2], 10) catch return error.BadNumber;
+        if (index.findNativeDir(path)) |d| {
+            d.mtime_ns = mtime_ns;
+        } else {
+            try index.native_dirs.append(arena, .{ .path = path, .mtime_ns = mtime_ns });
+        }
     } else if (std.mem.eql(u8, f[0], "timer")) {
         if (f.len != 7) return error.WrongFieldCount;
         try index.putTimer(arena, .{
@@ -329,7 +417,7 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8) LineErro
     }
 }
 
-const Header = struct { version: u32, backend: []const u8, generator: u32 };
+const Header = struct { version: u32, backend: []const u8, generator: u32, config_hash: u64 };
 
 fn parseHeader(line: []const u8) ?Header {
     const lead = "# fake-systemd index v";
@@ -340,7 +428,13 @@ fn parseHeader(line: []const u8) ?Header {
     const generator_kv = it.next() orelse return null;
     if (!std.mem.startsWith(u8, backend_kv, "backend=") or !std.mem.startsWith(u8, generator_kv, "generator=")) return null;
     const generator = std.fmt.parseUnsigned(u32, generator_kv["generator=".len..], 10) catch return null;
-    return .{ .version = version, .backend = backend_kv["backend=".len..], .generator = generator };
+    var config_hash: u64 = 0;
+    if (version >= 3) {
+        const config_kv = it.next() orelse return null;
+        if (!std.mem.startsWith(u8, config_kv, "config=")) return null;
+        config_hash = hash.parse(config_kv["config=".len..]) orelse return null;
+    }
+    return .{ .version = version, .backend = backend_kv["backend=".len..], .generator = generator, .config_hash = config_hash };
 }
 
 /// Parses index text. Malformed lines are dropped with an info diagnostic; entries are
@@ -352,7 +446,7 @@ pub fn parse(arena: std.mem.Allocator, diag: *Diag, text: []const u8, backend: [
         diag.info("index header missing or malformed, rebuilding from markers", .{});
         return .{ .index = index, .status = .rebuild_needed };
     };
-    if (header.version != format_version) {
+    if (header.version < min_format_version or header.version > format_version) {
         diag.info("index format version {d} is not supported, rebuilding from markers", .{header.version});
         return .{ .index = index, .status = .rebuild_needed };
     }
@@ -360,12 +454,13 @@ pub fn parse(arena: std.mem.Allocator, diag: *Diag, text: []const u8, backend: [
         diag.info("index belongs to backend {s}, rebuilding from markers", .{header.backend});
         return .{ .index = index, .status = .rebuild_needed };
     }
+    index.config_hash = header.config_hash;
     var dropped: usize = 0;
     var line_no: usize = 1;
     while (lines.next()) |line| {
         line_no += 1;
         if (line.len == 0 or line[0] == '#') continue;
-        parseLine(&index, arena, line) catch |e| switch (e) {
+        parseLine(&index, arena, line, header.version) catch |e| switch (e) {
             error.OutOfMemory => return e,
             else => {
                 dropped += 1;
@@ -396,6 +491,8 @@ const testing = std.testing;
 
 fn sampleIndex(arena: std.mem.Allocator) !Index {
     var idx = init("dinit", 1);
+    idx.config_hash = 0xabc;
+    try idx.native_dirs.append(arena, .{ .path = "/etc/dinit.d", .mtime_ns = 1700000000123456789 });
     try idx.putUnit(arena, .{
         .name = "foo.service",
         .scope = .system,
@@ -407,6 +504,8 @@ fn sampleIndex(arena: std.mem.Allocator) !Index {
             .{ .path = "/usr/lib/dinit.d/foo", .out_hash = 3, .stat = 4 },
             .{ .path = "/usr/lib/dinit.d/foo.log", .out_hash = 5, .stat = 6 },
         },
+        .executables = &.{ .{ .name = "/usr/bin/foo", .stat = 11 }, .{ .name = "sh", .stat = 12 } },
+        .deps = &.{ "bar", "baz.service" },
         .generator_version = "0.1.0",
     });
     try idx.putNative(arena, .{ .name = "bar", .path = "/etc/dinit.d/bar", .file_hash = 7, .file_stat = 8, .exec = "/usr/bin/bar" });
@@ -426,11 +525,13 @@ test "render matches the spec layout" {
     defer aw.deinit();
     try idx.render(&aw.writer);
     try testing.expectEqualStrings(
-        "# fake-systemd index v2 backend=dinit generator=1\n" ++
+        "# fake-systemd index v4 backend=dinit generator=1 config=xxh3:0000000000000abc\n" ++
             "unit\tfoo.service\tsystem\tvendor\tmanaged\txxh3:7d1f0c2a9b3e4f51\txxh3:0000000000000002\t" ++
             "/usr/lib/dinit.d/foo=xxh3:0000000000000003:xxh3:0000000000000004," ++
-            "/usr/lib/dinit.d/foo.log=xxh3:0000000000000005:xxh3:0000000000000006\t0.1.0\n" ++
+            "/usr/lib/dinit.d/foo.log=xxh3:0000000000000005:xxh3:0000000000000006\t" ++
+            "/usr/bin/foo=xxh3:000000000000000b,sh=xxh3:000000000000000c\texplicit\tbar,baz.service\t0.1.0\n" ++
             "native\tbar\t/etc/dinit.d/bar\txxh3:0000000000000007\txxh3:0000000000000008\t/usr/bin/bar\n" ++
+            "nativedir\t/etc/dinit.d\t1700000000123456789\n" ++
             "timer\tfoo.timer\tbuiltin\txxh3:0000000000000009\txxh3:000000000000000a\t1700000000\t-\n",
         aw.written(),
     );
@@ -474,6 +575,11 @@ test "round trip including hostile paths" {
     const foo = got.findUnit("foo.service").?;
     try testing.expectEqual(@as(usize, 2), foo.files.len);
     try testing.expectEqual(@as(u64, 0x7d1f0c2a9b3e4f51), foo.src_hash);
+    try testing.expectEqual(@as(usize, 2), foo.executables.len);
+    try testing.expectEqualStrings("sh", foo.executables[1].name);
+    try testing.expectEqual(@as(u64, 12), foo.executables[1].stat);
+    try testing.expectEqual(@as(u64, 0xabc), got.config_hash);
+    try testing.expectEqual(@as(i96, 1700000000123456789), got.findNativeDir("/etc/dinit.d").?.mtime_ns);
     const n = got.findNative("n\t").?;
     try testing.expectEqualStrings(weird, n.path);
     try testing.expectEqualStrings("%41", n.exec);
@@ -486,7 +592,7 @@ test "malformed lines are dropped with an info diagnostic" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const text =
-        "# fake-systemd index v2 backend=dinit generator=1\n" ++
+        "# fake-systemd index v3 backend=dinit generator=1 config=xxh3:0000000000000000\n" ++
         "bogus\tx\n" ++
         "unit\tshort\n" ++
         "native\tbar\t/p\tnot-a-hash\txxh3:0000000000000001\t/x\n" ++
@@ -515,8 +621,11 @@ test "header problems request a rebuild" {
     for ([_][]const u8{
         "",
         "garbage\n",
+        "# fake-systemd index v5 backend=dinit generator=1 config=xxh3:0000000000000000\n",
+        "# fake-systemd index v1 backend=dinit generator=1\n",
         "# fake-systemd index v3 backend=dinit generator=1\n",
-        "# fake-systemd index v2 backend=runit generator=1\n",
+        "# fake-systemd index v3 backend=dinit generator=1 config=bad\n",
+        "# fake-systemd index v3 backend=runit generator=1 config=xxh3:0000000000000000\n",
         "# fake-systemd index v2 backend=dinit\n",
     }) |text| {
         const l = try parse(a, &diag, text, "dinit", 1);
@@ -531,7 +640,7 @@ test "other generator version keeps entries but is reported" {
     var out: [64]u8 = undefined;
     var dw: Io.Writer = .fixed(&out);
     var diag: Diag = .init(&dw, .info);
-    const l = try parse(arena.allocator(), &diag, "# fake-systemd index v2 backend=dinit generator=1\n" ++
+    const l = try parse(arena.allocator(), &diag, "# fake-systemd index v3 backend=dinit generator=1 config=xxh3:0000000000000000\n" ++
         "native\tn\t/p\txxh3:0000000000000001\txxh3:0000000000000002\t/x\n", "dinit", 2);
     try testing.expectEqual(LoadStatus.generator_changed, l.status);
     try testing.expectEqual(@as(usize, 1), l.index.natives.items.len);
@@ -576,4 +685,66 @@ test "put replaces by name and remove deletes" {
     try testing.expect(!idx.removeUnit("foo.service"));
     try testing.expect(idx.removeNative("bar"));
     try testing.expect(idx.removeTimer("foo.timer"));
+}
+
+test "a v2 index loads with empty executables, no directory mtimes and no config hash" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: [256]u8 = undefined;
+    var dw: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&dw, .info);
+    const l = try parse(arena.allocator(), &diag, "# fake-systemd index v2 backend=dinit generator=1\n" ++
+        "unit\tfoo.service\tsystem\tvendor\tmanaged\txxh3:0000000000000001\txxh3:0000000000000002\t" ++
+        "/usr/lib/dinit.d/foo=xxh3:0000000000000003:xxh3:0000000000000004\t0.1.0\n" ++
+        "native\tn\t/p\txxh3:0000000000000001\txxh3:0000000000000002\t/x\n" ++
+        "timer\tt\tbuiltin\txxh3:0000000000000001\txxh3:0000000000000002\t5\t-\n", "dinit", 1);
+    try expectDiagEmpty(&dw);
+    try testing.expectEqual(LoadStatus.ok, l.status);
+    var idx = l.index;
+    try testing.expectEqual(@as(u64, 0), idx.config_hash);
+    try testing.expectEqual(@as(usize, 0), idx.native_dirs.items.len);
+    const u = idx.findUnit("foo.service").?;
+    try testing.expectEqual(@as(usize, 0), u.executables.len);
+    try testing.expectEqualStrings("0.1.0", u.generator_version);
+    try testing.expectEqual(@as(usize, 1), u.files.len);
+    try testing.expect(idx.findNative("n") != null);
+    try testing.expectEqual(@as(?i64, 5), idx.findTimer("t").?.last_trigger);
+}
+
+test "malformed nativedir lines are dropped" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: [512]u8 = undefined;
+    var dw: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&dw, .info);
+    const l = try parse(arena.allocator(), &diag, "# fake-systemd index v3 backend=dinit generator=1 config=xxh3:0000000000000000\n" ++
+        "nativedir\t/a\n" ++
+        "nativedir\t/b\tx\n" ++
+        "nativedir\t/c\t-5\n", "dinit", 1);
+    try testing.expectEqual(@as(usize, 2), l.dropped);
+    try testing.expectEqual(@as(usize, 1), l.index.native_dirs.items.len);
+    try testing.expectEqual(@as(i96, -5), l.index.native_dirs.items[0].mtime_ns);
+}
+
+test "v4 units keep their origin and dependencies, older units load as explicit" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: [512]u8 = undefined;
+    var dw: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&dw, .info);
+    const hex = "xxh3:0000000000000001";
+    const v4 = "# fake-systemd index v4 backend=dinit generator=1 config=" ++ hex ++ "\n" ++
+        "unit\tb.service\tsystem\tvendor\tmanaged\t" ++ hex ++ "\t" ++ hex ++ "\t\t\tdependency\tc.service,d\t0.1.0\n";
+    const l4 = try parse(arena.allocator(), &diag, v4, "dinit", 1);
+    try testing.expectEqual(@as(usize, 0), l4.dropped);
+    var idx4 = l4.index;
+    const b = idx4.findUnit("b.service").?;
+    try testing.expectEqual(Origin.dependency, b.origin);
+    try testing.expectEqual(@as(usize, 2), b.deps.len);
+    try testing.expectEqualStrings("c.service", b.deps[0]);
+    const v3 = "# fake-systemd index v3 backend=dinit generator=1 config=" ++ hex ++ "\n" ++
+        "unit\ta.service\tsystem\tvendor\tmanaged\t" ++ hex ++ "\t" ++ hex ++ "\t\t\t0.1.0\n";
+    var idx3 = (try parse(arena.allocator(), &diag, v3, "dinit", 1)).index;
+    try testing.expectEqual(Origin.explicit, idx3.findUnit("a.service").?.origin);
+    try testing.expectEqual(@as(usize, 0), idx3.findUnit("a.service").?.deps.len);
 }

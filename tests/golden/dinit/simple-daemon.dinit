@@ -1,0 +1,13 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:9972e13472014d51
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/exporter --listen 127.0.0.1:9100 --log.level=info
+restart = on-failure
+smooth-recovery = true
+after = network
+logfile = /var/log/fake-systemd/simple-daemon.service/current
+logfile-permissions = 640

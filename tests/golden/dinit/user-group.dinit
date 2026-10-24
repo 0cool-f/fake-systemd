@@ -1,0 +1,11 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:499cb9fad6c81076
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/fake-systemd --exec user-group.service
+restart = false
+logfile = /var/log/fake-systemd/user-group.service/current
+logfile-permissions = 640

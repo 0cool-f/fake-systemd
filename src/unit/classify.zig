@@ -63,7 +63,7 @@ fn noActivator(_: ?*const anyopaque, _: []const u8) bool {
     return false;
 }
 
-const exec_search_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
+pub const exec_search_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
 
 pub fn classify(unit: model.Unit, facts: Facts) Classification {
     const name = unit.name;

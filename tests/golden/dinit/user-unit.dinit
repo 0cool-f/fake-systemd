@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-unit.service
+# Source: /usr/lib/systemd/user/user-unit.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:7ab68f11452134cc
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/clipd --watch
+restart = on-failure
+smooth-recovery = true
+logfile = /home/tester/.local/state/fake-systemd/log/user-unit.service/current
+logfile-permissions = 640

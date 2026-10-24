@@ -1,0 +1,12 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:b00082a065301d76
+# Generator: fake-systemd 0.1.0 dinit/1
+type = scripted
+command = /usr/bin/fwctl load /etc/fw/rules
+stop-command = /usr/bin/fwctl flush
+restart = false
+logfile = /var/log/fake-systemd/oneshot-remain.service/current
+logfile-permissions = 640

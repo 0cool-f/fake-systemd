@@ -231,12 +231,12 @@ test "user scope uses the personal directories" {
     try testing.expectEqualStrings("/dev/null", try t.fs.readLink("/root/.config/systemd/user/other.service", &link));
 }
 
-test "journalctl accepts its options and prints a notice" {
+test "journalctl accepts its options and notices units without logs" {
     var t: h.Harness = undefined;
     try setup(&t);
     defer t.deinit();
     t.out.clearRetainingCapacity();
     t.err.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), h.ops.journalctlArgs(&t.ctx, t.deps(), &.{ "-u", "foo", "-n", "5" }));
-    try h.expectContains(t.stderr(), "journalctl: log reading arrives with the first backend");
+    try h.expectContains(t.stderr(), "foo.service: no fake-systemd logs in /var/log/fake-systemd/foo.service");
 }

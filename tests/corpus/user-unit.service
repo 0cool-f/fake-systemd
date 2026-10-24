@@ -1,0 +1,11 @@
+[Unit]
+Description=Per-user clipboard manager
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/clipd --watch
+Restart=on-failure
+User=ignored-in-user-scope
+
+[Install]
+WantedBy=default.target

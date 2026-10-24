@@ -49,11 +49,18 @@ dirty: bool = false,
 natives: ?[]const backend_pkg.interface.NativeService = null,
 /// Cache entries of the last native scan, waiting to be stored in the index.
 native_entries: ?[]const Index.Native = null,
+native_dir_entries: []const Index.NativeDir = &.{},
+/// A scanned native directory has another mtime than the cached one.
+native_dirs_changed: bool = false,
 /// The last native scan differed from the cached one.
 natives_changed: bool = false,
 /// The index was written by another generator version.
 generator_changed: bool = false,
+/// The configuration differs from the one the index entries were computed with.
+config_changed: bool = false,
 activators: ?Activators = null,
+/// Units whose entry changed during this `daemon-reload`; units that depend on them are not skipped.
+changed: std.StringHashMapUnmanaged(void) = .empty,
 spec_env: ?unit.specifier.Env = null,
 
 pub fn init(ctx: *Context, deps: Deps, req: cli.systemctl.Request) !Session {
@@ -133,6 +140,7 @@ pub fn index(s: *Session, intent: Intent) !*Index {
     const loaded = try Index.load(gpa, s.ctx.fs.*, s.ctx.diag, try s.layout.indexPath(gpa), s.deps.backend.name(), s.deps.backend.generator());
     s.idx = loaded.index;
     s.generator_changed = loaded.status == .generator_changed;
+    s.config_changed = loaded.index.config_hash != try index_pkg.hash.configHash(gpa, s.ctx.config);
     if (loaded.status == .rebuild_needed) try s.rebuildIndex();
     s.storeNatives();
     return &s.idx.?;
@@ -142,6 +150,15 @@ fn rebuildIndex(s: *Session) !void {
     const dirs = try s.deps.backend.scanDirs(s.ctx.gpa, s.ctx.scope);
     try index_pkg.rebuild.rebuild(s.ctx.gpa, s.ctx.fs.*, s.ctx.diag, &s.idx.?, .{ .scope = s.ctx.scope, .dirs = dirs });
     if (s.lock_mode == .exclusive and s.idx.?.units.items.len > 0) s.dirty = true;
+}
+
+/// Records the current configuration hash once every entry was synced against it.
+pub fn storeConfigHash(s: *Session) !void {
+    if (!s.config_changed or !s.persist or s.ctx.dry_run or s.lock_mode != .exclusive) return;
+    const idx = if (s.idx) |*i| i else return;
+    idx.config_hash = try index_pkg.hash.configHash(s.ctx.gpa, s.ctx.config);
+    s.config_changed = false;
+    s.markDirty();
 }
 
 pub fn markDirty(s: *Session) void {
@@ -177,10 +194,12 @@ pub fn nativeServices(s: *Session) ![]const backend_pkg.interface.NativeService 
     if (s.natives) |n| return n;
     const idx = try s.index(.read);
     const scan = try s.deps.backend.nativeScan(.{ .ctx = s.ctx, .runner = s.deps.runner, .online = !s.ctx.offline });
-    const result = try backend_pkg.native_scan.scanCached(s.ctx.gpa, s.ctx.fs.*, scan.dirs, scan.extractor, idx.natives.items);
+    const result = try backend_pkg.native_scan.scanCached(s.ctx.gpa, s.ctx.fs.*, scan.dirs, scan.extractor, idx.natives.items, idx.native_dirs.items);
     s.natives = result.services;
     s.native_entries = result.entries;
     s.natives_changed = result.changed;
+    s.native_dir_entries = result.dirs;
+    s.native_dirs_changed = result.dirs_changed;
     s.storeNatives();
     return result.services;
 }
@@ -188,10 +207,12 @@ pub fn nativeServices(s: *Session) ![]const backend_pkg.interface.NativeService 
 /// Writes the scan result into the index when it holds the exclusive lock.
 fn storeNatives(s: *Session) void {
     const entries = s.native_entries orelse return;
-    if (!s.natives_changed or !s.persist or s.ctx.dry_run or s.lock_mode != .exclusive) return;
+    if (!(s.natives_changed or s.native_dirs_changed) or !s.persist or s.ctx.dry_run or s.lock_mode != .exclusive) return;
     const idx = if (s.idx) |*i| i else return;
     idx.natives.clearRetainingCapacity();
     idx.natives.appendSlice(s.ctx.gpa, entries) catch |e| return s.ctx.diag.warn("cannot cache native services: {t}", .{e});
+    idx.native_dirs.clearRetainingCapacity();
+    idx.native_dirs.appendSlice(s.ctx.gpa, s.native_dir_entries) catch |e| return s.ctx.diag.warn("cannot cache native directories: {t}", .{e});
     s.native_entries = null;
     s.markDirty();
 }

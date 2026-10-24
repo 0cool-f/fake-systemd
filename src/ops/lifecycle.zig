@@ -257,6 +257,7 @@ fn revertGenerated(s: *Session, name: Name) !void {
     }
     var env = s.applyEnv(.explicit);
     const out = try reconcile.apply.dropUnit(&env, idx, s.ctx.gpa, name.full);
+    try pipeline.collectDependencies(s, idx, .explicit);
     s.markDirty();
     if (s.ctx.dry_run or s.quiet()) return;
     if (out.actions.len != files.len) return;

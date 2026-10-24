@@ -36,6 +36,16 @@ pub const BackendDirs = struct {
     boot_target: ?[]const u8 = null,
     /// Places where native services of this backend log.
     native_logs: []const []const u8 = &.{},
+    /// Vendor directory that receives services generated from vendor-tier units.
+    vendor_write: ?[]const u8 = null,
+    /// System-wide directories of user services.
+    user_vendor: []const []const u8 = &.{},
+    user_admin: []const []const u8 = &.{},
+    /// Directory of boot-enable symlinks for the user instance.
+    user_enable_dir: ?[]const u8 = null,
+    /// Services `network.target` and `network-online.target` map to; the first existing one wins.
+    network: []const []const u8 = &.{},
+    network_online: []const []const u8 = &.{},
 };
 
 pub const Profile = struct {
@@ -68,6 +78,12 @@ const dinit_generic: BackendDirs = .{
     .admin = &.{"/etc/dinit.d"},
     .runtime = &.{"/run/dinit.d"},
     .user = &.{"~/.config/dinit.d"},
+    .vendor_write = "/usr/lib/dinit.d",
+    .user_vendor = &.{ "/usr/local/lib/dinit.d/user", "/usr/lib/dinit.d/user" },
+    .user_admin = &.{"/etc/dinit.d/user"},
+    .user_enable_dir = "~/.config/dinit.d/boot.d",
+    .network = &.{ "network.target", "network" },
+    .network_online = &.{ "network-online.target", "network-online", "network", "network.target" },
     .enable_dir = "/etc/dinit.d/boot.d",
     .enable_tool = "dinitctl",
     .boot_target = "boot",
@@ -160,6 +176,7 @@ pub const profiles = [_]Profile{
         .schedulers = &.{"crond"},
     },
     .{ .id = "alpine", .match_ids = &.{"alpine"}, .backends = base() },
+    .{ .id = "chimera", .match_ids = &.{"chimera"}, .backends = base() },
     .{ .id = "gentoo", .match_ids = &.{"gentoo"}, .backends = base() },
     .{ .id = "openwrt", .match_ids = &.{"openwrt"}, .backends = base() },
     .{ .id = "slackware", .match_ids = &.{"slackware"}, .backends = base() },
@@ -257,6 +274,19 @@ test "dinit table matches the specification" {
     try testing.expectEqualStrings("/etc/dinit.d/boot.d", d.enable_dir.?);
     try testing.expectEqualStrings("boot", d.boot_target.?);
     try testing.expectEqualStrings("dinitctl", d.enable_tool.?);
+}
+
+test "dinit table carries the generation and user directories" {
+    const d = generic.dirs(.dinit);
+    try testing.expectEqualStrings("/usr/lib/dinit.d", d.vendor_write.?);
+    try testing.expectEqualStrings("/etc/dinit.d/user", d.user_admin[0]);
+    try testing.expectEqualStrings("/usr/lib/dinit.d/user", d.user_vendor[1]);
+    try testing.expectEqualStrings("~/.config/dinit.d/boot.d", d.user_enable_dir.?);
+    try testing.expectEqualStrings("network-online.target", d.network_online[0]);
+    try testing.expectEqualStrings("network", d.network[1]);
+    for ([_][]const u8{ "artix", "chimera", "alpine" }) |id| {
+        try testing.expectEqualStrings("/etc/dinit.d", byName(id).?.dirs(.dinit).admin[0]);
+    }
 }
 
 test "OpenRC table matches the specification" {

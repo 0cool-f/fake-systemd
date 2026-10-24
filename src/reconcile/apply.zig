@@ -208,6 +208,9 @@ pub const UnitSpec = struct {
     src_stat: u64,
     generator_version: []const u8,
     files: []const GeneratedFile,
+    executables: []const Index.Exec = &.{},
+    origin: Index.Origin = .explicit,
+    deps: []const []const u8 = &.{},
 };
 
 pub const UnitOutcome = struct {
@@ -294,6 +297,9 @@ fn runUnit(env: *Env, index: *Index, arena: std.mem.Allocator, name: []const u8,
                 .src_hash = s.src_hash,
                 .src_stat = s.src_stat,
                 .files = files.items,
+                .executables = s.executables,
+                .origin = s.origin,
+                .deps = s.deps,
                 .generator_version = s.generator_version,
             } else blk: {
                 var u = existing.?;

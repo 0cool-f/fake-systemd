@@ -1,0 +1,20 @@
+[Unit]
+Description=Notify-style database
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/dbd --foreground
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+LimitNOFILE=65536
+LimitCORE=infinity
+Nice=-5
+NoNewPrivileges=yes
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

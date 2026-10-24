@@ -7,6 +7,8 @@ pub const core = fs_sys.core;
 pub const ops = fs_sys.ops;
 pub const backend = fs_sys.backend;
 pub const index = fs_sys.index;
+pub const detect = fs_sys.detect;
+pub const unit = fs_sys.unit;
 
 const testing = std.testing;
 

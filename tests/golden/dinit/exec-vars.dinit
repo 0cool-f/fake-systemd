@@ -1,0 +1,11 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:7ac9d884d7684735
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/fake-systemd --exec exec-vars.service
+restart = false
+logfile = /var/log/fake-systemd/exec-vars.service/current
+logfile-permissions = 640

@@ -1,0 +1,13 @@
+[Unit]
+Description=Legacy forking daemon
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/legacyd.pid
+ExecStart=/usr/sbin/legacyd -c /etc/legacyd.conf
+TimeoutStartSec=30
+Restart=on-abnormal
+
+[Install]
+WantedBy=multi-user.target

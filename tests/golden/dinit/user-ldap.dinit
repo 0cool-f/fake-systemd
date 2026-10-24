@@ -1,0 +1,16 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-ldap.service
+# Source: /usr/lib/systemd/system/user-ldap.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fba57cab2ec9b533
+# Generator: fake-systemd 0.1.0 dinit/1
+type = process
+command = /usr/bin/dirsync --interval 300
+run-as = svc-directory
+load-options = export-passwd-vars
+restart = true
+smooth-recovery = true
+restart-delay = 2
+after = network
+logfile = /var/log/fake-systemd/user-ldap.service/current
+logfile-permissions = 640
