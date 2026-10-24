@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-FROM docker.io/library/alpine:latest AS zig
+FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS zig
 
 ARG ZIG_VERSION
 ARG ZIG_PUBKEY=RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U

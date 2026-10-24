@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-FROM docker.io/chimeralinux/chimera
+FROM docker.io/chimeralinux/chimera:latest@sha256:29102d7e12a1f464707d7aba19ce53e652d277861838ed4129178d0655444b1a
 
 RUN apk update && apk add dinit chimerautils cronie cronie-dinit

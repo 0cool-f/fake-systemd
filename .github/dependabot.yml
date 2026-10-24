@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /tests/e2e/dinit
+      - /packaging/aur
+    schedule:
+      interval: weekly

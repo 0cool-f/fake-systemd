@@ -377,7 +377,15 @@ pub const Follower = struct {
             if (f.openCurrent(src.dir)) |o| {
                 state.fd = o.fd;
                 state.inode = o.inode;
-                if (state.skip > 0) _ = linux.lseek(o.fd, @intCast(state.skip), linux.SEEK.SET);
+                if (state.skip > 0) {
+                    _ = logger.seek(o.fd, @intCast(state.skip), linux.SEEK.SET) catch |err| {
+                        f.ctx.diag.warn("cannot seek journal source: {s}", .{@errorName(err)});
+                        state.skip = 0;
+                        _ = linux.close(o.fd);
+                        state.fd = null;
+                        return;
+                    };
+                }
                 state.skip = 0;
             }
         }

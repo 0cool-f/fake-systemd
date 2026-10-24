@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the toolchain image
+        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+      - name: Check formatting
+        run: podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig fmt --check build.zig src tests
+      - name: Run unit, golden and integration tests
+        run: podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build test
+
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - arm-linux-musleabihf
+          - riscv64-linux-musl
+          - x86-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the toolchain image
+        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+      - name: Build the release tarball
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/build-tarball.sh "$TARGET" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the toolchain image
+        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+      - name: Run the dinit end-to-end test
+        run: tests/e2e/dinit/run.sh

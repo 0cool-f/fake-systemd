@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Dependabot has no ecosystem for .zig-version, so this opens the bump PR instead.
+name: zig-update
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - name: Open a PR for a newer stable Zig release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(cat .zig-version)
+          cutoff=$(date -u -d '14 days ago' +%F)
+          latest=$(curl -fsSL https://ziglang.org/download/index.json |
+              jq -r --arg cutoff "$cutoff" '
+                  to_entries
+                  | map(select(.key | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(.value.date <= $cutoff))
+                  | map(.key) | .[]' |
+              sort -V | tail -n 1)
+          if [ -z "$latest" ] || [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" = "$current" ]; then
+            echo "Zig $current is up to date"
+            exit 0
+          fi
+          branch=zig-update/$latest
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "branch $branch already exists"
+            exit 0
+          fi
+          git checkout -b "$branch"
+          echo "$latest" > .zig-version
+          sed -i "s/^\( *\.minimum_zig_version = \)\".*\"/\1\"$latest\"/" build.zig.zon
+          git -c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+              commit -am "Bump Zig to $latest"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Bump Zig to $latest" \
+              --body "Zig $latest is a stable release at least 14 days old. CI validates the toolchain bump."

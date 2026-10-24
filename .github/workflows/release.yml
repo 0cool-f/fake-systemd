@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against build.zig.zon
+        run: |
+          zon=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          if [ "v$zon" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match build.zig.zon version $zon" >&2
+            exit 1
+          fi
+
+  ci:
+    needs: verify-tag
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tarball-*
+          path: dist
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: sha256sum -- *.tar.gz > SHA256SUMS
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign SHA256SUMS with cosign (keyless)
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in *-*) flags=--prerelease ;; *) flags= ;; esac
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes $flags
+
+  aur:
+    needs: publish
+    if: "!contains(github.ref_name, '-')"
+    runs-on: ubuntu-24.04
+    environment: aur
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the release checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release download "$TAG" --pattern SHA256SUMS --dir release
+      - name: Render PKGBUILD and .SRCINFO
+        env:
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          MAINTAINER: ${{ vars.AUR_MAINTAINER }}
+        run: |
+          version=${TAG#v}
+          sum() { awk -v f="fake-systemd-$version-$1.tar.gz" '$2 == f { print $1 }' release/SHA256SUMS; }
+          mkdir pkg
+          VERSION=$version SHA256_X86_64=$(sum x86_64-linux-musl) SHA256_AARCH64=$(sum aarch64-linux-musl) \
+              packaging/aur/render.sh > pkg/PKGBUILD
+          packaging/aur/srcinfo.sh pkg
+      - name: Push to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          grep -v '^#' packaging/aur/known_hosts > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          git clone ssh://aur@aur.archlinux.org/fake-systemd-bin.git aur-repo
+          cp pkg/PKGBUILD pkg/.SRCINFO aur-repo/
+          cd aur-repo
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR repository already up to date"
+            exit 0
+          fi
+          git -c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+              commit -m "Update to ${TAG#v}"
+          git push origin HEAD:master

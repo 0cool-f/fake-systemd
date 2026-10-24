@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Maintainer: @MAINTAINER@
+pkgname=fake-systemd-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='systemctl and journalctl compatibility layer for systems without systemd (prebuilt static binary)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/@OWNER@/fake-systemd'
+license=('GPL-3.0-or-later')
+provides=('fake-systemd' 'systemctl')
+conflicts=('fake-systemd' 'systemd')
+options=('!strip' '!debug')
+source_x86_64=("@BASE_URL@/fake-systemd-$pkgver-x86_64-linux-musl.tar.gz")
+source_aarch64=("@BASE_URL@/fake-systemd-$pkgver-aarch64-linux-musl.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+    case $CARCH in
+        x86_64) _target=x86_64-linux-musl ;;
+        aarch64) _target=aarch64-linux-musl ;;
+    esac
+    cd "fake-systemd-$pkgver-$_target"
+    install -Dm755 fake-systemd -t "$pkgdir/usr/bin"
+    ln -s fake-systemd "$pkgdir/usr/bin/systemctl"
+    ln -s fake-systemd "$pkgdir/usr/bin/journalctl"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
+}

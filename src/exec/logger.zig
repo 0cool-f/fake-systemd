@@ -105,6 +105,22 @@ pub fn rotatedFiles(gpa: Allocator, fs: Fs, dir: []const u8) Allocator.Error![]c
     return names.toOwnedSlice(gpa);
 }
 
+/// Repositions `fd` and returns the new offset; 32-bit targets go through `llseek`.
+pub fn seek(fd: i32, offset: i64, whence: u32) !u64 {
+    if (@sizeOf(usize) == 4) {
+        var result: i64 = 0;
+        switch (linux.errno(linux.llseek(fd, offset, &result, whence))) {
+            .SUCCESS => return @intCast(result),
+            else => |e| return errnoError(e),
+        }
+    }
+    const rc = linux.lseek(fd, offset, whence);
+    switch (linux.errno(rc)) {
+        .SUCCESS => return rc,
+        else => |e| return errnoError(e),
+    }
+}
+
 pub const Logger = struct {
     gpa: Allocator,
     fs: Fs,
@@ -163,8 +179,7 @@ pub const Logger = struct {
             else => |e| return errnoError(e),
         }
         const fd: i32 = @intCast(rc);
-        const end = linux.lseek(fd, 0, linux.SEEK.END);
-        l.size = if (linux.errno(end) == .SUCCESS) end else 0;
+        l.size = seek(fd, 0, linux.SEEK.END) catch 0;
         l.fd = fd;
     }
 
