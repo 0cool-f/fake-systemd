@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Classifier (§6.2): decides from the unit content and injected facts whether a unit is a
 //! service to translate. Pure: no filesystem or configuration access.
 const std = @import("std");

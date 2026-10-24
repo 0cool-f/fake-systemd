@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! systemd-compatible output formats and exit codes for `systemctl` (spec §3.1). Wording, quoting,
 //! table layout and exit codes were checked against systemd 257 (257.13-1~deb13u1) with
 //! `systemctl --root=/`; `status`, `list-units` and its legend need a running systemd and are
@@ -344,6 +345,14 @@ pub const StatusInfo = struct {
     since: ?[]const u8 = null,
     main_pid: ?u32 = null,
     main_comm: ?[]const u8 = null,
+    /// Timers: text after `Trigger: `, for example `Sat 2025-01-01 10:00:00 UTC; 5min left`.
+    trigger: ?[]const u8 = null,
+    /// Timers: the unit the timer starts.
+    triggers: ?[]const u8 = null,
+    /// Timers: the scheduler that fires the timer (`builtin` or `cron:<adapter>`).
+    scheduler: ?[]const u8 = null,
+    /// Timers: text after `Last run: `.
+    last_run: ?[]const u8 = null,
 };
 
 /// First lines of `systemctl status`: title, `Loaded:`, `Active:` and optional `Main PID:`.
@@ -388,6 +397,11 @@ pub fn writeStatus(w: *Io.Writer, style: Style, info: StatusInfo) Error!void {
         if (info.main_comm) |c| try w.print(" ({s})", .{c});
         try w.writeByte('\n');
     }
+
+    if (info.trigger) |t| try w.print("{s:>12} {s}\n", .{ "Trigger:", t });
+    if (info.triggers) |t| try w.print("{s:>12} {s} {s}\n", .{ "Triggers:", style.bullet(), t });
+    if (info.scheduler) |t| try w.print("{s:>12} {s}\n", .{ "Scheduler:", t });
+    if (info.last_run) |t| try w.print("{s:>12} {s}\n", .{ "Last run:", t });
 }
 
 const testing = std.testing;

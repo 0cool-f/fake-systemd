@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Time zones: TZif (RFC 8536, versions 1 to 4) files with their POSIX TZ footer, bare POSIX TZ
 //! strings, and conversions between Unix time and civil time.
 const std = @import("std");
@@ -424,7 +425,8 @@ fn fromPosixOwned(gpa: Allocator, text: []const u8) ?Tz {
     return .{ .types = types, .footer = p };
 }
 
-fn loadNamed(gpa: Allocator, fs: Fs, spec: []const u8) ?Tz {
+/// A zone by name (below `/usr/share/zoneinfo`) or by absolute path; null when unreadable or invalid.
+pub fn loadNamed(gpa: Allocator, fs: Fs, spec: []const u8) ?Tz {
     if (std.mem.findScalar(u8, spec, '/') != null and spec[0] == '/') return loadFile(gpa, fs, spec);
     if (std.mem.find(u8, spec, "..") != null) return null;
     const path = std.fs.path.join(gpa, &.{ zoneinfo_dir, spec }) catch return null;

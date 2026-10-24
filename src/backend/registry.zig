@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Maps a detected init to its backend. A new backend adds one `Entry`, a field in `Storage`
 //! and a branch in `select`.
 const std = @import("std");

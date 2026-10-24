@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-invocation state shared by all verbs: dependencies, index access under the lock, caches
 //! and output helpers. Allocations come from `ctx.gpa`, which is an arena.
 const std = @import("std");
@@ -26,6 +27,9 @@ pub const Deps = struct {
 };
 
 pub const Intent = enum { read, write };
+
+/// Result of the detection of a native timer scheduler, cached for the invocation.
+pub const TimerAdapter = struct { kind: ?@import("../timers/adapters.zig").Kind };
 
 /// Names of units that a `.timer`, `.socket` or `.path` unit starts.
 pub const Activators = struct {
@@ -62,6 +66,7 @@ activators: ?Activators = null,
 /// Units whose entry changed during this `daemon-reload`; units that depend on them are not skipped.
 changed: std.StringHashMapUnmanaged(void) = .empty,
 spec_env: ?unit.specifier.Env = null,
+timer_adapter: ?TimerAdapter = null,
 
 pub fn init(ctx: *Context, deps: Deps, req: cli.systemctl.Request) !Session {
     return .{

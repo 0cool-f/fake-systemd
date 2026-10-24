@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Parser for the systemd unit-file syntax: sections, `Key=Value` lines, `#`/`;` comment lines
 //! and trailing-backslash line continuation.
 const std = @import("std");

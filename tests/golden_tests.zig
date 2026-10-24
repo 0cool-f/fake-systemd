@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Golden tests of the dinit generator: every unit of `tests/corpus` is translated and compared
 //! with `tests/golden/dinit`. Run with `FAKE_SYSTEMD_UPDATE_GOLDEN=1` from the project root to
 //! rewrite the expected files after an intended change, then rebuild.

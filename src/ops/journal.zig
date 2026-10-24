@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `journalctl` over the uniform logs written by `fake-systemd --log` (spec §3.5, §6.7): unit
 //! selection, merging by timestamp, time filters, `short` and `cat` output and `--follow`.
 //! Units without such logs fall back to the native log locations of the distribution profile.

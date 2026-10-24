@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unified diff (`--- a/<path>` / `+++ b/<path>`, 3 lines of context) for `--dry-run` output.
 const std = @import("std");
 const Io = std.Io;

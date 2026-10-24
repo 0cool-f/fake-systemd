@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Init systems fake-systemd can drive (spec §11).
 const std = @import("std");
 

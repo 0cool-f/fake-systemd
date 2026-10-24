@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Timestamps of `journalctl --since` and `--until` in the formats of systemd.time(7):
 //! `now`, `today`, `yesterday`, `tomorrow`, `@<unix seconds>`, relative `-1h`, `+5min`,
 //! `5 min ago`, `1h left`, and absolute `YYYY-MM-DD[ HH:MM[:SS[.ffffff]]]` or `HH:MM[:SS]`

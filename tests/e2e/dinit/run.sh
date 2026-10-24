@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # End-to-end test of the dinit backend: builds the static binary, then drives a real dinit
 # (system service manager, not PID 1) in a container through systemctl.
 # Usage: tests/e2e/dinit/run.sh   (needs podman and the `fake-systemd-build` image)

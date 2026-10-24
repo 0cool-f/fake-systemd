@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Runs inside the container started by run.sh.
 export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 passed=0
@@ -171,6 +172,96 @@ for s in $(ls /svc); do
     case $s in network | syslog | dbus | postgresql) continue ;; esac
     check "golden $s passes dinit-check" sh -c "dinit-check -d /svc $s 2>&1 | grep -q 'No problems found'"
 done
+
+# --- Timers: built-in runner as a dinit service ------------------------------------------
+ln -sf fake-systemd /usr/bin/journalctl
+cat > /usr/lib/systemd/system/e2e-tick.service <<'X'
+[Unit]
+Description=Timer job
+
+[Service]
+Type=oneshot
+ExecStart=/bin/echo e2e-tick-output
+X
+cat > /usr/lib/systemd/system/e2e-tick.timer <<'X'
+[Unit]
+Description=Every five seconds
+
+[Timer]
+OnCalendar=*:*:0/5
+
+[Install]
+WantedBy=timers.target
+X
+expect "enable of a timer with a seconds calendar succeeds" 0 "" systemctl enable e2e-tick.timer
+check "the timer is assigned to the built-in runner" grep -q "^timer.e2e-tick.timer.builtin" /var/lib/fake-systemd/dinit/index
+check "the runner unit is written and translated like any unit" grep -q "^command = /usr/bin/fake-systemd --timers$" /etc/dinit.d/fake-systemd-timers
+check "the runner service passes dinit-check" dinit-check -d /usr/lib/dinit.d -d /etc/dinit.d fake-systemd-timers
+check "the runner is enabled at boot" test -L /etc/dinit.d/boot.d/fake-systemd-timers
+wait_for "dinit started the runner" 10 sh -c 'dinitctl is-started fake-systemd-timers | grep -q STARTED'
+wait_for "the timer fired at least twice" 30 sh -c '[ "$(grep -c e2e-tick-output /var/log/fake-systemd/e2e-tick.service/current)" -ge 2 ]'
+expect "journalctl -u shows the output of the timer job" 0 "e2e-tick-output" journalctl -u e2e-tick.service --no-pager
+expect "list-timers lists the timer with its service" 0 "e2e-tick.service" systemctl list-timers
+expect "status shows the trigger" 0 "Trigger:" systemctl status e2e-tick.timer
+expect "is-enabled answers enabled" 0 "enabled" systemctl is-enabled e2e-tick.timer
+expect "is-active answers active" 0 "active" systemctl is-active e2e-tick.timer
+check "the index records the run" grep -q "^timer.e2e-tick.timer.builtin.*success$" /var/lib/fake-systemd/dinit/index
+cat > /usr/lib/systemd/system/e2e-tock.service <<'X'
+[Service]
+Type=oneshot
+ExecStart=/bin/echo e2e-tock-output
+X
+cat > /usr/lib/systemd/system/e2e-tock.timer <<'X'
+[Timer]
+OnCalendar=*:*:0/5
+
+[Install]
+WantedBy=timers.target
+X
+expect "a second timer is enabled while the runner is up" 0 "" systemctl enable e2e-tock.timer
+wait_for "SIGHUP made the running runner load the new timer" 30 sh -c 'grep -q e2e-tock-output /var/log/fake-systemd/e2e-tock.service/current'
+expect "daemon-reload keeps the runner going" 0 "" systemctl daemon-reload
+expect "disable of one timer keeps the runner" 0 "" systemctl disable e2e-tick.timer
+check "the runner unit stays while a built-in timer is left" test -e /etc/systemd/system/fake-systemd-timers.service
+expect "disable of the last built-in timer succeeds" 0 "" systemctl disable e2e-tock.timer
+check "the runner unit is removed" test ! -e /etc/systemd/system/fake-systemd-timers.service
+check "the runner is no longer enabled at boot" test ! -e /etc/dinit.d/boot.d/fake-systemd-timers
+wait_for "dinit stopped the runner" 10 sh -c '! dinitctl is-started fake-systemd-timers 2>/dev/null | grep -q STARTED'
+
+# --- Timers: cronie as the native scheduler -----------------------------------------------
+cat > /usr/lib/systemd/system/e2e-cron.service <<'X'
+[Unit]
+Description=Cron job
+
+[Service]
+Type=oneshot
+ExecStart=/bin/echo e2e-cron-output
+X
+cat > /usr/lib/systemd/system/e2e-cron.timer <<'X'
+[Unit]
+Description=Every minute
+
+[Timer]
+OnCalendar=minutely
+
+[Install]
+WantedBy=timers.target
+X
+# The packaged crond service depends on boot targets that do not exist in a container.
+printf 'type = process\ncommand = /usr/bin/crond -n -s\n' > /etc/dinit.d/crond
+ln -s /etc/dinit.d/crond /etc/dinit.d/boot.d/crond
+dinitctl start crond >/dev/null 2>&1
+wait_for "dinit started crond" 10 sh -c 'dinitctl is-started crond | grep -q STARTED'
+expect "enable of a minutely timer succeeds" 0 "" systemctl enable e2e-cron.timer
+check "the timer is assigned to cronie" grep -q "^timer.e2e-cron.timer.cron:cronie" /var/lib/fake-systemd/dinit/index
+check "cron.d holds the job with the marker" grep -q "^\* \* \* \* \* root /usr/bin/fake-systemd --run-job e2e-cron.service --timer e2e-cron.timer$" /etc/cron.d/fake-systemd
+check "no runner unit is needed" test ! -e /etc/systemd/system/fake-systemd-timers.service
+wait_for "cronie ran the job within a minute" 90 sh -c 'grep -q e2e-cron-output /var/log/fake-systemd/e2e-cron.service/current'
+expect "journalctl -u shows the cron job output" 0 "e2e-cron-output" journalctl -u e2e-cron.service --no-pager
+check "the index records the cron run" grep -q "^timer.e2e-cron.timer.cron:cronie.*success$" /var/lib/fake-systemd/dinit/index
+expect "list-timers shows the cron timer" 0 "e2e-cron.timer" systemctl list-timers
+expect "disable removes the cron.d file" 0 "" systemctl disable e2e-cron.timer
+check "cron.d file is gone" test ! -e /etc/cron.d/fake-systemd
 
 dinitctl shutdown >/dev/null 2>&1
 echo "# $passed passed, $failed failed"

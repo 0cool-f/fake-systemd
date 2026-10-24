@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pure three-way decision for one generated file (§8.1, §9).
 const std = @import("std");
 

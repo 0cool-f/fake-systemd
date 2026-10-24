@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Filesystem access rooted at a directory handle. Every method takes an absolute path
 //! that is resolved relative to the root. Operations that follow symlinks (`stat`, `exists`,
 //! `readFileAlloc`, `iterateDir`, `devIno`) resolve them inside the root, so an absolute link

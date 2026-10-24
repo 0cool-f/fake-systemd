@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unit arguments: name validation and glob expansion (§3.3), and exit-code aggregation.
 const std = @import("std");
 const unit = @import("../unit/root.zig");

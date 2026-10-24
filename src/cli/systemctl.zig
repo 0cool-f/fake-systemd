@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `systemctl` argument parser (spec §3.1–§3.2). Strings in a `Request` borrow from the
 //! argument slice passed to `parse`; only the slices holding them are allocated.
 const std = @import("std");

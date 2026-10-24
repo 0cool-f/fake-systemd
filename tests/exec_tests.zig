@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end tests of `fake-systemd --exec` and `--log`: the real binary runs against units
 //! in a tmp filesystem root.
 const std = @import("std");

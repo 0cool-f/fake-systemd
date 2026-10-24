@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Where dinit services live: service names, generation targets per scope and tier, lookup
 //! order and the directory the boot service reads enabled services from.
 const std = @import("std");

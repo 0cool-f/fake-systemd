@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Backend for an unknown or unsupported init: queries answer inactive/disabled and every
 //! mutation fails with a message explaining how to select a backend.
 const std = @import("std");

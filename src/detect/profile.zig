@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Distribution profiles (spec §4.3): per-backend directory tables and conventions, selected
 //! from os-release `ID` then `ID_LIKE`. Values marked `.spec` are stated in the specification;
 //! every other table entry is a generic default that has not been checked against a distribution.

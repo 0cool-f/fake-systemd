@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Translation pipeline for one unit (§6): resolve, model, classify, native lookup, generate.
 //! `prepare` is read-only; `commit` writes the generated files and the index entry.
 const std = @import("std");

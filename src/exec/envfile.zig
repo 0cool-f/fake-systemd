@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `EnvironmentFile=` parser with systemd's `KEY=VALUE` syntax (not shell syntax).
 //! Comment lines start with `#` or `;`. Values may be quoted with `'` or `"` and span lines;
 //! a backslash before a newline continues the line. Unquoted and single-quoted text drops the

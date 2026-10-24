@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `os-release(5)` parsing and loading through `Fs`.
 const std = @import("std");
 const Fs = @import("../core/Fs.zig");

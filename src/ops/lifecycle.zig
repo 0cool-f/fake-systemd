@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! enable, disable, reenable, mask, unmask and revert (§3.1, §9).
 const std = @import("std");
 const core = @import("../core/root.zig");
@@ -8,6 +9,7 @@ const backend_pkg = @import("../backend/root.zig");
 const Session = @import("session.zig");
 const pipeline = @import("pipeline.zig");
 const units = @import("units.zig");
+const timers = @import("timers.zig");
 
 const Name = unit.name.Name;
 const Exit = cli.output.Exit;
@@ -40,8 +42,8 @@ pub fn earlyOutcome(s: *Session, verb: []const u8, plan: *const pipeline.Plan) !
             return Exit.failure;
         },
         .timer => {
-            s.ctx.diag.warn("{s}: timer units are not supported yet, nothing done", .{plan.name.full});
-            return Exit.success;
+            s.ctx.diag.err("{s}: not applicable to timer units", .{plan.name.full});
+            return Exit.failure;
         },
         .no_backend => {
             s.reportNoBackend();
@@ -69,20 +71,34 @@ fn stopAfterNow(s: *Session, verb: []const u8, name: []const u8, service: []cons
     return Exit.success;
 }
 
+/// `enable` of a timer: arms it, after the same install-config check as for services.
+fn enableTimer(s: *Session, plan: *const pipeline.Plan) !u8 {
+    if (!pipeline.hasInstallConfig(plan.unit.?)) {
+        try cli.output.writeNoInstallConfig(s.err());
+        return Exit.success;
+    }
+    return timers.arm(s, plan.name);
+}
+
 pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 {
     const gpa = s.ctx.gpa;
     if (visited.contains(name.full)) return Exit.success;
     try visited.put(gpa, name.full, {});
     const plan = try pipeline.prepare(s, name);
+    if (plan.outcome == .timer) return enableTimer(s, &plan);
     if (try earlyOutcome(s, "enable", &plan)) |code| return code;
     if (!pipeline.hasInstallConfig(plan.unit.?)) {
         try cli.output.writeNoInstallConfig(s.err());
         return Exit.success;
     }
     const service = try pipeline.commit(s, &plan, .explicit);
-    const changes = s.deps.backend.enable(s.env(), service, enableOptions(s)) catch |e| return s.backendFailed("enable", name.full, e);
-    try s.printChanges(changes);
     var code: u8 = Exit.success;
+    if (plan.class.?.kind == .timer_service) {
+        s.ctx.diag.info("{s}: started by a timer, not enabled at boot", .{name.full});
+    } else {
+        const changes = s.deps.backend.enable(s.env(), service, enableOptions(s)) catch |e| return s.backendFailed("enable", name.full, e);
+        try s.printChanges(changes);
+    }
     if (s.req.options.now) {
         const c = stopAfterNow(s, "start", name.full, service);
         if (c != 0) code = c;
@@ -100,7 +116,8 @@ pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 
 pub fn disableUnit(s: *Session, name: Name) !u8 {
     const plan = try pipeline.prepare(s, name);
     switch (plan.outcome) {
-        .masked, .unsupported, .timer => {
+        .timer => return timers.disarm(s, name),
+        .masked, .unsupported => {
             s.ctx.diag.info("{s}: nothing to disable", .{name.full});
             return Exit.success;
         },
@@ -243,7 +260,7 @@ pub fn unmask(s: *Session) !u8 {
     return runMaskVerb(s, unmaskUnit);
 }
 
-fn revertGenerated(s: *Session, name: Name) !void {
+pub fn revertGenerated(s: *Session, name: Name) !void {
     const idx = try s.index(.write);
     const entry = idx.findUnit(name.full) orelse return;
     const files = entry.files;

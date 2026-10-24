@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The uniform per-unit logger (spec §6.7): reads lines from a descriptor, prefixes each with an
 //! ISO 8601 timestamp that carries the local UTC offset, appends them to `<dir>/current` and
 //! rotates by size into `@<unix-seconds>.log`. Write failures never stop the reading side, so

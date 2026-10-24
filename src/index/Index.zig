@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! In-memory index of generated units, native services and timers, with the v4 text format (§7.4).
 //! Every slice stored in an index must outlive it; use one arena per invocation.
 const std = @import("std");
@@ -78,6 +79,8 @@ pub const Timer = struct {
     /// Unix seconds.
     last_trigger: ?i64,
     next_trigger: ?i64,
+    /// Outcome of the last run: `success`, `exit-code:N`, `signal:N` or `failed`; stored as an optional eighth field.
+    last_result: ?[]const u8 = null,
 };
 
 pub const LoadStatus = enum {
@@ -265,6 +268,10 @@ pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
         try writeOptInt(w, t.last_trigger);
         try w.writeByte('\t');
         try writeOptInt(w, t.next_trigger);
+        if (t.last_result) |r| {
+            try w.writeByte('\t');
+            try writeText(w, r);
+        }
         try w.writeByte('\n');
     }
 }
@@ -403,7 +410,7 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8, version:
             try index.native_dirs.append(arena, .{ .path = path, .mtime_ns = mtime_ns });
         }
     } else if (std.mem.eql(u8, f[0], "timer")) {
-        if (f.len != 7) return error.WrongFieldCount;
+        if (f.len != 7 and f.len != 8) return error.WrongFieldCount;
         try index.putTimer(arena, .{
             .name = try textField(arena, f[1]),
             .scheduler = try textField(arena, f[2]),
@@ -411,6 +418,7 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8, version:
             .src_stat = try hashField(f[4]),
             .last_trigger = try optIntField(f[5]),
             .next_trigger = try optIntField(f[6]),
+            .last_result = if (f.len == 8) try textField(arena, f[7]) else null,
         });
     } else {
         return error.UnknownType;
@@ -747,4 +755,24 @@ test "v4 units keep their origin and dependencies, older units load as explicit"
     var idx3 = (try parse(arena.allocator(), &diag, v3, "dinit", 1)).index;
     try testing.expectEqual(Origin.explicit, idx3.findUnit("a.service").?.origin);
     try testing.expectEqual(@as(usize, 0), idx3.findUnit("a.service").?.deps.len);
+}
+
+test "a timer line with the last result is rendered and parsed, one without stays seven fields" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var idx = init("dinit", 1);
+    try idx.putTimer(a, .{ .name = "a.timer", .scheduler = "builtin", .src_hash = 1, .src_stat = 2, .last_trigger = 10, .next_trigger = 20, .last_result = "exit-code:3" });
+    try idx.putTimer(a, .{ .name = "b.timer", .scheduler = "cron:cronie", .src_hash = 1, .src_stat = 2, .last_trigger = null, .next_trigger = null });
+    var aw: Io.Writer.Allocating = .init(a);
+    try idx.render(&aw.writer);
+    try testing.expect(std.mem.find(u8, aw.written(), "timer\ta.timer\tbuiltin\txxh3:0000000000000001\txxh3:0000000000000002\t10\t20\texit-code:3\n") != null);
+    try testing.expect(std.mem.find(u8, aw.written(), "timer\tb.timer\tcron:cronie\txxh3:0000000000000001\txxh3:0000000000000002\t-\t-\n") != null);
+    var out: [256]u8 = undefined;
+    var w: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&w, .info);
+    const loaded = try parse(a, &diag, aw.written(), "dinit", 1);
+    try testing.expectEqual(@as(usize, 0), loaded.dropped);
+    try testing.expectEqualStrings("exit-code:3", loaded.index.timers.items[0].last_result.?);
+    try testing.expect(loaded.index.timers.items[1].last_result == null);
 }

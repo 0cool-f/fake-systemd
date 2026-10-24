@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `RuntimeDirectory=`, `StateDirectory=`, `CacheDirectory=`, `LogsDirectory=` and
 //! `ConfigurationDirectory=`: creation with the configured mode, ownership for the service
 //! account, the `$RUNTIME_DIRECTORY`-style variables, and removal of runtime directories.

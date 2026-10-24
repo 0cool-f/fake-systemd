@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Executable extraction shared by all backends (§6.3): wrapper stripping, interpreter handling
 //! and path normalization. A backend supplies the command words of a native service; this
 //! module reduces them to the program that actually runs.

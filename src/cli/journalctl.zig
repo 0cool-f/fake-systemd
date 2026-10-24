@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `journalctl` argument parser (spec §3.5). Strings in a `Request` borrow from the argument
 //! slice passed to `parse`.
 const std = @import("std");

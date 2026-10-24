@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! XxHash3 64-bit hashing of unit sets, stat fingerprints and generated bodies.
 const std = @import("std");
 const Io = std.Io;

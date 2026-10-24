@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared fixture for the dinit tests: a tmp root with accounts, dinit services and systemd
 //! units, plus the dinit backend bound to the harness context.
 const std = @import("std");

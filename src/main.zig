@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const std = @import("std");
 const Io = std.Io;
 const core = @import("core/root.zig");
@@ -7,6 +8,7 @@ const detect = @import("detect/root.zig");
 const backend = @import("backend/root.zig");
 const ops = @import("ops/root.zig");
 const exec = @import("exec/root.zig");
+const timers = @import("timers/runtime.zig");
 
 const usage =
     \\usage: invoke as 'systemctl' or 'journalctl' (symlinks to fake-systemd)
@@ -146,6 +148,46 @@ fn runService(init: std.process.Init, args: []const [:0]const u8, stderr: *Io.Wr
     }
 }
 
+/// Path the runner starts its jobs from: this very binary, even when the file was replaced since.
+fn selfExe(init: std.process.Init) []const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = Io.Dir.readLinkAbsolute(init.io, "/proc/self/exe", &buf) catch return backend.policy.executor_path;
+    const path = buf[0..n];
+    if (std.mem.endsWith(u8, path, " (deleted)")) return "/proc/self/exe";
+    return init.arena.allocator().dupe(u8, path) catch backend.policy.executor_path;
+}
+
+/// `--run-job` and `--timers`: one timer job, or the built-in timer runner.
+fn runTimerCommand(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, stderr: *Io.Writer) u8 {
+    const arena = init.arena.allocator();
+    const parsed = timers.args.parse(arena, args) catch |e| return fail(stderr, "cannot parse arguments: {t}", .{e});
+    const req = switch (parsed) {
+        .ok => |r| r,
+        .err => |message| {
+            stderr.print(core.Diag.prefix ++ "{s}\n{s}", .{ message, timers.args.usage }) catch return 1;
+            stderr.flush() catch return 1;
+            return 1;
+        },
+    };
+    var rt: Runtime = undefined;
+    build(&rt, init, req.root, req.scope, stdout, stderr) catch |e| return fail(stderr, "cannot initialise: {t}", .{e});
+    defer rt.fs.deinit();
+    const selected = backend.registry.select(rt.kind, &rt.backends, .{ .ctx = &rt.ctx, .profile = rt.profile });
+    const store = timers.store.init(&rt.ctx, selected) catch |e| return fail(stderr, "cannot locate the index: {t}", .{e});
+    switch (req.mode) {
+        .run_job => return timers.runjob.run(&rt.ctx, store, .{
+            .service = req.service,
+            .timer = req.timer,
+            .random_delay_us = req.random_delay_us,
+        }, .{}),
+        .timers => {
+            timers.runner.installSignals() catch |e| return fail(stderr, "cannot install the signal handlers: {t}", .{e});
+            rt.ctx.gpa = init.gpa;
+            return timers.runner.run(&rt.ctx, store, .{ .root = req.root, .exe = selfExe(init) }, timers.runner.real_clock, timers.runner.realSpawner(&init.io), timers.runner.real_signals);
+        },
+    }
+}
+
 const FailureFmt = struct {
     failure: cli.systemctl.Failure,
 
@@ -163,6 +205,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const tool = std.meta.stringToEnum(Tool, std.fs.path.basename(args[0])) orelse {
         if (exec.args.isServiceCommand(args[1..])) return runService(init, args[1..], &stderr.interface);
+        if (timers.args.isTimerCommand(args[1..])) return runTimerCommand(init, args[1..], &stdout.interface, &stderr.interface);
         try stderr.interface.writeAll(usage);
         try stderr.interface.flush();
         return 0;
@@ -184,4 +227,6 @@ test {
     _ = @import("backend/root.zig");
     _ = @import("ops/root.zig");
     _ = @import("exec/root.zig");
+    _ = @import("timers/root.zig");
+    _ = @import("timers/runtime.zig");
 }

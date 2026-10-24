@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Process execution used by backends for runtime operations: real, dry-run and recording variants.
 const std = @import("std");
 const Io = std.Io;
 
-pub const Stdio = enum { inherit, capture };
+/// `quiet` captures like `capture` and prints the standard error of the command only when it fails.
+pub const Stdio = enum { inherit, capture, quiet };
 
 pub const Result = struct {
     /// Exit status; 128 + signal number when the process was killed.
@@ -51,6 +53,12 @@ pub const Real = struct {
                 const res = try std.process.run(gpa, r.io, .{ .argv = argv });
                 try r.err.writeAll(res.stderr);
                 return .{ .code = termCode(res.term), .stdout = res.stdout };
+            },
+            .quiet => {
+                const res = try std.process.run(gpa, r.io, .{ .argv = argv });
+                const code = termCode(res.term);
+                if (code != 0) try r.err.writeAll(res.stderr);
+                return .{ .code = code, .stdout = res.stdout };
             },
         }
     }

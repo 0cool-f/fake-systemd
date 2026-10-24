@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Reading dinit files and `dinitctl` output: the command of a native service, and the state
 //! of a service from `dinitctl status`.
 const std = @import("std");

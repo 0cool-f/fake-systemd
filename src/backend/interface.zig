@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Backend interface (spec §11.1). A backend is a pointer plus a vtable: the init is chosen at
 //! run time from detection, and test backends carry state.
 const std = @import("std");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The dinit backend behind the real `ops` entry point, with a recording runner standing in
 //! for `dinitctl`.
 const std = @import("std");

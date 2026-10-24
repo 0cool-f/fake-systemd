@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unit-file specifiers (`%n`, `%i`, `%t`, ...) resolved against the unit name and the
 //! scope-dependent environment.
 const std = @import("std");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 test {
     _ = @import("enable_tests.zig");
     _ = @import("reload_tests.zig");
@@ -8,4 +9,8 @@ test {
     _ = @import("golden_tests.zig");
     _ = @import("dinit_tests.zig");
     _ = @import("exec_tests.zig");
+    _ = @import("timer_tests.zig");
+    _ = @import("timer_runtime_tests.zig");
+    _ = @import("timer_exe_tests.zig");
+    _ = @import("timers_tests.zig");
 }

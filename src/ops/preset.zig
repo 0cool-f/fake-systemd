@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `preset` and `preset-all`: apply `*.preset` files (`enable`/`disable` glob lines, first match
 //! wins, files in lexical order, a file name in a higher-priority directory shadows lower ones).
 const std = @import("std");

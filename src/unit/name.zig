@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unit names: validation, type suffixes, template/instance split and glob matching.
 const std = @import("std");
 const Allocator = std.mem.Allocator;

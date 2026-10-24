@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Marker block in generated files (§6.6) and the `fake-systemd.meta` variant for formats
 //! without comments. A comment marker starts at offset 0 or right after one leading `#!` line.
 const std = @import("std");

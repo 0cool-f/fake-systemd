@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Exec*= values: command prefixes, systemd word splitting with quotes and C escapes. `$VAR`
 //! and `${VAR}` are kept verbatim; expansion belongs to the executor.
 const std = @import("std");

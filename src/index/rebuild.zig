@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Rebuilds index entries by scanning service directories for markers (§7.7).
 const std = @import("std");
 const Fs = @import("../core/Fs.zig");

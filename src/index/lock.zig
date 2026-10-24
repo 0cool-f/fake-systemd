@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `flock` on `index.lock`: shared for reads, exclusive for writes (§7.5).
 const std = @import("std");
 const Io = std.Io;
@@ -62,6 +63,18 @@ pub fn acquire(fs: Fs, diag: *Diag, lock_abs: []const u8, mode: Mode, opts: Opti
     return .{ .io = fs.io, .file = file };
 }
 
+/// Takes an exclusive lock without waiting; null when another process holds it. Creates the file and its directories.
+pub fn tryAcquire(fs: Fs, lock_abs: []const u8) !?Lock {
+    try fs.makePath(std.fs.path.dirname(lock_abs) orelse "/");
+    const file = try fs.root.createFile(fs.io, std.mem.trimStart(u8, lock_abs, "/"), .{ .truncate = false });
+    errdefer file.close(fs.io);
+    if (!try file.tryLock(fs.io, .exclusive)) {
+        file.close(fs.io);
+        return null;
+    }
+    return .{ .io = fs.io, .file = file };
+}
+
 const testing = std.testing;
 
 test "exclusive lock excludes others until released" {
@@ -114,4 +127,16 @@ test "shared lock on a missing file does not create it" {
     var l = try acquire(fs, &diag, "/nope/index.lock", .shared, .{});
     l.release();
     try testing.expect(!fs.exists("/nope"));
+}
+
+test "tryAcquire fails while the lock is held and succeeds after release" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    const path = "/state/jobs/a.service.lock";
+    var first = (try tryAcquire(fs, path)).?;
+    try testing.expect((try tryAcquire(fs, path)) == null);
+    first.release();
+    var second = (try tryAcquire(fs, path)).?;
+    second.release();
 }

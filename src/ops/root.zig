@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `systemctl` and `journalctl` entry points: dispatch of parsed requests onto the verb modules.
 const std = @import("std");
 const Io = std.Io;
@@ -18,6 +19,7 @@ pub const edit = @import("edit.zig");
 pub const preset = @import("preset.zig");
 pub const journal = @import("journal.zig");
 pub const journal_time = @import("journal_time.zig");
+pub const timers = @import("timers.zig");
 
 const Verb = cli.systemctl.Verb;
 const Exit = cli.output.Exit;
@@ -194,5 +196,5 @@ pub fn journalctlArgs(ctx: *core.Context, deps: Deps, args: []const []const u8) 
 
 test {
     std.testing.refAllDecls(@This());
-    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset, journal, journal_time }) |m| std.testing.refAllDecls(m);
+    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset, journal, journal_time, timers }) |m| std.testing.refAllDecls(m);
 }

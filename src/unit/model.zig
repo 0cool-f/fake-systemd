@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Backend-independent unit model (§6.4): the merged, specifier-expanded settings of a resolved
 //! unit plus the directives that were recognized but not translated.
 const std = @import("std");

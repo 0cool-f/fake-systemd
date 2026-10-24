@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Test harness: a tmp root, the fake backend and a recording runner behind the real `ops` entry point.
 const std = @import("std");
 const Io = std.Io;
@@ -24,6 +25,7 @@ pub const Harness = struct {
     fake: backend.Fake,
     rec: backend.runner.Recording,
     backend_override: ?backend.Backend = null,
+    runner_override: ?backend.Runner = null,
     detected: []const u8 = "fake",
 
     pub fn init(h: *Harness) !void {
@@ -40,6 +42,7 @@ pub const Harness = struct {
         h.fake = .init(alloc);
         h.rec = .{ .gpa = alloc };
         h.backend_override = null;
+        h.runner_override = null;
         h.detected = "fake";
     }
 
@@ -90,7 +93,7 @@ pub const Harness = struct {
     pub fn deps(h: *Harness) ops.Deps {
         return .{
             .backend = h.backend_override orelse h.fake.backend(),
-            .runner = h.rec.runner(),
+            .runner = h.runner_override orelse h.rec.runner(),
             .out = &h.out.writer,
             .err = &h.err.writer,
             .detected = h.detected,
@@ -103,6 +106,15 @@ pub const Harness = struct {
         h.err.clearRetainingCapacity();
         h.diag.threshold = .notice;
         return ops.systemctlArgs(&h.ctx, h.deps(), args);
+    }
+
+    /// Runs `args` and fails with the diagnostics when the exit code is not `want`.
+    pub fn expectRun(h: *Harness, want: u8, args: []const []const u8) !void {
+        const got = h.run(args);
+        if (got != want) {
+            std.debug.print("exit {d}, wanted {d}\nstdout:\n{s}\nstderr:\n{s}\n", .{ got, want, h.stdout(), h.stderr() });
+            return error.TestUnexpectedExitCode;
+        }
     }
 
     pub fn stdout(h: *Harness) []const u8 {

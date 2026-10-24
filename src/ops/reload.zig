@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `daemon-reload` (§6.8): sync managed entries, adopt native takeovers, garbage-collect,
 //! translate eagerly when configured, then reload the backend.
 const std = @import("std");
@@ -8,6 +9,7 @@ const reconcile = @import("../reconcile/root.zig");
 const backend_pkg = @import("../backend/root.zig");
 const Session = @import("session.zig");
 const pipeline = @import("pipeline.zig");
+const timers = @import("timers.zig");
 
 const Exit = cli.output.Exit;
 const Index = index_pkg.Index;
@@ -116,6 +118,7 @@ pub fn run(s: *Session) !u8 {
         for (try dependencyOrder(s.ctx.gpa, entries)) |e| try syncEntry(s, idx, e);
         try pipeline.collectDependencies(s, idx, .daemon_reload);
         if (s.ctx.config.translate == .eager) try translateAll(s, idx);
+        try timers.reconcileAll(s);
         try s.storeConfigHash();
     }
     if (s.ctx.offline) return Exit.success;

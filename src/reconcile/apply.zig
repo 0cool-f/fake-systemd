@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Executes reconcile decisions through `Fs`, or renders them for `--dry-run` (§3.4, §8).
 //! Generated files are written before the index; callers save the index last (`Env.saveIndex`).
 const std = @import("std");

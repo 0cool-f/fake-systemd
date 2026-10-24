@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The environment of the service process, composed like systemd's manager does. Layers in
 //! increasing priority: the base (a clean `PATH` and the locale for system units, the whole
 //! environment of the manager for user units), `INVOCATION_ID`, the account variables,

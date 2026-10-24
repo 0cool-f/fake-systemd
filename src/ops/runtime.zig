@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Runtime verbs: start, stop, restart, reload and friends, kill and power (§3.1).
 const std = @import("std");
 const unit = @import("../unit/root.zig");
@@ -7,6 +8,7 @@ const Session = @import("session.zig");
 const pipeline = @import("pipeline.zig");
 const lifecycle = @import("lifecycle.zig");
 const units = @import("units.zig");
+const timers = @import("timers.zig");
 
 const Name = unit.name.Name;
 const Verb = cli.systemctl.Verb;
@@ -43,12 +45,31 @@ fn call(s: *Session, verb: Verb, plan: *const pipeline.Plan, service: []const u8
     return Exit.success;
 }
 
+/// Timers are armed and disarmed in the index; `reload` has no meaning for them.
+fn timerVerb(s: *Session, verb: Verb, name: Name) !u8 {
+    switch (verb) {
+        .start => return timers.arm(s, name),
+        .stop => return timers.disarm(s, name),
+        .restart => {
+            _ = try timers.disarm(s, name);
+            return timers.arm(s, name);
+        },
+        .try_restart => return if (timers.activeState(s, name) == .active) timers.arm(s, name) else Exit.success,
+        .reload, .reload_or_restart, .try_reload_or_restart => {
+            s.ctx.diag.err("Failed to {s} {s}: Job type {s} is not applicable for unit {s}.", .{ verb.name(), name.full, verb.name(), name.full });
+            return Exit.failure;
+        },
+        else => unreachable,
+    }
+}
+
 fn one(s: *Session, verb: Verb, name: Name) !u8 {
     const plan = try pipeline.prepare(s, name);
     if (plan.outcome == .not_found) {
         try cli.output.writeUnitDoesNotExist(s.err(), verb.name(), name.full);
         return Exit.not_installed;
     }
+    if (plan.outcome == .timer) return timerVerb(s, verb, name);
     if (plan.outcome == .unsupported and toleratesUnsupported(verb)) {
         s.ctx.diag.notice("{s}: not translated ({s}), nothing to do", .{ name.full, plan.class.?.reason });
         return Exit.success;

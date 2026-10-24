@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Test backend: deterministic generation of one marker file per unit, an in-memory service
 //! table and runtime operations that go through the `Runner`.
 const std = @import("std");

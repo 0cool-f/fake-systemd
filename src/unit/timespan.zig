@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! systemd time spans (`5min 3s`, `1h30m`, `infinity`) as microseconds.
 const std = @import("std");
 

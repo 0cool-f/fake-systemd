@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Configuration loading (§5): defaults, `/etc/fake-systemd/fake-systemd.conf`, its `.conf.d`
 //! drop-ins in lexical order, the user file in user scope, then environment overrides.
 const std = @import("std");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Native service lookup (§6.3): name candidates, executable confirmation and the decision table.
 const std = @import("std");
 const Allocator = std.mem.Allocator;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unit resolution (§6.1): lookup paths per scope, fragment, masks, aliases, drop-ins and
 //! template fallback. All filesystem access goes through `Fs`.
 const std = @import("std");

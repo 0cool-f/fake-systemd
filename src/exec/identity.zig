@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Identity of the service process: which account `User=`, `Group=` and `SupplementaryGroups=`
 //! name, and whether the executor itself switches to it.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Text of a dinit serviXXe description (dinit-service(5)) from decisions already taken by the
 //! backend: service kind, command mode, identity, dependency names and log file.
 const std = @import("std");

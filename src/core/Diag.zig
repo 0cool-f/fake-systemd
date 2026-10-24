@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Diagnostics written to a caller-provided writer, filtered by a level threshold.
 const std = @import("std");
 const Io = std.Io;

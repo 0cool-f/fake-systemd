@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Everything an operation needs: allocator, I/O, filesystem, diagnostics, scope and user paths.
 const std = @import("std");
 const Io = std.Io;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Thin wrappers over the Linux syscalls the executor needs. Failures are reported as the raw
 //! errno; `.SUCCESS` means the call worked.
 const std = @import("std");

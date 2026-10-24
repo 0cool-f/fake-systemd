@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Native-service scan (§6.3, §7.6): iterates service directories and reduces each service to
 //! its executable with a per-backend extractor. Results are cached per file: a file is read
 //! again only when its stat fingerprint differs from the cached entry.

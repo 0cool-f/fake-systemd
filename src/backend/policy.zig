@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Hybrid generation rule (§6.7): decides whether a unit can run as a plain native command or
 //! needs `fake-systemd --exec <unit>`. Pure functions over the unit model.
 const std = @import("std");

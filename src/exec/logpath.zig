@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Location of the uniform per-unit logs (spec §6.7).
 const std = @import("std");
 const core = @import("../core/root.zig");

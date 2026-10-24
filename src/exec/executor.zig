@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `fake-systemd --exec`: runs the commands of a service unit with systemd.exec(5) semantics.
 //!
 //! `start` runs `ExecStartPre=`, then replaces the process with `ExecStart=` (simple, exec,
@@ -145,7 +146,7 @@ fn readTrimmed(ctx: *const core.Context, path: []const u8) ?[]const u8 {
     return if (t.len == 0) null else t;
 }
 
-fn specifierEnv(ctx: *const core.Context) Allocator.Error!specifier.Env {
+pub fn specifierEnv(ctx: *const core.Context) Allocator.Error!specifier.Env {
     const user: specifier.UserInfo = .{
         .name = ctx.getEnv("USER") orelse if (ctx.uid == 0) "root" else "user",
         .uid = ctx.uid,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `edit`: opens a drop-in `override.conf` in the editor, then syncs the unit (§3.1).
 const std = @import("std");
 const unit = @import("../unit/root.zig");

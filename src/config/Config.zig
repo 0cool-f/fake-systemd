@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Effective configuration; `load.zig` fills it from files and the environment.
 const std = @import("std");
 const Diag = @import("../core/Diag.zig");

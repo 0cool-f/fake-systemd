@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Command line of the multi-call entry points `fake-systemd --exec` and `fake-systemd --log`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;

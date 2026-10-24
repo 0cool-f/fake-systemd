@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! dinit backend (§11.2): service description files in dinit's own format, boot enablement
 //! through `waits-for.d` links of the boot service, and runtime control through `dinitctl`.
 //!

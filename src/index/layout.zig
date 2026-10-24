@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! State-directory layout for one backend and scope (§7.1, §8.2).
 const std = @import("std");
 const types = @import("../core/types.zig");

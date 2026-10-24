@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Init detection (spec §4.1) and running check (§4.2). Every probe goes through the context's
 //! `Fs` and environment, so tests fake `/proc`, control paths and tools inside a tmp root.
 const std = @import("std");

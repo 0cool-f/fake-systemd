@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Users and groups from `/etc/passwd` and `/etc/group`, read through `Fs`. There is no NSS:
 //! accounts that live elsewhere are not found.
 const std = @import("std");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Variable expansion of command lines (systemd.service(5), "Command lines"). `${VAR}` expands
 //! in place and stays inside its word. A word that is exactly `$VAR` is replaced by the value
 //! split at whitespace, which can yield no words. `$$` is a literal dollar sign. Unset

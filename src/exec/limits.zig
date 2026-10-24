@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `Limit*=` settings translated to `setrlimit` arguments (systemd.exec(5), "Limit*=").
 const std = @import("std");
 const linux = std.os.linux;

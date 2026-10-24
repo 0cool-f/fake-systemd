@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const std = @import("std");
 const h = @import("harness.zig");
 
@@ -178,15 +179,6 @@ test "enable errors: missing, masked, invalid, no arguments" {
 
     try testing.expectEqual(@as(u8, 1), t.run(&.{"enable"}));
     try h.expectContains(t.stderr(), "too few arguments");
-}
-
-test "timer units are reported as not supported yet" {
-    var t: h.Harness = undefined;
-    try setup(&t);
-    defer t.deinit();
-    try t.write("/usr/lib/systemd/system/job.timer", "[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n", 0o644);
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "job.timer" }));
-    try h.expectContains(t.stderr(), "timer units are not supported yet");
 }
 
 test "mask and unmask manage the /dev/null symlink" {

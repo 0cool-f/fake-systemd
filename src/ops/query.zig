@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Query verbs: is-active, is-enabled, is-failed, status, show, cat, list-units,
 //! list-unit-files, list-timers and is-system-running (§3.1).
 const std = @import("std");
@@ -8,6 +9,7 @@ const Session = @import("session.zig");
 const pipeline = @import("pipeline.zig");
 const preset = @import("preset.zig");
 const units = @import("units.zig");
+const timers = @import("timers.zig");
 
 const Name = unit.name.Name;
 const output = cli.output;
@@ -25,6 +27,7 @@ fn prepareQuiet(s: *Session, name: Name) !?pipeline.Plan {
 }
 
 fn activeStatus(s: *Session, plan: pipeline.Plan) backend_pkg.interface.Status {
+    if (plan.outcome == .timer) return .{ .state = timers.activeState(s, plan.name) };
     if (s.ctx.offline) return .{ .state = .inactive };
     const service = plan.service() orelse return .{ .state = .inactive };
     return s.deps.backend.status(s.env(), service) catch .{ .state = .inactive };
@@ -35,12 +38,18 @@ fn enabledState(s: *Session, plan: pipeline.Plan) output.EnabledState {
     switch (plan.outcome) {
         .not_found => return .not_found,
         .masked => return .masked,
-        .unsupported, .timer => return .disabled,
+        .unsupported => return .disabled,
+        .timer => {
+            const st = timers.state(s, plan.name) catch return .disabled;
+            if (st.armed) return .enabled;
+            return if (installable) .disabled else .static;
+        },
         .template, .no_backend => return if (installable) .disabled else .static,
         .conflict => return .disabled,
         .native => |n| return s.deps.backend.isEnabled(s.env(), n.name) catch .disabled,
         .generate => |g| {
             if (!installable) return .static;
+            if (plan.class) |c| if (c.kind == .timer_service) return .static;
             return s.deps.backend.isEnabled(s.env(), g.generated.service_name) catch .disabled;
         },
     }
@@ -138,6 +147,14 @@ fn statusOne(s: *Session, name: Name) !u8 {
         .masked => null,
         else => enabledState(s, plan).text(),
     };
+    var timer_info: ?timers.State = null;
+    var texts: ?timers.StatusTexts = null;
+    var service: ?[]const u8 = null;
+    if (plan.outcome == .timer) {
+        timer_info = try timers.state(s, name);
+        texts = try timers.statusTexts(s, timer_info.?);
+        service = timers.serviceOfEntry(s, name);
+    }
     try output.writeStatus(s.out(), s.style(), .{
         .name = name.full,
         .description = if (plan.unit) |u| u.description else null,
@@ -145,8 +162,12 @@ fn statusOne(s: *Session, name: Name) !u8 {
         .fragment_path = plan.fragmentPath(),
         .unit_file_state = file_state,
         .active_state = st.state,
-        .sub_state = subState(st.state),
+        .sub_state = if (plan.outcome == .timer and st.state == .active) "waiting" else subState(st.state),
         .main_pid = st.pid,
+        .trigger = if (texts) |t| t.trigger else null,
+        .triggers = service,
+        .scheduler = if (timer_info) |t| (if (t.armed) t.scheduler else null) else null,
+        .last_run = if (texts) |t| t.last_run else null,
     });
     switch (plan.outcome) {
         .unsupported => try s.out().print("{s:>12} not translated by fake-systemd: {s}\n", .{ "Note:", plan.class.?.reason }),
@@ -315,12 +336,6 @@ pub fn listUnits(s: *Session) !u8 {
     return Exit.success;
 }
 
-/// Timers arrive with phase 3; the table is always empty.
 pub fn listTimers(s: *Session) !u8 {
-    const o = s.req.options;
-    if (!o.no_legend) {
-        try s.out().writeAll("0 timers listed.\n");
-        if (!o.all) try s.out().writeAll("Pass --all to see loaded but inactive timers, too.\n");
-    }
-    return Exit.success;
+    return timers.list(s);
 }
