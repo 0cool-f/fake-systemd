@@ -9,6 +9,7 @@ updates:
     directories:
       - /
       - /tests/e2e/dinit
+      - /tests/e2e/runit
       - /packaging/aur
     schedule:
       interval: weekly

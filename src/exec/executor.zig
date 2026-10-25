@@ -6,7 +6,8 @@
 //! `PIDFile=` process (forking), or
 //! runs every `ExecStart=` in sequence (oneshot). `stop`, `reload` and `stop-post` run
 //! `ExecStop=`, `ExecReload=` and `ExecStopPost=`; `stop-post` then removes the runtime
-//! directories. Setup failures use systemd's exit statuses (200 and above).
+//! directories, and `stop-main` is the part of `stop` before `ExecStopPost=`. Setup failures
+//! use systemd's exit statuses (200 and above).
 //!
 //! Unit files, environment files, accounts and directories are resolved through `Fs` and so
 //! live below the filesystem root of the context; executables, `WorkingDirectory=` and
@@ -29,7 +30,7 @@ const identity = @import("identity.zig");
 const limits = @import("limits.zig");
 const sys = @import("sys.zig");
 
-pub const Phase = enum { start, stop, reload, @"stop-post" };
+pub const Phase = enum { start, stop, reload, @"stop-post", @"stop-main" };
 
 pub const Request = struct {
     unit: []const u8,
@@ -643,14 +644,20 @@ fn removeExecPidFile(ctx: *core.Context, unit: model.Unit) void {
     };
 }
 
-/// `ExecStop=` (a failure does not prevent the stop), then the main process is terminated,
-/// then `ExecStopPost=` runs and the runtime directories go. The exit status is that of the
-/// first command that failed.
-fn stopPhase(prep: *Prepared) u8 {
+/// `ExecStop=` (a failure does not prevent the stop), then the main process is terminated.
+/// Returns the exit status of the first `ExecStop=` command that failed.
+fn stopMain(prep: *Prepared) ?u8 {
     installHandlers();
-    const unit = prep.unit;
-    var result: ?u8 = runSequence(prep, unit.exec_stop, .control);
+    const result = runSequence(prep, prep.unit.exec_stop, .control);
     if (prep.main_pid) |pid| terminateMain(prep, pid);
+    return result;
+}
+
+/// `stopMain`, then `ExecStopPost=` runs and the runtime directories go. The exit status is
+/// that of the first command that failed.
+fn stopPhase(prep: *Prepared) u8 {
+    const unit = prep.unit;
+    var result: ?u8 = stopMain(prep);
     const post = runSequence(prep, unit.exec_stop_post, .control);
     result = result orelse post;
     removeExecPidFile(prep.ctx, unit);
@@ -671,9 +678,11 @@ fn runInner(ctx: *core.Context, req: Request) !u8 {
     return switch (req.phase) {
         .start => start(&prep),
         .stop => stopPhase(&prep),
+        .@"stop-main" => stopMain(&prep) orelse 0,
         .reload => reloadPhase(&prep),
         .@"stop-post" => blk: {
             const code = control(&prep, unit.exec_stop_post);
+            removeExecPidFile(ctx, unit);
             try dirs.removeRuntime(ctx, unit);
             break :blk code;
         },

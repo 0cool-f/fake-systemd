@@ -47,6 +47,9 @@ pub const BackendDirs = struct {
     /// Services `network.target` and `network-online.target` map to; the first existing one wins.
     network: []const []const u8 = &.{},
     network_online: []const []const u8 = &.{},
+    /// Services that bring the network up, to which `network.target` and `network-online.target`
+    /// become soft dependencies when they are enabled.
+    network_providers: []const []const u8 = &.{},
 };
 
 pub const Profile = struct {
@@ -73,7 +76,11 @@ pub const Profile = struct {
 
 const sysv_dirs: []const []const u8 = &.{"/etc/init.d"};
 
+/// Services whose enabling means the network comes up; systemd-networkd has no counterpart.
+const network_providers_known: []const []const u8 = &.{ "dhcpcd", "NetworkManager", "connmand", "iwd", "wpa_supplicant", "netctl" };
+
 const dinit_generic: BackendDirs = .{
+    .network_providers = network_providers_known,
     .provenance = .spec,
     .vendor = &.{ "/usr/local/lib/dinit.d", "/usr/lib/dinit.d", "/lib/dinit.d" },
     .admin = &.{"/etc/dinit.d"},
@@ -91,17 +98,29 @@ const dinit_generic: BackendDirs = .{
     .native_logs = &.{"/var/log/dinit.log"},
 };
 
+/// runit keeps one service directory (`admin`) whatever the tier. Enabling links a service into
+/// the runlevel directory chosen by `runsvchdir`: `sv` searches `/var/service` (Void) or
+/// `/run/runit/service` (Artix), both symlinks to `/etc/runit/runsvdir/current` and so to
+/// `default`, which `enable_dir` names because it also exists in a chroot. User services exist
+/// where turnstile runs a runsvdir on `~/.config/service`; they are generated into
+/// `~/.config/sv` and linked from there.
 const runit_void: BackendDirs = .{
+    .network_providers = network_providers_known,
     .provenance = .spec,
     .admin = &.{"/etc/sv"},
-    .enable_dir = "/var/service",
+    .enable_dir = "/etc/runit/runsvdir/default",
+    .user = &.{"~/.config/sv"},
+    .user_enable_dir = "~/.config/service",
     .native_logs = &.{"/var/log/{name}/current"},
 };
 
 const runit_artix: BackendDirs = .{
+    .network_providers = network_providers_known,
     .provenance = .spec,
     .admin = &.{"/etc/runit/sv"},
-    .enable_dir = "/run/runit/service",
+    .enable_dir = "/etc/runit/runsvdir/default",
+    .user = &.{"~/.config/sv"},
+    .user_enable_dir = "~/.config/service",
     .native_logs = &.{"/var/log/{name}/current"},
 };
 
@@ -259,10 +278,11 @@ test "byName finds profiles and generic" {
 test "runit differs between Void and Artix" {
     const void_p = byName("void").?.dirs(.runit);
     try testing.expectEqualStrings("/etc/sv", void_p.admin[0]);
-    try testing.expectEqualStrings("/var/service", void_p.enable_dir.?);
+    try testing.expectEqualStrings("/etc/runit/runsvdir/default", void_p.enable_dir.?);
     const artix = byName("artix").?.dirs(.runit);
     try testing.expectEqualStrings("/etc/runit/sv", artix.admin[0]);
-    try testing.expectEqualStrings("/run/runit/service", artix.enable_dir.?);
+    try testing.expectEqualStrings("/etc/runit/runsvdir/default", artix.enable_dir.?);
+    try testing.expectEqualStrings("~/.config/service", artix.user_enable_dir.?);
     try testing.expectEqual(Provenance.spec, artix.provenance);
 }
 

@@ -195,6 +195,11 @@ pub fn writeCreatedSymlink(w: *Io.Writer, style: Style, link: []const u8, target
     try w.print("Created symlink '{s}' {s} '{s}'.\n", .{ link, style.arrow(), target });
 }
 
+/// `Created '<path>'.` for a marker file a backend writes in place of a symlink.
+pub fn writeCreatedFile(w: *Io.Writer, path: []const u8) Error!void {
+    try w.print("Created '{s}'.\n", .{path});
+}
+
 /// `Removed '<path>'.` systemd writes this line to stderr; `-q` suppresses it.
 pub fn writeRemoved(w: *Io.Writer, path: []const u8) Error!void {
     try w.print("Removed '{s}'.\n", .{path});

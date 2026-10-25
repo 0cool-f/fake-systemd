@@ -265,7 +265,7 @@ pub fn revertGenerated(s: *Session, name: Name) !void {
     const entry = idx.findUnit(name.full) orelse return;
     const files = entry.files;
     if (entry.state != .native and s.deps.backend.caps().translates and files.len > 0) {
-        const service = std.fs.path.basename(files[0].path);
+        const service = s.deps.backend.serviceOfFile(files[0].path);
         const changes = s.deps.backend.disable(s.env(), service, .{}) catch |e| blk: {
             s.ctx.diag.warn("{s}: disable failed: {t}", .{ name.full, e });
             break :blk &.{};

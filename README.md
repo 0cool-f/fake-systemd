@@ -24,7 +24,7 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 | Init | Status |
 |---|---|
 | dinit | supported |
-| runit | planned |
+| runit (Void, Artix) | supported |
 | s6 / s6-rc | planned |
 | OpenRC | planned |
 | sysvinit | planned |
@@ -179,6 +179,7 @@ The result is in `zig-out/bin`. `packaging/build-tarball.sh TARGET OUTDIR` build
 podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig fmt --check build.zig src tests
 podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build test   # unit, golden and integration tests
 tests/e2e/dinit/run.sh                                                       # real dinit in a container
+tests/e2e/runit/run.sh                                                       # real runsvdir in a Void container
 packaging/aur/test.sh                                                        # AUR package: makepkg and namcap
 ```
 

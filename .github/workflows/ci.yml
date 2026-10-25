@@ -63,3 +63,5 @@ jobs:
         run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
       - name: Run the dinit end-to-end test
         run: tests/e2e/dinit/run.sh
+      - name: Run the runit end-to-end test
+        run: tests/e2e/runit/run.sh

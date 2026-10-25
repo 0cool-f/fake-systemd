@@ -609,3 +609,20 @@ test "a second daemon-reload with nothing changed skips both units" {
     try testing.expectEqualStrings(tree, try t.snapshot());
     try testing.expectEqualStrings(index_text, try t.read("/var/lib/fake-systemd/dinit/index"));
 }
+
+test "network targets become waits-for on the enabled network providers" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "netd", "After=network.target\nRequires=network-online.target", wanted);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "netd" }));
+    try h.expectNotContains(try t.read("/usr/lib/dinit.d/netd"), "dhcpcd");
+
+    f.d.enabled_override = &.{ "NetworkManager", "dhcpcd", "sshd" };
+    try addSvc(t, "netd2", "After=network.target", wanted);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "netd2" }));
+    const content = try t.read("/usr/lib/dinit.d/netd2");
+    try h.expectContains(content, "\nwaits-for = dhcpcd\nwaits-for = NetworkManager\nafter = network\n");
+    try h.expectNotContains(content, "sshd");
+}

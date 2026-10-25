@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Native-service scan (§6.3, §7.6): iterates service directories and reduces each service to
-//! its executable with a per-backend extractor. Results are cached per file: a file is read
+//! its executable with a per-backend extractor. A service is a file, or a directory holding the
+//! command in `NativeScan.entry_file`. Results are cached per service: the command file is read
 //! again only when its stat fingerprint differs from the cached entry.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -48,8 +49,7 @@ fn findPreviousDir(previous: []const Index.NativeDir, path: []const u8) ?Index.N
 pub fn scanCached(
     gpa: Allocator,
     fs: Fs,
-    dirs: []const []const u8,
-    extractor: Extractor,
+    scan: interface.NativeScan,
     previous: []const Index.Native,
     previous_dirs: []const Index.NativeDir,
 ) !Result {
@@ -57,7 +57,7 @@ pub fn scanCached(
     var seen_dirs: std.ArrayList(Index.NativeDir) = .empty;
     var changed = false;
     var dirs_changed = false;
-    for (dirs) |dir| {
+    for (scan.dirs) |dir| {
         const dir_stat = fs.stat(dir) catch |e| switch (e) {
             error.FileNotFound, error.NotDir => continue,
             else => return e,
@@ -66,7 +66,7 @@ pub fn scanCached(
         try seen_dirs.append(gpa, .{ .path = dir, .mtime_ns = dir_stat.mtime_ns });
         if (known == null or known.?.mtime_ns != dir_stat.mtime_ns) dirs_changed = true;
         if (known != null and known.?.mtime_ns == dir_stat.mtime_ns) {
-            if (try recheckCached(gpa, fs, extractor, dir, previous, &entries)) changed = true;
+            if (try recheckCached(gpa, fs, scan, dir, previous, &entries)) changed = true;
             continue;
         }
         list_calls += 1;
@@ -75,9 +75,15 @@ pub fn scanCached(
             else => return e,
         };
         for (listing) |entry| {
-            if (entry.kind != .file and entry.kind != .sym_link) continue;
+            const wanted = if (scan.entry_file != null)
+                entry.kind == .directory or entry.kind == .sym_link
+            else
+                entry.kind == .file or entry.kind == .sym_link;
+            if (!wanted) continue;
             const path = try std.fs.path.join(gpa, &.{ dir, entry.name });
-            const fingerprint = hash.fileFingerprint(fs, path);
+            const probe = try probePath(gpa, scan, path);
+            const fingerprint = hash.fileFingerprint(fs, probe);
+            if (fingerprint == 0 and scan.entry_file != null) continue;
             if (fingerprint != 0) {
                 if (findPrevious(previous, path)) |p| {
                     if (p.file_stat == fingerprint) {
@@ -87,7 +93,7 @@ pub fn scanCached(
                 }
             }
             changed = true;
-            if (try readEntry(gpa, fs, extractor, entry.name, path, fingerprint)) |fresh| try entries.append(gpa, fresh);
+            if (try readEntry(gpa, fs, scan.extractor, entry.name, path, probe, fingerprint)) |fresh| try entries.append(gpa, fresh);
         }
     }
     if (entries.items.len != previous.len) changed = true;
@@ -108,26 +114,33 @@ pub fn scanCached(
 
 /// Appends the cached entries of an unlisted directory whose file fingerprint is unchanged and
 /// re-reads the others. Returns true when any file changed or vanished.
-fn recheckCached(gpa: Allocator, fs: Fs, extractor: Extractor, dir: []const u8, previous: []const Index.Native, entries: *std.ArrayList(Index.Native)) !bool {
-    const probe = try std.fs.path.join(gpa, &.{ dir, "x" });
-    const base = std.fs.path.dirname(probe).?;
+fn recheckCached(gpa: Allocator, fs: Fs, scan: interface.NativeScan, dir: []const u8, previous: []const Index.Native, entries: *std.ArrayList(Index.Native)) !bool {
+    const anchor = try std.fs.path.join(gpa, &.{ dir, "x" });
+    const base = std.fs.path.dirname(anchor).?;
     var changed = false;
     for (previous) |p| {
         const parent = std.fs.path.dirname(p.path) orelse continue;
         if (!std.mem.eql(u8, parent, base)) continue;
-        const fingerprint = hash.fileFingerprint(fs, p.path);
+        const probe = try probePath(gpa, scan, p.path);
+        const fingerprint = hash.fileFingerprint(fs, probe);
         if (fingerprint != 0 and fingerprint == p.file_stat) {
             try entries.append(gpa, p);
             continue;
         }
         changed = true;
-        if (try readEntry(gpa, fs, extractor, p.name, p.path, fingerprint)) |fresh| try entries.append(gpa, fresh);
+        if (try readEntry(gpa, fs, scan.extractor, p.name, p.path, probe, fingerprint)) |fresh| try entries.append(gpa, fresh);
     }
     return changed;
 }
 
-fn readEntry(gpa: Allocator, fs: Fs, extractor: Extractor, name: []const u8, path: []const u8, fingerprint: u64) !?Index.Native {
-    const content = fs.readFileAlloc(gpa, path, hash.max_file_size) catch |e| switch (e) {
+/// File that holds the command of the service at `path`.
+fn probePath(gpa: Allocator, scan: interface.NativeScan, path: []const u8) Allocator.Error![]const u8 {
+    const file = scan.entry_file orelse return path;
+    return std.fs.path.join(gpa, &.{ path, file });
+}
+
+fn readEntry(gpa: Allocator, fs: Fs, extractor: Extractor, name: []const u8, path: []const u8, probe: []const u8, fingerprint: u64) !?Index.Native {
+    const content = fs.readFileAlloc(gpa, probe, hash.max_file_size) catch |e| switch (e) {
         error.OutOfMemory => return e,
         else => return null,
     };
@@ -141,8 +154,8 @@ fn readEntry(gpa: Allocator, fs: Fs, extractor: Extractor, name: []const u8, pat
 }
 
 /// Uncached scan.
-pub fn scanDirs(gpa: Allocator, fs: Fs, dirs: []const []const u8, extractor: Extractor) ![]const interface.NativeService {
-    return (try scanCached(gpa, fs, dirs, extractor, &.{}, &.{})).services;
+pub fn scanDirs(gpa: Allocator, fs: Fs, scan: interface.NativeScan) ![]const interface.NativeService {
+    return (try scanCached(gpa, fs, scan, &.{}, &.{})).services;
 }
 
 const testing = std.testing;
@@ -178,7 +191,7 @@ test "scan extracts executables and skips owned and command-less files" {
     const a = arena.allocator();
     try fixture(fs, a);
 
-    const found = try scanDirs(a, fs, &.{ "/etc/dinit.d", "/missing" }, commandLine);
+    const found = try scanDirs(a, fs, .{ .dirs = &.{ "/etc/dinit.d", "/missing" }, .extractor = commandLine });
     try testing.expectEqual(@as(usize, 1), found.len);
     try testing.expectEqualStrings("foo", found[0].name);
     try testing.expectEqualStrings("/etc/dinit.d/foo", found[0].path);
@@ -193,31 +206,74 @@ test "cached scan reuses unchanged entries and notices additions, edits and remo
     defer arena.deinit();
     const a = arena.allocator();
     try fixture(fs, a);
-    const dirs = [_][]const u8{"/etc/dinit.d"};
+    const scan: interface.NativeScan = .{ .dirs = &.{"/etc/dinit.d"}, .extractor = commandLine };
 
-    const first = try scanCached(a, fs, &dirs, commandLine, &.{}, &.{});
+    const first = try scanCached(a, fs, scan, &.{}, &.{});
     try testing.expect(first.changed);
     try testing.expectEqual(@as(usize, 3), first.entries.len);
 
     const listed = list_calls;
-    const second = try scanCached(a, fs, &dirs, commandLine, first.entries, first.dirs);
+    const second = try scanCached(a, fs, scan, first.entries, first.dirs);
     try testing.expect(!second.changed);
     try testing.expect(!second.dirs_changed);
     try testing.expectEqual(listed, list_calls);
     try testing.expectEqual(@as(usize, 1), second.services.len);
 
     try fs.writeFileAtomic("/etc/dinit.d/baz", "command = /usr/bin/foo\n", 0o644);
-    const added = try scanCached(a, fs, &dirs, commandLine, second.entries, second.dirs);
+    const added = try scanCached(a, fs, scan, second.entries, second.dirs);
     try testing.expect(added.changed);
     try testing.expectEqual(@as(usize, 2), added.services.len);
 
     try fs.writeFileAtomic("/etc/dinit.d/baz", "command = /usr/bin/other\n", 0o644);
-    const edited = try scanCached(a, fs, &dirs, commandLine, added.entries, added.dirs);
+    const edited = try scanCached(a, fs, scan, added.entries, added.dirs);
     try testing.expect(edited.changed);
     try testing.expectEqualStrings("/usr/bin/other", edited.services[0].exec);
 
     try fs.deleteFile("/etc/dinit.d/baz");
-    const removed = try scanCached(a, fs, &dirs, commandLine, edited.entries, edited.dirs);
+    const removed = try scanCached(a, fs, scan, edited.entries, edited.dirs);
     try testing.expect(removed.changed);
     try testing.expectEqual(@as(usize, 1), removed.services.len);
+}
+
+fn runLine(gpa: Allocator, content: []const u8) Allocator.Error!?[]const []const u8 {
+    const prefix = "exec ";
+    var found: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        if (std.mem.startsWith(u8, line, prefix)) found = line[prefix.len..];
+    }
+    return execline.splitWords(gpa, found orelse return null) catch return null;
+}
+
+test "service directories are scanned through their command file and cached on its fingerprint" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try fs.makePath("/usr/bin");
+    try fs.writeFileAtomic("/usr/bin/foo", "x", 0o755);
+    try fs.makePath("/etc/sv/foo");
+    try fs.makePath("/etc/sv/bar");
+    try fs.writeFileAtomic("/etc/sv/foo/run", "#!/bin/sh\nexec /usr/bin/foo\n", 0o755);
+    try fs.makePath("/etc/sv/empty");
+    try fs.writeFileAtomic("/etc/sv/stray-file", "exec /usr/bin/foo\n", 0o644);
+    const owned = try marker.compose(a, "bar.service", "/usr/lib/systemd/system/bar.service", 1, "fake-systemd 0.1.0 t/1", "#!/bin/sh\nexec /usr/bin/bar\n");
+    try fs.writeFileAtomic("/etc/sv/bar/run", owned, 0o755);
+    const scan: interface.NativeScan = .{ .dirs = &.{"/etc/sv"}, .extractor = runLine, .entry_file = "run" };
+
+    const first = try scanCached(a, fs, scan, &.{}, &.{});
+    try testing.expectEqual(@as(usize, 1), first.services.len);
+    try testing.expectEqualStrings("foo", first.services[0].name);
+    try testing.expectEqualStrings("/etc/sv/foo", first.services[0].path);
+    try testing.expectEqualStrings("/usr/bin/foo", first.services[0].exec);
+
+    const second = try scanCached(a, fs, scan, first.entries, first.dirs);
+    try testing.expect(!second.changed);
+
+    try fs.writeFileAtomic("/etc/sv/foo/run", "#!/bin/sh\nexec /usr/bin/foo --other\n", 0o755);
+    const edited = try scanCached(a, fs, scan, second.entries, second.dirs);
+    try testing.expect(edited.changed);
+    try testing.expectEqual(@as(usize, 1), edited.services.len);
 }

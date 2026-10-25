@@ -1,0 +1,35 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: dbus-activated.service
+# Source: /usr/lib/systemd/system/dbus-activated.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:72b0056ce92aa242
+# Generator: fake-systemd 0.1.0 runit/1
+exec 2>&1
+exec /usr/bin/fake-systemd --exec dbus-activated.service
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: dbus-activated.service
+# Source: /usr/lib/systemd/system/dbus-activated.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0a64380829e1c75f
+# Generator: fake-systemd 0.1.0 runit/1
+clean=
+case "$1" in
+-1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+sv once .
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: dbus-activated.service
+# Source: /usr/lib/systemd/system/dbus-activated.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c75fcd3eba107b40
+# Generator: fake-systemd 0.1.0 runit/1
+exec /usr/bin/fake-systemd --log dbus-activated.service

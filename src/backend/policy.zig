@@ -15,10 +15,14 @@ pub const Native = struct {
     forking_pidfile: bool = false,
     /// `Type=forking` without `PIDFile=` runs as a command that is not supervised.
     forking_plain: bool = false,
-    /// `Environment=` is applied by an `env` wrapper in the command.
+    /// `Environment=` is applied by the command or script itself.
     environment: bool = false,
     /// Resource limit names (`LimitNOFILE` form) the format sets with plain numbers or `infinity`.
     limits: []const []const u8 = &.{},
+    /// `Group=` and `SupplementaryGroups=` accompany `User=` natively.
+    group: bool = false,
+    /// `UMask=` is applied by the format itself.
+    umask: bool = false,
 };
 
 /// First reason that forces the executor; `null` means the native command is enough.
@@ -135,8 +139,8 @@ pub fn executorReason(unit: model.Unit, caps: interface.Capabilities, native: Na
         if (!supervised and caps.supervision) return .forking;
     }
     if (oneshot and !caps.oneshot) return .oneshot;
-    if (unit.umask != null) return .umask;
-    if (unit.group != null or unit.supplementary_groups.len > 0) return .group;
+    if (unit.umask != null and !native.umask) return .umask;
+    if ((unit.group != null or unit.supplementary_groups.len > 0) and !native.group) return .group;
     if (unit.working_directory) |w| {
         if (!workingDirectoryPlain(w)) return .working_directory;
     }

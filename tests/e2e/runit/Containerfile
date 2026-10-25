@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+FROM ghcr.io/void-linux/void-musl:20261001R1@sha256:a4e444236a08c5b2419e9a6f653c8427f59a04d31ea1aa93b36caca9ed68eafd
+
+RUN xbps-install -Syu xbps && xbps-install -Sy runit util-linux procps-ng && xbps-remove -O

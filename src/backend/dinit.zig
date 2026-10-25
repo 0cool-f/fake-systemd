@@ -20,6 +20,7 @@ const apply = @import("../reconcile/apply.zig");
 const logpath = @import("../exec/logpath.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const network = @import("network.zig");
 const render = @import("dinit/render.zig");
 const layout = @import("dinit/layout.zig");
 const native = @import("dinit/native.zig");
@@ -58,6 +59,9 @@ const power_tool = "shutdown";
 ctx: *core.Context,
 dirs: *const profile.BackendDirs,
 vt: interface.VTable = vtable,
+/// Replaces the check of which services are enabled when the network targets are mapped; for
+/// tests.
+enabled_override: ?[]const []const u8 = null,
 
 pub fn init(ctx: *core.Context, dirs: *const profile.BackendDirs) Dinit {
     return .{ .ctx = ctx, .dirs = dirs };
@@ -195,6 +199,11 @@ fn mapDependencies(self: *Dinit, own: []const u8, u: *const model.Unit, resoluti
     try self.mapList(own, resolutions, u.requires, &.{}, &needs);
     try self.mapList(own, resolutions, u.binds_to, &.{}, &needs);
     try self.mapList(own, resolutions, u.wants, &.{needs.items}, &wants);
+    if (network.mentions(u)) {
+        for (try network.enabledProviders(self.ctx.gpa, self.dirs.network_providers, own, self.enabledLookup())) |p| {
+            if (!contains(needs.items, p) and !contains(wants.items, p)) try wants.append(self.ctx.gpa, p);
+        }
+    }
     try self.mapList(own, resolutions, u.after, &.{ needs.items, wants.items }, &after);
     try self.mapList(own, resolutions, u.before, &.{}, &before);
     return .{ .depends_on = needs.items, .waits_for = wants.items, .after = after.items, .before = before.items };
@@ -413,6 +422,16 @@ fn disable(ptr: *anyopaque, env: Env, service: []const u8, opts: interface.Enabl
 fn isEnabled(ptr: *anyopaque, _: Env, service: []const u8) anyerror!output.EnabledState {
     const self = me(ptr);
     return if (self.linked(try self.linkPath(service))) .enabled else .disabled;
+}
+
+fn serviceEnabled(ptr: *anyopaque, service: []const u8) bool {
+    const self = me(ptr);
+    const link = self.linkPath(service) catch return false;
+    return self.linked(link);
+}
+
+fn enabledLookup(self: *Dinit) network.Enabled {
+    return .{ .ptr = self, .is_enabled = serviceEnabled, .injected = self.enabled_override };
 }
 
 // ---- runtime control --------------------------------------------------------------------

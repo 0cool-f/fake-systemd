@@ -8,6 +8,7 @@ test {
     _ = @import("cache_tests.zig");
     _ = @import("golden_tests.zig");
     _ = @import("dinit_tests.zig");
+    _ = @import("runit_tests.zig");
     _ = @import("exec_tests.zig");
     _ = @import("timer_tests.zig");
     _ = @import("timer_runtime_tests.zig");

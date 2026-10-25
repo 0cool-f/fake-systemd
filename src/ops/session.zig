@@ -199,7 +199,7 @@ pub fn nativeServices(s: *Session) ![]const backend_pkg.interface.NativeService 
     if (s.natives) |n| return n;
     const idx = try s.index(.read);
     const scan = try s.deps.backend.nativeScan(.{ .ctx = s.ctx, .runner = s.deps.runner, .online = !s.ctx.offline });
-    const result = try backend_pkg.native_scan.scanCached(s.ctx.gpa, s.ctx.fs.*, scan.dirs, scan.extractor, idx.natives.items, idx.native_dirs.items);
+    const result = try backend_pkg.native_scan.scanCached(s.ctx.gpa, s.ctx.fs.*, scan, idx.natives.items, idx.native_dirs.items);
     s.natives = result.services;
     s.native_entries = result.entries;
     s.natives_changed = result.changed;
@@ -228,6 +228,7 @@ pub fn printChanges(s: *Session, changes: []const backend_pkg.interface.Change) 
             switch (c) {
                 .created => |l| try s.out().print("would create symlink '{s}' -> '{s}'\n", .{ l.link, l.target }),
                 .removed => |p| try s.out().print("would remove '{s}'\n", .{p}),
+                .created_file => |p| try s.out().print("would create '{s}'\n", .{p}),
             }
             continue;
         }
@@ -235,6 +236,7 @@ pub fn printChanges(s: *Session, changes: []const backend_pkg.interface.Change) 
         switch (c) {
             .created => |l| try output.writeCreatedSymlink(s.err(), s.style(), l.link, l.target),
             .removed => |p| try output.writeRemoved(s.err(), p),
+            .created_file => |p| try output.writeCreatedFile(s.err(), p),
         }
     }
 }

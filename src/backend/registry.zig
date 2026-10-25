@@ -7,6 +7,7 @@ const InitKind = @import("../detect/kind.zig").InitKind;
 const profile = @import("../detect/profile.zig");
 const NullBackend = @import("null.zig");
 const Dinit = @import("dinit.zig");
+const Runit = @import("runit.zig");
 const Backend = @import("interface.zig").Backend;
 
 pub const Entry = struct {
@@ -17,6 +18,7 @@ pub const Entry = struct {
 /// Backends with a real implementation.
 pub const registered = [_]Entry{
     .{ .kind = .dinit, .name = Dinit.backend_name },
+    .{ .kind = .runit, .name = Runit.backend_name },
 };
 
 pub fn isRegistered(kind: InitKind) bool {
@@ -28,6 +30,7 @@ pub fn isRegistered(kind: InitKind) bool {
 pub const Storage = struct {
     null_backend: NullBackend = .{},
     dinit: Dinit = undefined,
+    runit: Runit = undefined,
 };
 
 /// What a real backend needs to be built.
@@ -43,6 +46,10 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
             storage.dinit = .init(setup.ctx, setup.profile.dirs(.dinit));
             return storage.dinit.backend();
         },
+        .runit => {
+            storage.runit = .init(setup.ctx, setup.profile.dirs(.runit));
+            return storage.runit.backend();
+        },
         else => {
             storage.null_backend = .{ .detected = kind.name() };
             return storage.null_backend.backend();
@@ -50,14 +57,15 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
     }
 }
 
-test "dinit is registered and other kinds fall back to the null backend" {
+test "dinit and runit are registered and other kinds fall back to the null backend" {
     try std.testing.expect(isRegistered(.dinit));
-    try std.testing.expect(!isRegistered(.runit));
+    try std.testing.expect(isRegistered(.runit));
+    try std.testing.expect(!isRegistered(.s6));
     var storage: Storage = .{};
     var ctx: core.Context = undefined;
-    const b = select(.runit, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
+    const b = select(.s6, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
     try std.testing.expectEqualStrings("null", b.name());
-    try std.testing.expectEqualStrings("runit", storage.null_backend.detected);
+    try std.testing.expectEqualStrings("s6", storage.null_backend.detected);
     const d = select(.dinit, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
     try std.testing.expectEqualStrings("dinit", d.name());
     try std.testing.expect(d.caps().supervision and d.caps().soft_deps and d.caps().translates);

@@ -1,0 +1,46 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:4ac5bc63f1bb607b
+# Generator: fake-systemd 0.1.0 runit/1
+exec 2>&1
+/usr/bin/fake-systemd --exec oneshot-remain.service || exit $?
+exec /usr/bin/sleep 2147483647
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0a64380829e1c75f
+# Generator: fake-systemd 0.1.0 runit/1
+clean=
+case "$1" in
+-1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+sv once .
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:82be1c5c09d81ca6
+# Generator: fake-systemd 0.1.0 runit/1
+exec /usr/bin/fake-systemd --log oneshot-remain.service
+=== control/t 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:523ca1506c4bf47d
+# Generator: fake-systemd 0.1.0 runit/1
+MAINPID=$(cat supervise/pid) /usr/bin/fake-systemd --exec oneshot-remain.service --phase stop-main
+exit 1

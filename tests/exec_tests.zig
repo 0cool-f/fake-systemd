@@ -364,6 +364,41 @@ test "stop terminates the main process and runs ExecStop and ExecStopPost" {
     try testing.expect(!f.fs.exists("/run/fake-systemd/sl.service.pid"));
 }
 
+test "stop-main runs ExecStop and terminates the process, and leaves ExecStopPost to stop-post" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("sm.service",
+        \\ExecStart=/bin/sleep 30
+        \\ExecStop=/bin/echo stop-command
+        \\ExecStopPost=/bin/echo stop-post
+    );
+    var child = try std.process.spawn(testing.io, .{
+        .argv = try f.argv(&.{ "--exec", "sm.service" }),
+        .environ_map = &f.env,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    errdefer child.kill(testing.io);
+    try waitForFile(&f, "/run/fake-systemd/sm.service.pid");
+    try testing.io.sleep(.fromMilliseconds(200), .awake);
+    const r = try f.exec("sm.service", &.{ "--phase", "stop-main" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try expectContains(r.out, "stop-command\n");
+    try testing.expect(std.mem.find(u8, r.out, "stop-post") == null);
+    const term = try child.wait(testing.io);
+    switch (term) {
+        .signal => |s| try testing.expectEqual(linux.SIG.TERM, s),
+        else => return error.TestUnexpectedResult,
+    }
+    try testing.expect(f.fs.exists("/run/fake-systemd/sm.service.pid"));
+
+    const post = try f.exec("sm.service", &.{ "--phase", "stop-post" });
+    try testing.expectEqual(@as(u8, 0), post.code);
+    try expectContains(post.out, "stop-post\n");
+    try testing.expect(!f.fs.exists("/run/fake-systemd/sm.service.pid"));
+}
+
 test "forking services are followed through the pid file" {
     var f: Fixture = undefined;
     try f.init();

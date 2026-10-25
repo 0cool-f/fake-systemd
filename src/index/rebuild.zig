@@ -11,6 +11,8 @@ const Index = @import("Index.zig");
 pub const ScanDir = struct {
     path: []const u8,
     tier: types.Tier,
+    /// Each subdirectory is a service directory whose files carry their own markers.
+    nested: bool = false,
 };
 
 pub const Options = struct {
@@ -34,7 +36,10 @@ pub fn rebuild(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, opt
             const path = try std.fs.path.join(arena, &.{ dir.path, entry.name });
             switch (entry.kind) {
                 .file => try addFile(arena, fs, diag, index, opts.scope, dir.tier, path),
-                .directory => try addMetaDir(arena, fs, diag, index, opts.scope, dir.tier, path),
+                .directory => if (dir.nested)
+                    try addTree(arena, fs, diag, index, opts.scope, dir.tier, path, 0)
+                else
+                    try addMetaDir(arena, fs, diag, index, opts.scope, dir.tier, path),
                 else => {},
             }
         }
@@ -88,6 +93,27 @@ fn addFile(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: 
     const parsed = marker.parse(content) orelse return;
     const m = parsed.marker;
     try addEntry(arena, index, scope, tier, m.unit, m.source_hash, m.generator, .{ .path = path, .out_hash = m.body_hash, .stat = 0 });
+}
+
+const max_tree_depth = 2;
+
+/// Adds the marked files below a service directory, descending `max_tree_depth` levels.
+fn addTree(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: types.Scope, tier: types.Tier, dir: []const u8, depth: usize) !void {
+    const entries = fs.iterateDir(arena, dir) catch |e| switch (e) {
+        error.FileNotFound, error.NotDir => return,
+        else => {
+            diag.warn("cannot scan {s}: {t}", .{ dir, e });
+            return;
+        },
+    };
+    for (entries) |entry| {
+        const path = try std.fs.path.join(arena, &.{ dir, entry.name });
+        switch (entry.kind) {
+            .file => try addFile(arena, fs, diag, index, scope, tier, path),
+            .directory => if (depth + 1 < max_tree_depth and !std.mem.eql(u8, entry.name, "supervise")) try addTree(arena, fs, diag, index, scope, tier, path, depth + 1),
+            else => {},
+        }
+    }
 }
 
 fn addMetaDir(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: types.Scope, tier: types.Tier, dir: []const u8) !void {
@@ -219,4 +245,28 @@ test "rebuild names entries after the Unit field and handles shebang files" {
     try rebuild(a, fs, &diag, &idx, .{ .scope = .system, .dirs = &.{.{ .path = "/d", .tier = .admin }} });
     const u = idx.findUnit("foo@bar.service").?;
     try testing.expectEqual(hash.bodyHash("#!/bin/sh\nexec foo\n"), u.files[0].out_hash);
+}
+
+test "rebuild collects the marked files below nested service directories" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    const run = try marker.compose(a, "foo.service", "/s/foo.service", 3, "fake-systemd 0.1.0 runit/1", "#!/bin/sh\nexec foo\n");
+    const log = try marker.compose(a, "foo.service", "/s/foo.service", 3, "fake-systemd 0.1.0 runit/1", "#!/bin/sh\nexec log\n");
+    try fs.makePath("/sv/foo/log");
+    try fs.writeFileAtomic("/sv/foo/run", run, 0o755);
+    try fs.writeFileAtomic("/sv/foo/log/run", log, 0o755);
+    try fs.makePath("/sv/native");
+    try fs.writeFileAtomic("/sv/native/run", "#!/bin/sh\nexec native\n", 0o755);
+    var out: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&w, .info);
+    var idx: Index = .init("runit", 1);
+    try rebuild(a, fs, &diag, &idx, .{ .scope = .system, .dirs = &.{.{ .path = "/sv", .tier = .admin, .nested = true }} });
+    try testing.expectEqual(@as(usize, 1), idx.units.items.len);
+    const u = idx.findUnit("foo.service").?;
+    try testing.expectEqual(@as(usize, 2), u.files.len);
 }

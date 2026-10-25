@@ -44,6 +44,8 @@ pub const Extractor = *const fn (gpa: std.mem.Allocator, content: []const u8) st
 pub const NativeScan = struct {
     dirs: []const []const u8,
     extractor: Extractor,
+    /// File inside each service directory that holds the command; null when services are files.
+    entry_file: ?[]const u8 = null,
 };
 
 pub const Status = struct {
@@ -62,6 +64,8 @@ pub const EnableOptions = struct {
 pub const Change = union(enum) {
     created: struct { link: []const u8, target: []const u8 },
     removed: []const u8,
+    /// A marker file such as runit's `down` was written.
+    created_file: []const u8,
 };
 
 pub const Power = enum { reboot, poweroff, halt };
@@ -123,6 +127,8 @@ pub const VTable = struct {
     is_enabled: *const fn (ptr: *anyopaque, env: Env, service: []const u8) anyerror!output.EnabledState,
     reload_manager: *const fn (ptr: *anyopaque, env: Env) anyerror!void,
     power: *const fn (ptr: *anyopaque, env: Env, action: Power) anyerror!void,
+    /// Name of the service a generated file belongs to; null when it is the file name.
+    service_of_file: ?*const fn (path: []const u8) []const u8 = null,
 };
 
 pub const Backend = struct {
@@ -198,6 +204,12 @@ pub const Backend = struct {
 
     pub fn power(b: Backend, env: Env, action: Power) anyerror!void {
         return b.vtable.power(b.ptr, env, action);
+    }
+
+    /// Service that owns the generated file at `path`.
+    pub fn serviceOfFile(b: Backend, path: []const u8) []const u8 {
+        const f = b.vtable.service_of_file orelse return std.fs.path.basename(path);
+        return f(path);
     }
 };
 

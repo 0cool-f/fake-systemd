@@ -1,0 +1,45 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c8cd6d2671a822f0
+# Generator: fake-systemd 0.1.0 runit/1
+# sv waits: start=4294967295 stop=2
+exec 2>&1
+exec /usr/bin/worker --queue default
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:42ab6813ec0655c1
+# Generator: fake-systemd 0.1.0 runit/1
+clean=
+case "$1" in
+-1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+case "$(cat supervise/stat)" in *"want down"*) ;; *) sleep 5 ;; esac
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:d9ffc53de041c36d
+# Generator: fake-systemd 0.1.0 runit/1
+exec /usr/bin/fake-systemd --log restart-always.service
+=== control/t 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:8ec3dfb13e36ccd9
+# Generator: fake-systemd 0.1.0 runit/1
+kill -s USR1 "$(cat supervise/pid)"

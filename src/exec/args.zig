@@ -26,7 +26,7 @@ pub const Result = union(enum) {
 };
 
 pub const usage =
-    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post] [--root DIR]
+    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--root DIR]
     \\       fake-systemd --log <unit> [--user] [--root DIR] [--max-size BYTES] [--keep N]
     \\
 ;
