@@ -93,7 +93,7 @@ pub fn scanCached(
                 }
             }
             changed = true;
-            if (try readEntry(gpa, fs, scan.extractor, entry.name, path, probe, fingerprint)) |fresh| try entries.append(gpa, fresh);
+            if (try readEntry(gpa, fs, scan.extractor, serviceName(scan, entry.name), path, probe, fingerprint)) |fresh| try entries.append(gpa, fresh);
         }
     }
     if (entries.items.len != previous.len) changed = true;
@@ -131,6 +131,13 @@ fn recheckCached(gpa: Allocator, fs: Fs, scan: interface.NativeScan, dir: []cons
         if (try readEntry(gpa, fs, scan.extractor, p.name, p.path, probe, fingerprint)) |fresh| try entries.append(gpa, fresh);
     }
     return changed;
+}
+
+/// Name of the service in directory entry `entry_name`.
+fn serviceName(scan: interface.NativeScan, entry_name: []const u8) []const u8 {
+    const suffix = scan.strip_suffix orelse return entry_name;
+    if (entry_name.len > suffix.len and std.mem.endsWith(u8, entry_name, suffix)) return entry_name[0 .. entry_name.len - suffix.len];
+    return entry_name;
 }
 
 /// File that holds the command of the service at `path`.
@@ -276,4 +283,31 @@ test "service directories are scanned through their command file and cached on i
     const edited = try scanCached(a, fs, scan, second.entries, second.dirs);
     try testing.expect(edited.changed);
     try testing.expectEqual(@as(usize, 1), edited.services.len);
+}
+
+test "a stripped suffix names the service after its producer directory" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try fs.makePath("/usr/bin");
+    try fs.writeFileAtomic("/usr/bin/foo", "x", 0o755);
+    try fs.makePath("/svc/foo-srv");
+    try fs.writeFileAtomic("/svc/foo-srv/run", "command = /usr/bin/foo\n", 0o755);
+    try fs.makePath("/svc/-srv");
+    try fs.writeFileAtomic("/svc/-srv/run", "command = /usr/bin/foo\n", 0o755);
+
+    const found = try scanDirs(a, fs, .{ .dirs = &.{"/svc"}, .extractor = commandLine, .entry_file = "run", .strip_suffix = "-srv" });
+    try testing.expectEqual(@as(usize, 2), found.len);
+    var names: [2][]const u8 = undefined;
+    for (found, &names) |s, *n| n.* = s.name;
+    std.mem.sort([]const u8, &names, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.less);
+    try testing.expectEqualStrings("-srv", names[0]);
+    try testing.expectEqualStrings("foo", names[1]);
 }

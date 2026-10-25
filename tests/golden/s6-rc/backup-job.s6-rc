@@ -1,0 +1,20 @@
+=== backup-job/type 0644
+oneshot
+=== backup-job/up 0644
+#!/bin/execlineb -P
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:882dede617ed5618
+# Generator: fake-systemd 0.1.0 s6-rc/1
+pipeline -w { /usr/bin/fake-systemd --log backup-job.service }
+fdmove -c 2 1
+/usr/bin/nice -n 10 /usr/bin/backup --all
+=== backup-job/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: backup-job.service
+Source: /usr/lib/systemd/system/backup-job.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:5af6a86071bcd849

@@ -1,0 +1,69 @@
+=== simple-daemon-srv/type 0644
+longrun
+=== simple-daemon-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fe230ecbbd21992a
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/bin/exporter --listen 127.0.0.1:9100 --log.level=info
+=== simple-daemon-srv/finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:4b617861e5b765cc
+# Generator: fake-systemd 0.1.0 s6-rc/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+if [ -n "$clean" ]; then
+    s6-svc -O .
+else
+    :
+fi
+=== simple-daemon-srv/producer-for 0644
+simple-daemon-log
+=== simple-daemon-srv/timeout-kill 0644
+90000
+=== simple-daemon-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: simple-daemon.service
+Source: /usr/lib/systemd/system/simple-daemon.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:b1201956de366468
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
+=== simple-daemon-log/type 0644
+longrun
+=== simple-daemon-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1cdbf9468fd347d5
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log simple-daemon.service
+=== simple-daemon-log/consumer-for 0644
+simple-daemon-srv
+=== simple-daemon-log/pipeline-name 0644
+simple-daemon
+=== simple-daemon-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: simple-daemon.service
+Source: /usr/lib/systemd/system/simple-daemon.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:6c2ae227bc8b4245
+Body-Hash: pipeline-name xxh3:a161eba84ffe692c

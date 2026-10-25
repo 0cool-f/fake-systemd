@@ -23,6 +23,8 @@ pub const Native = struct {
     group: bool = false,
     /// `UMask=` is applied by the format itself.
     umask: bool = false,
+    /// The format sets a limit only from a plain number: `infinity` and `soft:hard` pairs need the executor.
+    limits_numeric: bool = false,
 };
 
 /// First reason that forces the executor; `null` means the native command is enough.
@@ -105,6 +107,12 @@ pub fn plainLimit(value: []const u8) bool {
     return parts >= 1;
 }
 
+fn digitsOnly(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |c| if (!std.ascii.isDigit(c)) return false;
+    return true;
+}
+
 fn commandReason(c: model.Command, oneshot: bool) ?Reason {
     if (c.flags.plus or c.flags.bang or c.flags.bang_bang) return .privileged_prefix;
     if (c.flags.argv0) return .argv0_prefix;
@@ -146,6 +154,7 @@ pub fn executorReason(unit: model.Unit, caps: interface.Capabilities, native: Na
     }
     for (unit.limits) |l| {
         if (!inList(native.limits, l.key) or !plainLimit(l.value)) return .limits;
+        if (native.limits_numeric and !digitsOnly(l.value)) return .limits;
     }
     if (unit.exec_start.len > 1) return .several_commands;
     for (unit.exec_start) |c| if (commandReason(c, oneshot)) |r| return r;
@@ -352,6 +361,19 @@ test "native support lifts the corresponding triggers" {
     try testing.expectEqual(@as(?Reason, .limits), executorReason(u, all_caps, native));
     u.limits = &.{.{ .key = "LimitNOFILE", .value = "2G" }};
     try testing.expectEqual(@as(?Reason, .limits), executorReason(u, all_caps, native));
+}
+
+test "numeric-only limits send infinity and soft:hard pairs to the executor" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const native: Native = .{ .limits = &.{"LimitNOFILE"}, .limits_numeric = true };
+    var u = try base(arena.allocator());
+    u.limits = &.{.{ .key = "LimitNOFILE", .value = "4096" }};
+    try testing.expect(!needsExecutorWith(u, all_caps, native));
+    for ([_][]const u8{ "infinity", "1024:4096", "1024:infinity" }) |v| {
+        u.limits = &.{.{ .key = "LimitNOFILE", .value = v }};
+        try testing.expectEqual(@as(?Reason, .limits), executorReason(u, all_caps, native));
+    }
 }
 
 test "capabilities decide on supervision and oneshot" {

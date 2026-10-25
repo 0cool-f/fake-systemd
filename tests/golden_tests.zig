@@ -266,3 +266,145 @@ const runit_entries = [_]RunitEntry{
 test "corpus translates to the golden runit services" {
     for (runit_entries) |e| try runRunitEntry(e.entry, "runit", e.expected);
 }
+
+// ---- s6 and s6-rc -----------------------------------------------------------------------
+
+const s6_world = @import("s6_world.zig");
+
+const Flavor = enum { plain, rc };
+
+/// Checks the generated files of an s6 or s6-rc service: scripts carry their marker, data files
+/// are listed in the meta file of their directory with the hash of their content, and every
+/// file belongs to the service.
+fn checkS6Files(a: std.mem.Allocator, be: h.backend.Backend, loaded: Loaded, generated: h.backend.interface.Generated, flavor: Flavor) !void {
+    var metas: usize = 0;
+    var data_files: usize = 0;
+    for (generated.files) |file| {
+        try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
+        switch (file.style) {
+            .comment => {
+                const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+                try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+                try testing.expect(parsed.bodyIntact());
+                const base = std.fs.path.basename(file.path);
+                const execline = std.mem.eql(u8, base, "up") or std.mem.eql(u8, base, "down");
+                const want = if (execline) "#!/bin/execlineb -P\n" else "#!/bin/sh\n";
+                try testing.expect(std.mem.startsWith(u8, file.content, want));
+            },
+            .meta => data_files += 1,
+            .raw => {
+                metas += 1;
+                const meta = (try marker.parseMeta(a, file.content)) orelse return error.MalformedMeta;
+                try testing.expectEqualStrings(loaded.name.full, meta.unit);
+                const dir = std.fs.path.dirname(file.path).?;
+                for (meta.bodies) |body| {
+                    const path = try std.fs.path.join(a, &.{ dir, body.path });
+                    const listed = for (generated.files) |f| {
+                        if (std.mem.eql(u8, f.path, path)) break f;
+                    } else return error.MetaListsMissingFile;
+                    try testing.expectEqual(h.index.hash.bodyHash(listed.content), body.hash);
+                }
+            },
+        }
+    }
+    try testing.expect(data_files == 0 or metas > 0);
+    if (flavor == .plain) try testing.expectEqual(@as(usize, if (data_files > 0) 1 else 0), metas);
+}
+
+fn runS6Entry(flavor: Flavor, e: Entry, golden_dir: []const u8, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    const loaded = try load(&t, e);
+    var plain: s6_world.S6 = undefined;
+    var rc: s6_world.S6Rc = undefined;
+    const be = switch (flavor) {
+        .plain => blk: {
+            try s6_world.populatePlain(&t);
+            s6_world.usePlain(&t, &plain);
+            break :blk plain.backend();
+        },
+        .rc => blk: {
+            try s6_world.populateRc(&t);
+            s6_world.useRc(&t, &rc, "generic");
+            break :blk rc.backend();
+        },
+    };
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}@{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    try testing.expectEqualStrings(service, generated.service_name);
+    try checkS6Files(a, be, loaded, generated, flavor);
+
+    const root = switch (flavor) {
+        .plain => try std.fs.path.join(a, &.{ "/etc/s6/sv", service }),
+        .rc => "/etc/s6-rc/source",
+    };
+    const text = try composeRunit(a, root, generated.files);
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/{s}/{s}", .{ golden_dir, e.golden });
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = text });
+        return;
+    }
+    testing.expectEqualStrings(expected, text) catch |err| {
+        std.debug.print("golden mismatch for {s}/{s}\n", .{ golden_dir, e.golden });
+        return err;
+    };
+}
+
+fn s6Entry(
+    comptime file: []const u8,
+    comptime request: []const u8,
+    comptime src_dir: []const u8,
+    comptime golden: []const u8,
+    comptime dir: []const u8,
+    comptime ext: []const u8,
+) RunitEntry {
+    const e: Entry = .{
+        .file = file,
+        .request = request,
+        .src_dir = src_dir,
+        .dest = "",
+        .golden = golden ++ "." ++ ext,
+        .unit_text = @embedFile("corpus/" ++ file),
+        .expected = "",
+    };
+    return .{ .entry = e, .expected = @embedFile("golden/" ++ dir ++ "/" ++ golden ++ "." ++ ext) };
+}
+
+fn s6Entries(comptime dir: []const u8, comptime ext: []const u8) [20]RunitEntry {
+    return .{
+        s6Entry("simple-daemon.service", "simple-daemon.service", vendor, "simple-daemon", dir, ext),
+        s6Entry("forking-pidfile.service", "forking-pidfile.service", vendor, "forking-pidfile", dir, ext),
+        s6Entry("forking-nopid.service", "forking-nopid.service", vendor, "forking-nopid", dir, ext),
+        s6Entry("oneshot-remain.service", "oneshot-remain.service", vendor, "oneshot-remain", dir, ext),
+        s6Entry("notify-service.service", "notify-service.service", vendor, "notify-service", dir, ext),
+        s6Entry("env-exec-pre.service", "env-exec-pre.service", vendor, "env-exec-pre", dir, ext),
+        s6Entry("runtime-dir.service", "runtime-dir.service", vendor, "runtime-dir", dir, ext),
+        s6Entry("user-ldap.service", "user-ldap.service", vendor, "user-ldap", dir, ext),
+        s6Entry("user-group.service", "user-group.service", vendor, "user-group", dir, ext),
+        s6Entry("restart-always.service", "restart-always.service", vendor, "restart-always", dir, ext),
+        s6Entry("tpl-login@.service", "tpl-login@tty1.service", vendor, "tpl-login-tty1", dir, ext),
+        s6Entry("deps-mix.service", "deps-mix.service", vendor, "deps-mix", dir, ext),
+        s6Entry("backup-job.service", "backup-job.service", vendor, "backup-job", dir, ext),
+        s6Entry("dbus-activated.service", "dbus-activated.service", vendor, "dbus-activated", dir, ext),
+        s6Entry("sandboxed.service", "sandboxed.service", vendor, "sandboxed", dir, ext),
+        s6Entry("exec-quoting.service", "exec-quoting.service", vendor, "exec-quoting", dir, ext),
+        s6Entry("exec-vars.service", "exec-vars.service", vendor, "exec-vars", dir, ext),
+        s6Entry("multi-oneshot.service", "multi-oneshot.service", vendor, "multi-oneshot", dir, ext),
+        s6Entry("reload-stop.service", "reload-stop.service", vendor, "reload-stop", dir, ext),
+        s6Entry("admin-override.service", "admin-override.service", "/etc/systemd/system", "admin-override", dir, ext),
+    };
+}
+
+test "corpus translates to the golden s6 services" {
+    for (s6Entries("s6", "s6")) |e| try runS6Entry(.plain, e.entry, "s6", e.expected);
+}
+
+test "corpus translates to the golden s6-rc services" {
+    for (s6Entries("s6-rc", "s6-rc")) |e| try runS6Entry(.rc, e.entry, "s6-rc", e.expected);
+}

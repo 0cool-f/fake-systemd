@@ -221,9 +221,18 @@ pub const UnitOutcome = struct {
     actions: []const plan.Action,
 };
 
+/// Style of a file its unit no longer lists: a leading marker block makes it a comment file,
+/// otherwise the meta file of its directory decides.
 fn inferStyle(env: *Env, path: []const u8) !Style {
     const dir = std.fs.path.dirname(path) orelse "/";
     if (std.mem.eql(u8, std.fs.path.basename(path), marker.meta_name)) return .raw;
+    if (env.fs.readFileAlloc(env.gpa, path, max_size)) |content| {
+        defer env.gpa.free(content);
+        if (marker.parse(content) != null) return .comment;
+    } else |e| switch (e) {
+        error.FileNotFound => {},
+        else => return e,
+    }
     const meta = try std.fs.path.join(env.gpa, &.{ dir, marker.meta_name });
     defer env.gpa.free(meta);
     return if (env.fs.exists(meta)) .meta else .comment;
@@ -596,4 +605,38 @@ test "meta-style files keep their marker through a dropped sibling" {
     try testing.expect(o.state == null);
     try testing.expect(!f.fs.exists("/etc/s6/foo/run"));
     try testing.expect(!f.fs.exists("/etc/s6/foo/fake-systemd.meta"));
+}
+
+test "removing a unit removes comment files and meta files that share a directory" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    var env = f.env(.explicit, false);
+    const run = try marker.compose(a, "foo.service", "/s/foo.service", 1, "g", "#!/bin/sh\nexec foo\n");
+    var meta: Io.Writer.Allocating = .init(a);
+    try marker.writeMeta(&meta.writer, .{ .unit = "foo.service", .source = "/s/foo.service", .source_hash = 1, .generator = "g", .bodies = &.{.{ .path = "type", .hash = hash.bodyHash("longrun\n") }} });
+    const spec: UnitSpec = .{
+        .name = "foo.service",
+        .scope = .system,
+        .tier = .admin,
+        .src_hash = 1,
+        .src_stat = 2,
+        .generator_version = "0.1.0",
+        .files = &.{
+            .{ .path = "/etc/s6/adminsv/foo-srv/run", .content = run, .mode = 0o755 },
+            .{ .path = "/etc/s6/adminsv/foo-srv/type", .style = .meta, .content = "longrun\n" },
+            .{ .path = "/etc/s6/adminsv/foo-srv/fake-systemd.meta", .style = .raw, .content = meta.written() },
+        },
+    };
+    _ = try syncUnit(&env, &f.index, a, spec);
+    try testing.expect(f.fs.exists("/etc/s6/adminsv/foo-srv/run"));
+    try testing.expect(f.fs.exists("/etc/s6/adminsv/foo-srv/type"));
+    const o = try dropUnit(&env, &f.index, a, "foo.service");
+    try testing.expect(o.state == null);
+    for (o.actions) |action| try testing.expectEqual(plan.Action.remove, action);
+    try testing.expect(!f.fs.exists("/etc/s6/adminsv/foo-srv/run"));
+    try testing.expect(!f.fs.exists("/etc/s6/adminsv/foo-srv/type"));
+    try testing.expect(!f.fs.exists("/etc/s6/adminsv/foo-srv/fake-systemd.meta"));
+    try testing.expectEqualStrings("", f.diag_w.buffered());
 }

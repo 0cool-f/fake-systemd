@@ -10,6 +10,8 @@ updates:
       - /
       - /tests/e2e/dinit
       - /tests/e2e/runit
+      - /tests/e2e/s6/artix
+      - /tests/e2e/s6/alpine
       - /packaging/aur
     schedule:
       interval: weekly

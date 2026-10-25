@@ -25,7 +25,8 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 |---|---|
 | dinit | supported |
 | runit (Void, Artix) | supported |
-| s6 / s6-rc | planned |
+| s6-rc (Artix with the `s6` frontend; elsewhere compiled from source directories) | supported |
+| s6 (scan directory without s6-rc) | supported |
 | OpenRC | planned |
 | sysvinit | planned |
 | 66, BSD-style rc, BusyBox init, finit, procd, GNU Shepherd, nosh | planned (second block) |
@@ -130,6 +131,29 @@ through the root crontab, fcron) when the schedule translates exactly, otherwise
 (`fake-systemd-timers`, a service supervised by the init). Both run the same job, so logs,
 `journalctl -u` and `list-timers` behave identically. `--user` timers always use the built-in runner.
 
+### s6 and s6-rc
+
+A unit becomes the source directories of an s6-rc longrun `foo-srv` whose output feeds the logger
+`foo-log` of a pipeline named `foo` (a oneshot unit becomes an s6-rc oneshot with `up` and `down` in
+execline), or, on plain s6, a service directory linked into the scan directory. On Artix the `s6`
+frontend does the work: `enable` runs `s6 repository sync`, `s6 set enable -p`, `s6 set commit` and
+`s6 live install`. Elsewhere `enable` lists the service in the boot bundle `default` and builds a new
+database with `s6-rc-compile`, which `s6-rc-update` moves the running system to; `daemon-reload`
+builds it again.
+
+- s6-rc has one kind of dependency, so `Wants=` and the network providers become dependencies like
+  `Requires=`. With the Artix sets an enabled service pulls its dependencies into the set, so they are
+  enabled too.
+- Offline in the real root (`--root=/`) the database is built without touching a live one; inside
+  another root only the sources are written and the database is left for the target.
+- A service with `ExecStop=` runs under the executor, which stays resident and runs the stop commands
+  when it gets SIGTERM, so they run on every stop: `systemctl stop`, s6-rc stopping the service as a
+  dependent, a shutdown. (On plain s6 a oneshot that holds after its command gets them from
+  `systemctl stop` only.)
+- A oneshot without `RemainAfterExit=` runs again at each `start`: s6-rc brings it down first, which also
+  stops the services that depend on it.
+- There are no user services.
+
 ## Configuration
 
 INI files, read in this order, later ones overriding earlier ones: `/etc/fake-systemd/fake-systemd.conf`,
@@ -180,6 +204,7 @@ podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig fmt --check buil
 podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build test   # unit, golden and integration tests
 tests/e2e/dinit/run.sh                                                       # real dinit in a container
 tests/e2e/runit/run.sh                                                       # real runsvdir in a Void container
+tests/e2e/s6/run.sh                                                          # real s6-svscan and s6-rc in Artix and Alpine containers
 packaging/aur/test.sh                                                        # AUR package: makepkg and namcap
 ```
 

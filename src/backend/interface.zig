@@ -46,6 +46,9 @@ pub const NativeScan = struct {
     extractor: Extractor,
     /// File inside each service directory that holds the command; null when services are files.
     entry_file: ?[]const u8 = null,
+    /// Suffix dropped from the name of a service directory, when the init names a service after
+    /// its producer directory.
+    strip_suffix: ?[]const u8 = null,
 };
 
 pub const Status = struct {

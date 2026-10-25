@@ -1,0 +1,69 @@
+=== forking-pidfile-srv/type 0644
+longrun
+=== forking-pidfile-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:a7ac6e248b1ed14e
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/bin/fake-systemd --exec forking-pidfile.service
+=== forking-pidfile-srv/finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:67d49a3e055f88dc
+# Generator: fake-systemd 0.1.0 s6-rc/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+if [ "$1" = 256 ] && [ -z "$clean" ]; then
+    :
+else
+    s6-svc -O .
+fi
+=== forking-pidfile-srv/producer-for 0644
+forking-pidfile-log
+=== forking-pidfile-srv/timeout-kill 0644
+90000
+=== forking-pidfile-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: forking-pidfile.service
+Source: /usr/lib/systemd/system/forking-pidfile.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:920a307b8fbcd77f
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
+=== forking-pidfile-log/type 0644
+longrun
+=== forking-pidfile-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:2c9fa828c92df17d
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log forking-pidfile.service
+=== forking-pidfile-log/consumer-for 0644
+forking-pidfile-srv
+=== forking-pidfile-log/pipeline-name 0644
+forking-pidfile
+=== forking-pidfile-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: forking-pidfile.service
+Source: /usr/lib/systemd/system/forking-pidfile.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:e94d816a966d9b90
+Body-Hash: pipeline-name xxh3:e2df2c2ecf9bbd24

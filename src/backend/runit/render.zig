@@ -10,6 +10,7 @@ const linux = std.os.linux;
 const model = @import("../../unit/model.zig");
 const core = @import("../../core/root.zig");
 const timespan = @import("../../unit/timespan.zig");
+const shell = @import("../shell.zig");
 
 pub const Command = union(enum) {
     /// Words of `ExecStart=`; `$$` pairs stand for a literal `$`.
@@ -57,32 +58,8 @@ const shebang = "#!/bin/sh\n";
 const hold_seconds = "2147483647";
 const default_clean_signals = "1|2|13|15";
 
-fn isPlain(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or std.mem.findScalar(u8, "_-./@%+=:,", c) != null;
-}
-
-/// Writes `word` as one shell word. `dollars` turns a `$$` pair into a literal `$`, as systemd
-/// does in command lines; otherwise the word is written as it is.
-pub fn writeWord(w: *Io.Writer, word: []const u8, dollars: bool) Io.Writer.Error!void {
-    var plain = word.len > 0;
-    for (word) |c| if (!isPlain(c)) {
-        plain = false;
-        break;
-    };
-    if (plain) return w.writeAll(word);
-    try w.writeByte('\'');
-    var i: usize = 0;
-    while (i < word.len) : (i += 1) {
-        const c = word[i];
-        if (c == '\'') {
-            try w.writeAll("'\\''");
-        } else if (dollars and c == '$' and i + 1 < word.len and word[i + 1] == '$') {
-            try w.writeByte('$');
-            i += 1;
-        } else try w.writeByte(c);
-    }
-    try w.writeByte('\'');
-}
+pub const writeWord = shell.writeWord;
+pub const plainAccount = shell.plainAccount;
 
 fn writeSvStart(w: *Io.Writer, in: Input, name: []const u8) Io.Writer.Error!void {
     if (in.svdir) |dir| {
@@ -105,13 +82,6 @@ fn writeExecutor(w: *Io.Writer, in: Input, phase: ?[]const u8) Io.Writer.Error!v
 /// True when a oneshot stays `active` after its commands succeeded.
 pub fn holdsAfterExit(u: *const model.Unit) bool {
     return u.service_type == .oneshot and u.remain_after_exit;
-}
-
-/// True for an account or group name that can sit inside a double-quoted word unescaped.
-pub fn plainAccount(name: []const u8) bool {
-    if (name.len == 0) return false;
-    for (name) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-' and c != '.') return false;
-    return true;
 }
 
 fn writeSetprivIdentity(w: *Io.Writer, user: []const u8, group: ?[]const u8, supplementary: []const []const u8) Io.Writer.Error!void {
@@ -374,25 +344,6 @@ fn writeLog(w: *Io.Writer, unit_name: []const u8, scope: core.Scope, executor_pa
 }
 
 const testing = std.testing;
-
-fn expectWord(expected: []const u8, word: []const u8, dollars: bool) !void {
-    var buf: [128]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    try writeWord(&w, word, dollars);
-    try testing.expectEqualStrings(expected, w.buffered());
-}
-
-test "words are quoted for sh" {
-    try expectWord("plain", "plain", true);
-    try expectWord("/usr/bin/foo", "/usr/bin/foo", true);
-    try expectWord("--opt=a:b,c", "--opt=a:b,c", true);
-    try expectWord("''", "", true);
-    try expectWord("'a b'", "a b", true);
-    try expectWord("'it'\\''s'", "it's", true);
-    try expectWord("'price$5'", "price$$5", true);
-    try expectWord("'price$$5'", "price$$5", false);
-    try expectWord("'$HOME'", "$HOME", false);
-}
 
 test "kill names accept plain signal names only" {
     try testing.expectEqualStrings("INT", killName("SIGINT").?);

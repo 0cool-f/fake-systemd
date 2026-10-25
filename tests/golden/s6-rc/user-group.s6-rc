@@ -1,0 +1,65 @@
+=== user-group-srv/type 0644
+longrun
+=== user-group-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fcb4be584fa52769
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/bin/fake-systemd --exec user-group.service
+=== user-group-srv/finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6e44124b63406cbf
+# Generator: fake-systemd 0.1.0 s6-rc/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+s6-svc -O .
+=== user-group-srv/producer-for 0644
+user-group-log
+=== user-group-srv/timeout-kill 0644
+90000
+=== user-group-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: user-group.service
+Source: /usr/lib/systemd/system/user-group.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:1a27ca51a678873d
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
+=== user-group-log/type 0644
+longrun
+=== user-group-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:89573bd7f5c14c2d
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log user-group.service
+=== user-group-log/consumer-for 0644
+user-group-srv
+=== user-group-log/pipeline-name 0644
+user-group
+=== user-group-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: user-group.service
+Source: /usr/lib/systemd/system/user-group.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:9972f7e49c376a71
+Body-Hash: pipeline-name xxh3:e1541b1fa4e289e4

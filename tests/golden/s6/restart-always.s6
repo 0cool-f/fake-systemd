@@ -1,0 +1,50 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:9c41e4700941ac6c
+# Generator: fake-systemd 0.1.0 s6/1
+exec 2>&1
+exec /usr/bin/worker --queue default
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:57449c80d0afc2e8
+# Generator: fake-systemd 0.1.0 s6/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+[ "$(s6-svstat -o wantedup .)" = false ] || sleep 5
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:d9ffc53de041c36d
+# Generator: fake-systemd 0.1.0 s6/1
+exec /usr/bin/fake-systemd --log restart-always.service
+=== timeout-kill 0644
+1500
+=== down-signal 0644
+SIGUSR1
+=== timeout-finish 0644
+10000
+=== fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: restart-always.service
+Source: /usr/lib/systemd/system/restart-always.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6/1
+Body-Hash: timeout-kill xxh3:b521a4f3d6d0ffc6
+Body-Hash: down-signal xxh3:52ba82ecf83dc0c8
+Body-Hash: timeout-finish xxh3:251717d241426ae8

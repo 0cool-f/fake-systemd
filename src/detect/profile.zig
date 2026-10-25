@@ -50,6 +50,12 @@ pub const BackendDirs = struct {
     /// Services that bring the network up, to which `network.target` and `network-online.target`
     /// become soft dependencies when they are enabled.
     network_providers: []const []const u8 = &.{},
+    /// s6-rc live directory, where the services of the running database have their `servicedirs`.
+    live_dir: ?[]const u8 = null,
+    /// Symlink to the compiled s6-rc database that the init boots on.
+    compiled: ?[]const u8 = null,
+    /// Service repository of s6-rc sets, whose `sources/current` directory records the enabled services.
+    repository: ?[]const u8 = null,
 };
 
 pub const Profile = struct {
@@ -124,6 +130,46 @@ const runit_artix: BackendDirs = .{
     .native_logs = &.{"/var/log/{name}/current"},
 };
 
+/// Plain s6 has no distribution convention: services live in `/etc/s6/sv`, and `/service` is
+/// the persistent scan directory that `s6-svscan` runs on; enabling links a service into it.
+const s6_generic: BackendDirs = .{
+    .network_providers = network_providers_known,
+    .provenance = .generic,
+    .admin = &.{"/etc/s6/sv"},
+    .enable_dir = "/service",
+    .native_logs = &.{"/var/log/{name}/current"},
+};
+
+/// s6-rc without a distribution convention: the sources are compiled into `/etc/s6-rc/compiled`
+/// (the default of `s6-rc-init`), a symlink to the current database, and enabling adds the
+/// service to the boot bundle `default`. s6-rc looks for its live directory in `/run/s6-rc`.
+const s6_rc_generic: BackendDirs = .{
+    .network_providers = network_providers_known,
+    .provenance = .generic,
+    .admin = &.{"/etc/s6-rc/source"},
+    .boot_target = "default",
+    .compiled = "/etc/s6-rc/compiled",
+    .live_dir = "/run/s6-rc",
+    .native_logs = &.{"/var/log/{name}/current"},
+};
+
+/// Artix keeps packaged services in `/etc/s6/sv` and local ones in `/etc/s6/adminsv`, both
+/// stores of the s6-rc repository `/etc/s6/repo`; the `s6` frontend (s6-frontend) syncs the
+/// stores into the repository, enables services in its working set, compiles the set into the
+/// boot database `/etc/s6/rc/compiled` and installs it into the live database.
+const s6_rc_artix: BackendDirs = .{
+    .network_providers = network_providers_known,
+    .provenance = .spec,
+    .vendor = &.{"/etc/s6/sv"},
+    .admin = &.{"/etc/s6/adminsv"},
+    .enable_tool = "s6",
+    .boot_target = "default",
+    .compiled = "/etc/s6/rc/compiled",
+    .live_dir = "/run/s6-rc",
+    .repository = "/etc/s6/repo",
+    .native_logs = &.{"/var/log/{name}/current"},
+};
+
 const openrc_generic: BackendDirs = .{
     .provenance = .spec,
     .admin = &.{"/etc/init.d"},
@@ -166,6 +212,8 @@ fn base() std.EnumArray(InitKind, BackendDirs) {
     return .initDefault(.{}, .{
         .dinit = dinit_generic,
         .runit = runit_void,
+        .s6 = s6_generic,
+        .s6_rc = s6_rc_generic,
         .openrc = openrc_generic,
         .sysvinit = .{ .provenance = .generic, .admin = sysv_dirs },
         .sysvinit_debian = sysv_debian,
@@ -182,11 +230,17 @@ fn withRunit(runit: BackendDirs) std.EnumArray(InitKind, BackendDirs) {
     return b;
 }
 
+fn withRunitAndS6Rc(runit: BackendDirs, s6_rc: BackendDirs) std.EnumArray(InitKind, BackendDirs) {
+    var b = withRunit(runit);
+    b.set(.s6_rc, s6_rc);
+    return b;
+}
+
 pub const generic: Profile = .{ .id = "generic", .backends = base() };
 
 pub const profiles = [_]Profile{
     .{ .id = "void", .match_ids = &.{"void"}, .backends = withRunit(runit_void) },
-    .{ .id = "artix", .match_ids = &.{"artix"}, .backends = withRunit(runit_artix) },
+    .{ .id = "artix", .match_ids = &.{"artix"}, .backends = withRunitAndS6Rc(runit_artix, s6_rc_artix) },
     .{ .id = "debian", .match_ids = &.{ "debian", "devuan", "ubuntu" }, .backends = base(), .sysvinit = .sysvinit_debian, .schedulers = &.{"cron"} },
     .{
         .id = "redhat",
@@ -327,9 +381,8 @@ test "sysvinit flavours and profile refinement" {
 }
 
 test "backends without stated data are unset" {
-    try testing.expectEqual(Provenance.unset, generic.dirs(.s6).provenance);
     try testing.expectEqual(Provenance.unset, generic.dirs(.shepherd).provenance);
-    try testing.expectEqual(@as(usize, 0), generic.dirs(.s6_rc).admin.len);
+    try testing.expectEqual(@as(usize, 0), generic.dirs(.s66).admin.len);
     try testing.expectEqual(Provenance.generic, generic.dirs(.finit).provenance);
 }
 
@@ -338,4 +391,30 @@ test "every profile carries the same backend coverage" {
         for (std.enums.values(InitKind)) |k| _ = p.dirs(k);
         try testing.expect(p.schedulers.len > 0);
     }
+}
+
+test "s6 tables carry the service, scan and live directories" {
+    const plain = generic.dirs(.s6);
+    try testing.expectEqualStrings("/etc/s6/sv", plain.admin[0]);
+    try testing.expectEqualStrings("/service", plain.enable_dir.?);
+    try testing.expectEqual(Provenance.generic, plain.provenance);
+    const rc = generic.dirs(.s6_rc);
+    try testing.expectEqualStrings("/etc/s6-rc/source", rc.admin[0]);
+    try testing.expectEqualStrings("/etc/s6-rc/compiled", rc.compiled.?);
+    try testing.expectEqualStrings("/run/s6-rc", rc.live_dir.?);
+    try testing.expectEqualStrings("default", rc.boot_target.?);
+    try testing.expect(rc.enable_tool == null and rc.repository == null);
+    for ([_][]const u8{ "alpine", "void", "chimera" }) |id| {
+        try testing.expectEqualStrings("/etc/s6-rc/source", byName(id).?.dirs(.s6_rc).admin[0]);
+    }
+}
+
+test "Artix drives s6-rc through the s6 frontend and its repository" {
+    const artix = byName("artix").?.dirs(.s6_rc);
+    try testing.expectEqual(Provenance.spec, artix.provenance);
+    try testing.expectEqualStrings("/etc/s6/sv", artix.vendor[0]);
+    try testing.expectEqualStrings("/etc/s6/adminsv", artix.admin[0]);
+    try testing.expectEqualStrings("s6", artix.enable_tool.?);
+    try testing.expectEqualStrings("/etc/s6/repo", artix.repository.?);
+    try testing.expectEqualStrings("/etc/s6/rc/compiled", artix.compiled.?);
 }

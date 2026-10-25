@@ -638,3 +638,128 @@ test "without ExecStartPost the main command replaces the executor" {
     // The shell is a direct child of the test, not of an executor process in between.
     try testing.expectEqualStrings(try std.fmt.allocPrint(f.a(), "{d}\n", .{linux.getpid()}), r.out);
 }
+
+fn spawnStoppable(f: *Fixture, unit_name: []const u8) !std.process.Child {
+    return std.process.spawn(testing.io, .{
+        .argv = try f.argv(&.{ "--exec", unit_name, "--stop-on-signal" }),
+        .environ_map = &f.env,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+}
+
+fn mainPidOf(f: *Fixture, unit_name: []const u8) !i32 {
+    const path = try std.fmt.allocPrint(f.a(), "/run/fake-systemd/{s}.pid", .{unit_name});
+    try waitForFile(f, path);
+    try testing.io.sleep(.fromMilliseconds(300), .awake);
+    return std.fmt.parseInt(i32, std.mem.trim(u8, try f.read(path), " \n"), 10);
+}
+
+test "SIGTERM to a supervisor in stop mode runs ExecStop with MAINPID, ends the main process and exits cleanly" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const body = try std.fmt.allocPrint(f.a(),
+        \\ExecStart=/bin/sleep 30
+        \\ExecStop=/bin/sh -c 'kill -0 $MAINPID && echo "$MAINPID" > {s}/stopped'
+    , .{f.root});
+    try f.unit("ss.service", body);
+    var child = try std.process.spawn(testing.io, .{
+        .argv = try f.argv(&.{ "--exec", "ss.service", "--stop-on-signal" }),
+        .environ_map = &f.env,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    errdefer child.kill(testing.io);
+    const main_pid = try mainPidOf(&f, "ss.service");
+    try testing.expect(main_pid != child.id.?);
+    sys_kill(child.id.?, .TERM);
+    const term = try child.wait(testing.io);
+    try testing.expectEqual(@as(u8, 0), term.exited);
+    const recorded = std.mem.trim(u8, try f.read("/stopped"), " \n");
+    try testing.expectEqualStrings(try std.fmt.allocPrint(f.a(), "{d}", .{main_pid}), recorded);
+    try testing.expect(linux.errno(linux.kill(main_pid, @fromBackingInt(@intCast(0)))) == .SRCH);
+}
+
+fn sys_kill(pid: i32, sig: linux.SIG) void {
+    _ = linux.kill(pid, sig);
+}
+
+test "other signals reach the main process of a supervisor in stop mode" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const body = try std.fmt.allocPrint(f.a(),
+        \\ExecStart=/bin/sh -c 'trap "touch {s}/got-usr1" USR1; echo ready > {s}/ready; while :; do sleep 0.1; done'
+        \\ExecStop=/bin/true
+    , .{ f.root, f.root });
+    try f.unit("fw.service", body);
+    var child = try spawnStoppable(&f, "fw.service");
+    errdefer child.kill(testing.io);
+    try waitForFile(&f, "/ready");
+    sys_kill(child.id.?, .USR1);
+    try waitForFile(&f, "/got-usr1");
+    sys_kill(child.id.?, .TERM);
+    const term = try child.wait(testing.io);
+    try testing.expectEqual(@as(u8, 0), term.exited);
+}
+
+test "a failing ExecStop does not keep the main process from being terminated" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("sf.service",
+        \\ExecStart=/bin/sleep 30
+        \\ExecStop=/bin/sh -c 'exit 3'
+        \\KillSignal=SIGINT
+    );
+    var child = try spawnStoppable(&f, "sf.service");
+    errdefer child.kill(testing.io);
+    const main_pid = try mainPidOf(&f, "sf.service");
+    sys_kill(child.id.?, .TERM);
+    const term = try child.wait(testing.io);
+    // SIGINT ends the main process; it is in the default success set.
+    try testing.expectEqual(@as(u8, 0), term.exited);
+    try testing.expect(linux.errno(linux.kill(main_pid, @fromBackingInt(@intCast(0)))) == .SRCH);
+}
+
+test "the exit status of the main process is the status of the supervisor when it ends by itself" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("se.service",
+        \\ExecStart=/bin/sh -c 'exit 9'
+        \\ExecStop=/bin/true
+    );
+    var child = try spawnStoppable(&f, "se.service");
+    const term = try child.wait(testing.io);
+    try testing.expectEqual(@as(u8, 9), term.exited);
+}
+
+test "the main command replaces the executor when there is nothing to run at stop" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("nostop.service", "ExecStart=/bin/sh -c 'echo $PPID'");
+    const r = try f.exec("nostop.service", &.{"--stop-on-signal"});
+    try testing.expectEqualStrings(try std.fmt.allocPrint(f.a(), "{d}\n", .{linux.getpid()}), r.out);
+}
+
+test "a SIGTERM that comes while ExecStartPre runs ends the start" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("pre.service",
+        \\ExecStartPre=/bin/sleep 5
+        \\ExecStart=/bin/sleep 30
+        \\ExecStop=/bin/true
+    );
+    var child = try spawnStoppable(&f, "pre.service");
+    errdefer child.kill(testing.io);
+    try waitForFile(&f, "/run/fake-systemd/pre.service.pid");
+    sys_kill(child.id.?, .TERM);
+    const began = Io.Timestamp.now(testing.io, .awake);
+    const term = try child.wait(testing.io);
+    try testing.expectEqual(@as(u8, 143), term.exited);
+    try testing.expect(began.untilNow(testing.io, .awake).toMilliseconds() < 4000);
+}

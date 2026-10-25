@@ -1,0 +1,32 @@
+=== oneshot-remain/type 0644
+oneshot
+=== oneshot-remain/up 0644
+#!/bin/execlineb -P
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:aefc42b6545978e3
+# Generator: fake-systemd 0.1.0 s6-rc/1
+# fake-systemd flags: remain
+pipeline -w { /usr/bin/fake-systemd --log oneshot-remain.service }
+fdmove -c 2 1
+/usr/bin/fwctl load /etc/fw/rules
+=== oneshot-remain/down 0644
+#!/bin/execlineb -P
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:a4883ad78f1ae4d6
+# Generator: fake-systemd 0.1.0 s6-rc/1
+pipeline -w { /usr/bin/fake-systemd --log oneshot-remain.service }
+fdmove -c 2 1
+/usr/bin/fwctl flush
+=== oneshot-remain/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: oneshot-remain.service
+Source: /usr/lib/systemd/system/oneshot-remain.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:5af6a86071bcd849

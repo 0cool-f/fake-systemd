@@ -84,6 +84,7 @@ const tool_probes = [_]ToolProbe{
     .{ .tool = "sv", .kind = .runit },
     .{ .tool = "update-rc.d", .kind = .sysvinit_debian },
     .{ .tool = "chkconfig", .kind = .sysvinit_redhat },
+    .{ .tool = "s6-svscan", .kind = .s6 },
 };
 
 const tool_dirs = [_][]const u8{ "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin" };
@@ -457,6 +458,7 @@ test "tools are used when nothing else matches, always offline" {
         .{ "/sbin/openrc-run", .openrc },
         .{ "/usr/sbin/update-rc.d", .sysvinit_debian },
         .{ "/usr/sbin/chkconfig", .sysvinit_redhat },
+        .{ "/usr/bin/s6-svscan", .s6 },
     };
     for (cases) |c| {
         var h: Harness = undefined;
@@ -578,4 +580,53 @@ test "a dangling absolute /proc/1/exe link never escapes the root" {
     try h.dir("/proc/1");
     try h.fs.symLink("/proc/self/exe", "/proc/1/exe");
     try expectDetection(&h, .{}, .unknown, false, .none);
+}
+
+test "s6-svscan alone is plain s6 and s6-rc, installed too, is s6-rc" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.file("/usr/bin/s6-svscan");
+    try expectDetection(&h, .{}, .s6, false, .tool);
+
+    var h2: Harness = undefined;
+    try h2.init();
+    defer h2.deinit();
+    try h2.file("/usr/bin/s6-svscan");
+    try h2.file("/usr/bin/s6-rc");
+    try expectDetection(&h2, .{}, .s6_rc, false, .tool);
+
+    var h3: Harness = undefined;
+    try h3.init();
+    defer h3.deinit();
+    try h3.file("/usr/bin/s6-svscan");
+    try h3.file("/usr/bin/sv");
+    try expectDetection(&h3, .{}, .runit, false, .tool);
+}
+
+test "a PID 1 s6-svscan is s6-rc exactly when the s6-rc live directory exists" {
+    var plain: Harness = undefined;
+    try plain.init();
+    defer plain.deinit();
+    try plain.pid1("/usr/bin/s6-svscan");
+    try plain.dir("/run/service");
+    try expectDetection(&plain, .{}, .s6, true, .proc_exe);
+
+    var rc: Harness = undefined;
+    try rc.init();
+    defer rc.deinit();
+    try rc.pid1("/usr/bin/s6-svscan");
+    try rc.dir("/run/service");
+    try rc.dir("/run/s6-rc");
+    try expectDetection(&rc, .{}, .s6_rc, true, .proc_exe);
+}
+
+test "an s6-rc live directory without s6-svscan as PID 1 is s6-rc by its control path" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/sbin/init");
+    try h.dir("/run/s6-rc");
+    try h.dir("/run/service");
+    try expectDetection(&h, .{}, .s6_rc, true, .control_path);
 }

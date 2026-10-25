@@ -24,6 +24,8 @@ const wrappers = [_]Wrapper{
     .{ .name = "chpst", .valued = &.{ "-u", "-U", "-e", "-m", "-d", "-o", "-p", "-f", "-c", "-r", "-/", "-C", "-n", "-l", "-L", "-b" } },
     .{ .name = "s6-setuidgid", .positional = 1 },
     .{ .name = "s6-envdir", .positional = 1 },
+    .{ .name = "s6-envuidgid", .valued = &.{"-D"}, .positional = 1 },
+    .{ .name = "s6-applyuidgid", .valued = &.{ "-u", "-g", "-G" } },
     .{ .name = "s6-softlimit", .valued = &.{ "-a", "-c", "-d", "-f", "-l", "-m", "-o", "-p", "-r", "-s", "-t" } },
     .{ .name = "su-exec", .positional = 1 },
 };
@@ -200,6 +202,8 @@ test "positional wrappers" {
     try expectExe("/usr/bin/foo", &.{ "s6-envdir", "-I", "/etc/env", "/usr/bin/foo" });
     try expectExe("/usr/bin/foo", &.{ "su-exec", "svc:grp", "/usr/bin/foo" });
     try expectExe("/usr/bin/foo", &.{ "s6-softlimit", "-m", "1000", "/usr/bin/foo" });
+    try expectExe("/usr/bin/foo", &.{ "s6-envuidgid", "-i", "-D", "65534:65534:", "svc", "/usr/bin/foo" });
+    try expectExe("/usr/bin/foo", &.{ "s6-applyuidgid", "-u", "1500", "-g", "1500", "-G", "1501,1502", "/usr/bin/foo" });
     try expectExe("/usr/bin/foo", &.{ "setpriv", "--reuid", "1000", "--no-new-privs", "--regid=2", "/usr/bin/foo" });
 }
 

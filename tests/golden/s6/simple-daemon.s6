@@ -1,0 +1,48 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fe230ecbbd21992a
+# Generator: fake-systemd 0.1.0 s6/1
+exec 2>&1
+exec /usr/bin/exporter --listen 127.0.0.1:9100 --log.level=info
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:4b617861e5b765cc
+# Generator: fake-systemd 0.1.0 s6/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+if [ -n "$clean" ]; then
+    s6-svc -O .
+else
+    :
+fi
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1cdbf9468fd347d5
+# Generator: fake-systemd 0.1.0 s6/1
+exec /usr/bin/fake-systemd --log simple-daemon.service
+=== timeout-kill 0644
+90000
+=== fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: simple-daemon.service
+Source: /usr/lib/systemd/system/simple-daemon.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6/1
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6

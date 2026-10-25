@@ -1,0 +1,65 @@
+=== exec-vars-srv/type 0644
+longrun
+=== exec-vars-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:ee29aab86e3d549a
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/bin/fake-systemd --exec exec-vars.service
+=== exec-vars-srv/finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6e44124b63406cbf
+# Generator: fake-systemd 0.1.0 s6-rc/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+s6-svc -O .
+=== exec-vars-srv/producer-for 0644
+exec-vars-log
+=== exec-vars-srv/timeout-kill 0644
+90000
+=== exec-vars-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: exec-vars.service
+Source: /usr/lib/systemd/system/exec-vars.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:e9388ee52860d68f
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
+=== exec-vars-log/type 0644
+longrun
+=== exec-vars-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f832e14477cd90a1
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log exec-vars.service
+=== exec-vars-log/consumer-for 0644
+exec-vars-srv
+=== exec-vars-log/pipeline-name 0644
+exec-vars
+=== exec-vars-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: exec-vars.service
+Source: /usr/lib/systemd/system/exec-vars.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:45220fb98a886ca9
+Body-Hash: pipeline-name xxh3:408e26dffecc7dd7

@@ -1,0 +1,68 @@
+=== notify-service-srv/type 0644
+longrun
+=== notify-service-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0f0e83045c2cd8ca
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/bin/fake-systemd --exec notify-service.service
+=== notify-service-srv/finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6e44124b63406cbf
+# Generator: fake-systemd 0.1.0 s6-rc/1
+clean=
+case "$1" in
+256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+s6-svc -O .
+=== notify-service-srv/producer-for 0644
+notify-service-log
+=== notify-service-srv/timeout-kill 0644
+45000
+=== notify-service-srv/down-signal 0644
+SIGINT
+=== notify-service-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: notify-service.service
+Source: /usr/lib/systemd/system/notify-service.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:639e1ad95a3d02ac
+Body-Hash: timeout-kill xxh3:182a3cb1bcc392ef
+Body-Hash: down-signal xxh3:f7cb5889c2a198c7
+=== notify-service-log/type 0644
+longrun
+=== notify-service-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f044e17008c891d5
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log notify-service.service
+=== notify-service-log/consumer-for 0644
+notify-service-srv
+=== notify-service-log/pipeline-name 0644
+notify-service
+=== notify-service-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: notify-service.service
+Source: /usr/lib/systemd/system/notify-service.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:7cf1d7e08b7cbe59
+Body-Hash: pipeline-name xxh3:51fda8de10851f5b

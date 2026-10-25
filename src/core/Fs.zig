@@ -115,6 +115,13 @@ fn readLinkRaw(fs: Fs, abs: []const u8, buf: []u8) ![]u8 {
 }
 
 /// Returns entries sorted by name; free with `freeEntries`.
+/// Kind of directory entry `e`: filesystems that do not report a type in the listing are asked.
+fn entryKind(fs: Fs, dir: Dir, e: Dir.Entry) Kind {
+    if (e.kind != .unknown) return e.kind;
+    const st = dir.statFile(fs.io, e.name, .{ .follow_symlinks = false }) catch return .unknown;
+    return st.kind;
+}
+
 pub fn iterateDir(fs: Fs, gpa: std.mem.Allocator, abs: []const u8) ![]Entry {
     var buf: [path_cap]u8 = undefined;
     var dir = try fs.root.openDir(fs.io, rel(try fs.follow(&buf, abs)), .{ .iterate = true });
@@ -125,7 +132,7 @@ pub fn iterateDir(fs: Fs, gpa: std.mem.Allocator, abs: []const u8) ![]Entry {
     while (try it.next(fs.io)) |e| {
         const name = try gpa.dupe(u8, e.name);
         errdefer gpa.free(name);
-        try list.append(gpa, .{ .name = name, .kind = e.kind });
+        try list.append(gpa, .{ .name = name, .kind = fs.entryKind(dir, e) });
     }
     std.mem.sort(Entry, list.items, {}, entryLessThan);
     return list.toOwnedSlice(gpa);

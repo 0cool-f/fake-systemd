@@ -1,0 +1,49 @@
+=== tpl-login@tty1-srv/type 0644
+longrun
+=== tpl-login@tty1-srv/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3b3d65f1ce198a05
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec 2>&1
+exec /usr/sbin/agetty --noclear tty1 38400 linux
+=== tpl-login@tty1-srv/producer-for 0644
+tpl-login@tty1-log
+=== tpl-login@tty1-srv/timeout-kill 0644
+90000
+=== tpl-login@tty1-srv/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: tpl-login@tty1.service
+Source: /usr/lib/systemd/system/tpl-login@.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: producer-for xxh3:2be988590f372405
+Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
+=== tpl-login@tty1-log/type 0644
+longrun
+=== tpl-login@tty1-log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:a803a69cbc45a21c
+# Generator: fake-systemd 0.1.0 s6-rc/1
+exec /usr/bin/fake-systemd --log tpl-login@tty1.service
+=== tpl-login@tty1-log/consumer-for 0644
+tpl-login@tty1-srv
+=== tpl-login@tty1-log/pipeline-name 0644
+tpl-login@tty1
+=== tpl-login@tty1-log/fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: tpl-login@tty1.service
+Source: /usr/lib/systemd/system/tpl-login@.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 s6-rc/1
+Body-Hash: type xxh3:391525c5570cb577
+Body-Hash: consumer-for xxh3:de74e22935fd55b6
+Body-Hash: pipeline-name xxh3:54dd806b1afc205c

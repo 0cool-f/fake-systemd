@@ -9,6 +9,10 @@
 //! directories, and `stop-main` is the part of `stop` before `ExecStopPost=`. Setup failures
 //! use systemd's exit statuses (200 and above).
 //!
+//! With `stop_on_signal`, the main process of a unit that has `ExecStop=` runs as a child of a
+//! resident supervisor that turns SIGTERM into the stop: `ExecStop=` with `$MAINPID`, then the
+//! termination of the main process, then the exit with its status. Other signals are forwarded.
+//!
 //! Unit files, environment files, accounts and directories are resolved through `Fs` and so
 //! live below the filesystem root of the context; executables, `WorkingDirectory=` and
 //! processes are real.
@@ -35,6 +39,8 @@ pub const Phase = enum { start, stop, reload, @"stop-post", @"stop-main" };
 pub const Request = struct {
     unit: []const u8,
     phase: Phase = .start,
+    /// `start` only: SIGTERM runs `ExecStop=` and terminates the main process.
+    stop_on_signal: bool = false,
 };
 
 pub const search_path = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
@@ -53,22 +59,45 @@ const exit_no_new_privileges = 227;
 var forward_pid: std.atomic.Value(i32) = .init(0);
 var forward_main: std.atomic.Value(i32) = .init(0);
 var received_signal: std.atomic.Value(u32) = .init(0);
+/// In stop mode SIGTERM is the request to stop: it ends a control command that is running and is
+/// not forwarded to the main process.
+var stop_mode: std.atomic.Value(bool) = .init(false);
+var stop_requested: std.atomic.Value(bool) = .init(false);
 
 fn onSignal(sig: linux.SIG) callconv(.c) void {
+    if (stop_mode.load(.seq_cst)) {
+        if (sig == .TERM) {
+            stop_requested.store(true, .seq_cst);
+            const pid = forward_pid.load(.seq_cst);
+            if (pid > 0) _ = linux.kill(pid, sig);
+        } else forward(sig);
+        return;
+    }
     received_signal.store(@backingInt(sig), .seq_cst);
+    forward(sig);
+}
+
+fn forward(sig: linux.SIG) void {
     const pid = forward_pid.load(.seq_cst);
     if (pid > 0) _ = linux.kill(pid, sig);
     const main_pid = forward_main.load(.seq_cst);
     if (main_pid > 0) _ = linux.kill(main_pid, sig);
 }
 
-fn installHandlers() void {
+/// Signals that a supervisor in stop mode forwards besides HUP and INT.
+const stop_mode_signals = [_]linux.SIG{ .QUIT, .USR1, .USR2, .ALRM, .WINCH };
+
+fn installHandlers(stop: bool) void {
+    stop_mode.store(stop, .seq_cst);
     const action: linux.Sigaction = .{
         .handler = .{ .handler = onSignal },
         .mask = linux.sigemptyset(),
         .flags = 0,
     };
     for ([_]linux.SIG{ .TERM, .INT, .HUP }) |sig| _ = linux.sigaction(sig, &action, null);
+    if (stop) {
+        for (stop_mode_signals) |sig| _ = linux.sigaction(sig, &action, null);
+    }
 }
 
 fn signalFromNumber(n: u32) linux.SIG {
@@ -129,6 +158,7 @@ const Prepared = struct {
     success: SuccessSet,
     /// Main process of the unit for `stop` and `reload`.
     main_pid: ?i32 = null,
+    stop_on_signal: bool = false,
 };
 
 fn lookupUser(context: ?*anyopaque, name: []const u8) ?specifier.UserInfo {
@@ -436,6 +466,7 @@ fn runSequence(prep: *Prepared, cmds: []const model.Command, role: Role) ?u8 {
     for (cmds) |cmd| {
         const sig = received_signal.load(.seq_cst);
         if (sig != 0) return @intCast(128 + sig);
+        if (stop_requested.load(.seq_cst)) return 128 + @as(u8, @intCast(@backingInt(linux.SIG.TERM)));
         sys.reapOthers(forward_main.load(.seq_cst));
         const exit = forkRun(prep, cmd) orelse {
             if (cmd.flags.ignore_failure) continue;
@@ -472,6 +503,33 @@ fn waitForPidFile(prep: *Prepared, path: []const u8) ?i32 {
     }
 }
 
+/// The stop of a followed process on request: `ExecStop=` with `$MAINPID`, whose failure does
+/// not prevent the stop, then the termination with `KillSignal=` and the exit with the status
+/// of the process. `KillMode=none` leaves the process alone.
+fn stopFollowed(prep: *Prepared, pid: i32) u8 {
+    const ctx = prep.ctx;
+    const unit = prep.unit;
+    stop_requested.store(false, .seq_cst);
+    withMainPid(prep, pid) catch |e| ctx.diag.warn("{s}: cannot set MAINPID: {t}", .{ unit.name.full, e });
+    if (runSequence(prep, unit.exec_stop, .control)) |code| ctx.diag.warn("{s}: ExecStop= failed with status {d}", .{ unit.name.full, code });
+    if (unit.kill_mode == .none) return 0;
+    terminateMain(prep, pid);
+    const exit = sys.reapChild(pid) orelse return 0;
+    sys.reapOthers(0);
+    return if (prep.success.accepts(exit)) 0 else exit.code();
+}
+
+/// Control commands of a started unit see `$MAINPID` as in the stop phase.
+fn withMainPid(prep: *Prepared, pid: i32) !void {
+    const gpa = prep.ctx.gpa;
+    const extra = [_]model.EnvVar{.{ .name = "MAINPID", .value = try std.fmt.allocPrint(gpa, "{d}", .{pid}) }};
+    prep.vars = environment.build(prep.ctx, prep.unit, prep.ident.account, &extra) catch |e| switch (e) {
+        error.EnvironmentFile => return error.EnvironmentFile,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    prep.envp = try buildEnvp(gpa, &prep.vars);
+}
+
 fn follow(prep: *Prepared, pid: i32) u8 {
     const ctx = prep.ctx;
     const fd = switch (sys.pidfdOpen(pid)) {
@@ -488,6 +546,7 @@ fn follow(prep: *Prepared, pid: i32) u8 {
             return 1;
         };
         sys.reapOthers(pid);
+        if (stopsOnSignal(prep) and stop_requested.load(.seq_cst)) return stopFollowed(prep, pid);
         if (ready) break;
     }
     const exit = sys.reapChild(pid) orelse return 0;
@@ -566,17 +625,21 @@ fn supervise(prep: *Prepared, cmd: model.Command, wait_exec: bool) u8 {
     return if (cmd.flags.ignore_failure) 0 else code;
 }
 
+fn stopsOnSignal(prep: *const Prepared) bool {
+    return prep.stop_on_signal and prep.unit.exec_stop.len > 0;
+}
+
 fn startSimple(prep: *Prepared) u8 {
     const ctx = prep.ctx;
     const unit = prep.unit;
     if (unit.exec_start.len == 0) return fail(ctx, "{s}: no ExecStart=", .{unit.name.full});
     if (unit.exec_start.len > 1) ctx.diag.warn("{s}: only the first ExecStart= is run for Type={t}", .{ unit.name.full, unit.service_type });
-    if (unit.exec_start_post.len > 0) return supervise(prep, unit.exec_start[0], unit.service_type == .exec);
+    if (unit.exec_start_post.len > 0 or stopsOnSignal(prep)) return supervise(prep, unit.exec_start[0], unit.service_type == .exec);
     execCommand(prep, unit.exec_start[0]);
 }
 
 fn start(prep: *Prepared) u8 {
-    installHandlers();
+    installHandlers(stopsOnSignal(prep));
     writeMainPid(prep.ctx, prep.unit, linux.getpid());
     if (runSequence(prep, prep.unit.exec_start_pre, .control)) |code| return code;
     return switch (prep.unit.service_type) {
@@ -588,7 +651,7 @@ fn start(prep: *Prepared) u8 {
 }
 
 fn control(prep: *Prepared, cmds: []const model.Command) u8 {
-    installHandlers();
+    installHandlers(false);
     return runSequence(prep, cmds, .control) orelse 0;
 }
 
@@ -647,7 +710,7 @@ fn removeExecPidFile(ctx: *core.Context, unit: model.Unit) void {
 /// `ExecStop=` (a failure does not prevent the stop), then the main process is terminated.
 /// Returns the exit status of the first `ExecStop=` command that failed.
 fn stopMain(prep: *Prepared) ?u8 {
-    installHandlers();
+    installHandlers(false);
     const result = runSequence(prep, prep.unit.exec_stop, .control);
     if (prep.main_pid) |pid| terminateMain(prep, pid);
     return result;
@@ -675,6 +738,7 @@ fn runInner(ctx: *core.Context, req: Request) !u8 {
     const unit = loadUnit(ctx, &db, req.unit) catch |e| return fail(ctx, "{s}: cannot load the unit: {t}", .{ req.unit, e });
     var prep: Prepared = undefined;
     if (try prepare(ctx, unit, db, req.phase, &prep)) |code| return code;
+    prep.stop_on_signal = req.stop_on_signal;
     return switch (req.phase) {
         .start => start(&prep),
         .stop => stopPhase(&prep),
