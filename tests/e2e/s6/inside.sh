@@ -356,6 +356,14 @@ wait_for "it ran again" 5 test -e /tmp/e2e-once-ran
 if [ $is_rc = 1 ]; then
     check "the oneshot is an s6-rc oneshot with up in execline" sh -c "grep -qx oneshot '$gen/e2e-once/type' && head -1 '$gen/e2e-once/up' | grep -qx '#!/bin/execlineb -P'"
 fi
+unit e2e-oncefail 'Type=oneshot
+ExecStart=/bin/false'
+expect "a oneshot whose command fails makes start fail" 1 "" systemctl start e2e-oncefail
+unit e2e-oncewait 'Type=oneshot
+ExecStart=/bin/sh -c "sleep 1; touch /tmp/e2e-oncewait-done"'
+expect "start of a oneshot returns after its command ended" 0 "" systemctl start e2e-oncewait
+check "the command of the oneshot had ended at that point" test -e /tmp/e2e-oncewait-done
+expect "the oneshot is inactive at once" 3 "inactive" systemctl is-active e2e-oncewait
 unit e2e-remain 'Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/touch /tmp/e2e-remain-start

@@ -200,10 +200,12 @@ fn writeShCommand(w: *Io.Writer, in: Input, words: ?[]const []const u8) Io.Write
 }
 
 fn writeFlags(w: *Io.Writer, flags: native.Flags) Io.Writer.Error!void {
-    if (!flags.exec_stop and !flags.remain) return;
+    if (!flags.exec_stop and !flags.remain and !flags.oneshot) return;
     try w.writeAll(native.flags_prefix);
     if (flags.exec_stop) try w.writeAll(" exec-stop");
     if (flags.remain) try w.writeAll(" remain");
+    if (flags.oneshot) try w.writeAll(" oneshot");
+    if (flags.start_timeout_ms) |ms| try w.print(" start-timeout={d}", .{ms});
     try w.writeByte('\n');
 }
 
@@ -213,6 +215,8 @@ pub fn flagsOf(u: *const model.Unit) native.Flags {
     return .{
         .exec_stop = u.service_type == .oneshot and u.exec_stop.len > 0,
         .remain = holdsAfterExit(u),
+        .oneshot = u.service_type == .oneshot and !holdsAfterExit(u),
+        .start_timeout_ms = if (u.service_type == .oneshot and !holdsAfterExit(u)) startTimeoutMs(u) else null,
     };
 }
 

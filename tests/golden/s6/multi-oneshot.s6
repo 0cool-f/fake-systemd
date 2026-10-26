@@ -4,8 +4,9 @@
 # Unit: multi-oneshot.service
 # Source: /usr/lib/systemd/system/multi-oneshot.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:ef4088ac9773e8b1
+# Body-Hash: xxh3:d61b354529e28277
 # Generator: fake-systemd 0.1.0 s6/1
+# fake-systemd flags: oneshot
 exec 2>&1
 exec /usr/bin/fake-systemd --exec multi-oneshot.service
 === finish 0755

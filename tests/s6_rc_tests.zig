@@ -865,3 +865,15 @@ test "Artix: a service whose sources exist stays in the set, so does a package s
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     try testing.expect(!f.sc.called(&.{ "s6", "set", "disable" }));
 }
+
+test "starting a oneshot whose command failed exits 1" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try addOneshot(t, "job", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "job" }));
+    f.sc.rules = &.{.{ .prefix = &.{ "s6-rc", "-l", live, "-u", "change", "job" }, .code = 1, .stdout = "s6-rc: warning: unable to start service job: command exited 1\n" }};
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "job" }));
+    try h.expectContains(t.stderr(), "unable to start service job");
+}

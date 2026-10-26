@@ -421,13 +421,35 @@ fn begin(self: *S6, env: Env, service: []const u8) !void {
     self.forgetExit(env, service);
     const wait = try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{up_wait_ms});
     const res = try runTool(env, &.{ "s6-svc", "-wu", "-T", wait, "-u", try self.linkPath(service) }, .quiet);
-    if (res.code == 0) return;
+    if (res.code == 0) return self.awaitOneshot(env, service);
     if (self.verdictOf(service) != null) {
         const st = try self.statusOf(env, service);
-        if (st.state == .inactive or st.state == .failed) return;
+        if (st.state == .inactive or st.state == .failed) return self.awaitOneshot(env, service);
     }
     reportFailure(env, service, res);
     return error.CommandFailed;
+}
+
+/// Waits until a oneshot that ends by itself has run its command and its `finish`, as `s6-svc -wu`
+/// returns as soon as the process is up.
+fn awaitOneshot(self: *S6, env: Env, service: []const u8) !void {
+    const flags = self.runFlags(service);
+    if (!flags.oneshot) return;
+    const limit = flags.start_timeout_ms orelse render.default_timeout_ms;
+    const wait = try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{limit});
+    const argv: []const []const u8 = if (limit == 0)
+        &.{ "s6-svwait", "-D", try self.linkPath(service) }
+    else
+        &.{ "s6-svwait", "-D", "-t", wait, try self.linkPath(service) };
+    const res = try runTool(env, argv, .quiet);
+    if (res.code != 0) {
+        reportFailure(env, service, res);
+        return error.CommandFailed;
+    }
+    if (self.verdictOf(service) == .failed) {
+        env.ctx.diag.err("Job for {s} failed: the command of the oneshot did not succeed", .{service});
+        return error.CommandFailed;
+    }
 }
 
 fn start(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {

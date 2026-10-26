@@ -4,8 +4,9 @@
 # Unit: backup-job.service
 # Source: /usr/lib/systemd/system/backup-job.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:c9c0d7a47b393170
+# Body-Hash: xxh3:ce4b461d93b312fa
 # Generator: fake-systemd 0.1.0 s6/1
+# fake-systemd flags: oneshot
 exec 2>&1
 exec /usr/bin/fake-systemd --exec backup-job.service
 === finish 0755

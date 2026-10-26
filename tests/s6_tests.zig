@@ -603,3 +603,39 @@ test "the timer runner is generated, enabled and started like any service" {
     try testing.expect(!t.exists(sv ++ "/fake-systemd-timers/run"));
     try testing.expectError(error.FileNotFound, t.fs.lstat(scan ++ "/fake-systemd-timers"));
 }
+
+test "starting a oneshot waits until its command and finish are done, within TimeoutStartSec=" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "job", "", "Type=oneshot");
+    try addSvc(t, "slow", "", "Type=oneshot\nTimeoutStartSec=20");
+    try addSvc(t, "endless", "", "Type=oneshot\nTimeoutStartSec=infinity");
+    for ([_][]const u8{ "job", "slow", "endless" }) |name| {
+        try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", name }));
+        f.sc.calls.clearRetainingCapacity();
+        try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", name }));
+    }
+    try f.expectCall(f.sc.calls.items.len - 1, &.{ "s6-svwait", "-D", scan ++ "/endless" });
+    f.sc.calls.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "slow" }));
+    try f.expectCall(f.sc.calls.items.len - 1, &.{ "s6-svwait", "-D", "-t", "20000", scan ++ "/slow" });
+    f.sc.calls.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "job" }));
+    try f.expectCall(f.sc.calls.items.len - 1, &.{ "s6-svwait", "-D", "-t", "90000", scan ++ "/job" });
+}
+
+test "starting a oneshot whose command failed exits 1" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "job", "", "Type=oneshot");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "job" }));
+    try t.fs.makePath(sv ++ "/job/supervise");
+    f.sc.fs = &t.fs;
+    f.sc.svwait_writes = .{ .path = sv ++ "/job/supervise/exit-status", .text = "failed 1 0\n" };
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "job" }));
+    try h.expectContains(t.stderr(), "Job for job failed");
+}

@@ -194,6 +194,10 @@ pub const Flags = struct {
     exec_stop: bool = false,
     /// A oneshot stays active once its command has succeeded.
     remain: bool = false,
+    /// A oneshot that ends by itself: starting it waits until its command and `finish` are done.
+    oneshot: bool = false,
+    /// `TimeoutStartSec=` of that oneshot in milliseconds, 0 for none; null for the default.
+    start_timeout_ms: ?u64 = null,
 };
 
 pub fn parseFlags(text: []const u8) Flags {
@@ -205,6 +209,8 @@ pub fn parseFlags(text: []const u8) Flags {
         while (it.next()) |tok| {
             if (std.mem.eql(u8, tok, "exec-stop")) out.exec_stop = true;
             if (std.mem.eql(u8, tok, "remain")) out.remain = true;
+            if (std.mem.eql(u8, tok, "oneshot")) out.oneshot = true;
+            if (std.mem.cutPrefix(u8, tok, "start-timeout=")) |ms| out.start_timeout_ms = std.fmt.parseInt(u64, ms, 10) catch null;
         }
         break;
     }
@@ -390,6 +396,9 @@ test "scripts of other interpreters give the last exec line" {
 test "generated flags are read back" {
     const f = parseFlags("#!/bin/sh\n# fake-systemd flags: exec-stop remain\nexec 2>&1\n");
     try testing.expect(f.exec_stop and f.remain);
+    try testing.expect(parseFlags("#!/bin/sh\n# fake-systemd flags: oneshot\n").oneshot);
+    try testing.expectEqual(@as(?u64, 1500), parseFlags("# fake-systemd flags: oneshot start-timeout=1500\n").start_timeout_ms);
+    try testing.expectEqual(@as(?u64, 0), parseFlags("# fake-systemd flags: oneshot start-timeout=0\n").start_timeout_ms);
     const none = parseFlags("#!/bin/sh\nexec 2>&1\n");
     try testing.expect(!none.exec_stop and !none.remain);
 }
