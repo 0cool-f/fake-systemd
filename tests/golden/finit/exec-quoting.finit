@@ -1,0 +1,8 @@
+=== exec-quoting.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-quoting.service
+# Source: /usr/lib/systemd/system/exec-quoting.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:adf5a1e1bdefb3be
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:exec-quoting norestart /usr/bin/fake-systemd --exec exec-quoting.service --log -- Command lines that need quoting

@@ -1,0 +1,22 @@
+=== oneshot-remain.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:ca7cc94c2ec01135
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Wants= has no counterpart in Shepherd and is not expressed
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(oneshot-remain)
+           #:documentation "Apply firewall rules"
+           #:start (lambda _
+                    (eqv? 0 (status:exit-val
+                              (spawn-command '("/usr/bin/fake-systemd" "--exec" "oneshot-remain.service" "--log")))))
+           #:stop (lambda _
+                    (spawn-command '("/usr/bin/fake-systemd" "--exec" "oneshot-remain.service" "--phase" "stop"))
+                    #f))))

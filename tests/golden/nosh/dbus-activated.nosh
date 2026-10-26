@@ -1,0 +1,11 @@
+=== dbus-activated 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: dbus-activated.service
+# Source: /usr/lib/systemd/system/dbus-activated.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3f7c174849a3e6d4
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit dbus-activated.service
+hash 0123456789abcdef

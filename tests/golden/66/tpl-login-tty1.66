@@ -1,0 +1,17 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:afcd981233aeeba6
+# Generator: fake-systemd 0.1.0 66/1
+# fake-systemd flags: restarts
+[Main]
+Type = classic
+Description = "Login prompt on tty1"
+Options = ( !log )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec tpl-login@tty1.service --log
+)

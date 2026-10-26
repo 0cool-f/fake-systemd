@@ -172,13 +172,21 @@ fn stripShellString(gpa: Allocator, cmd: []const u8, depth: usize) Allocator.Err
 }
 
 /// Resolves symlinks inside the filesystem root so `/bin/foo` and `/usr/bin/foo` coincide on
-/// merged-`/usr` systems. Relative or unresolvable paths are returned unchanged.
+/// merged-`/usr` systems. A link to `busybox` is an applet, which the name identifies: only its
+/// directory is resolved. Relative or unresolvable paths are returned unchanged.
 pub fn normalizePath(fs: Fs, gpa: Allocator, path: []const u8) Allocator.Error![]const u8 {
     if (path.len == 0 or path[0] != '/') return path;
-    return fs.realpath(gpa, path) catch |e| switch (e) {
+    const real = fs.realpath(gpa, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return path,
     };
+    const base = std.fs.path.basename(path);
+    if (!std.mem.eql(u8, std.fs.path.basename(real), "busybox") or std.mem.eql(u8, base, "busybox")) return real;
+    const dir = fs.realpath(gpa, std.fs.path.dirname(path) orelse "/") catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return path,
+    };
+    return std.fs.path.join(gpa, &.{ dir, base });
 }
 
 /// `commandExecutable` followed by `normalizePath`.
@@ -253,4 +261,23 @@ test "normalizePath resolves symlinks inside the root" {
     try testing.expectEqualStrings("/usr/bin/foo", try normalizePath(fs, arena.allocator(), "/bin/foo"));
     try testing.expectEqualStrings("/nope/x", try normalizePath(fs, arena.allocator(), "/nope/x"));
     try testing.expectEqualStrings("rel", try normalizePath(fs, arena.allocator(), "rel"));
+}
+
+test "applets of busybox keep their name while their directory is resolved" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    try fs.makePath("/bin");
+    try fs.makePath("/usr/sbin");
+    try fs.writeFileAtomic("/bin/busybox", "x", 0o755);
+    try fs.symLink("busybox", "/bin/sleep");
+    try fs.symLink("../../bin/busybox", "/usr/sbin/crond");
+    try fs.symLink("bin", "/sbin");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("/bin/sleep", try normalizePath(fs, a, "/bin/sleep"));
+    try testing.expectEqualStrings("/usr/sbin/crond", try normalizePath(fs, a, "/usr/sbin/crond"));
+    try testing.expectEqualStrings("/bin/sleep", try normalizePath(fs, a, "/sbin/sleep"));
+    try testing.expectEqualStrings("/bin/busybox", try normalizePath(fs, a, "/sbin/busybox"));
 }

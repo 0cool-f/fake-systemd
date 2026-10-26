@@ -1,0 +1,20 @@
+=== notify-service.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:da4ab4d14a4b0141
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Wants= has no counterpart in Shepherd and is not expressed
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(notify-service)
+           #:documentation "Notify-style database"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "notify-service.service" "--log"))
+           #:stop (make-kill-destructor SIGINT #:grace-period 45))))

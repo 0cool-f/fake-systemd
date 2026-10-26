@@ -1,0 +1,19 @@
+=== exec-vars.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1f3e804d11951069
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(exec-vars)
+           #:documentation "Command lines with variable expansion"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "exec-vars.service" "--log"))
+           #:stop (make-kill-destructor))))

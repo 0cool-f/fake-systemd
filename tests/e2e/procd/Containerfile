@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The OpenWrt root file system runs procd as PID 1 with the init scripts of the release. The tag
+# is a release (25.12.5, built 2026-09-23) and the digest pins its x86-64 image.
+FROM docker.io/openwrt/rootfs:x86-64-v25.12.5@sha256:c5d5f05bab4ce06a4e840b3573671a06ec8ae9842273188ffc53f7021836b8e2
+
+# /tmp is created by procd with the mode of a system directory; tests and services write there.
+RUN mkdir -p /usr/lib/systemd/system /out

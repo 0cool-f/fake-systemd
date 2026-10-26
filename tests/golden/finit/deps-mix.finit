@@ -1,0 +1,9 @@
+=== deps-mix.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: deps-mix.service
+# Source: /usr/lib/systemd/system/deps-mix.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:96d8e3a476914c48
+# Generator: fake-systemd 0.1.0 finit/1
+# Wants= has no counterpart in finit and is not expressed
+service [2345] <net/route/default,service/dbus/running,service/postgresql/running> name:deps-mix norestart /usr/bin/fake-systemd --exec deps-mix.service --log -- Service with many dependency kinds

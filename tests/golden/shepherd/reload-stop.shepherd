@@ -1,0 +1,23 @@
+=== reload-stop.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c41ed93c398bab96
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; ExecStopPost= runs when the service is stopped, not when its process ends by itself
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(reload-stop)
+           #:documentation "Daemon with reload and stop hooks"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "reload-stop.service" "--log" "--stop-on-signal"))
+           #:stop (lambda (process . args)
+                    (terminate-process (process-id process) SIGTERM #:grace-period 90)
+                    (spawn-command '("/usr/bin/fake-systemd" "--exec" "reload-stop.service" "--phase" "stop-post"))
+                    #f))))

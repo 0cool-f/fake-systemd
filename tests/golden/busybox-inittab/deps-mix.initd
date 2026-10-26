@@ -1,0 +1,130 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: deps-mix.service
+# Source: /usr/lib/systemd/system/deps-mix.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:b88a23f8e491c66b
+# Generator: fake-systemd 0.1.0 sysvinit/1
+# chkconfig: 2345 80 20
+# description: Service with many dependency kinds
+### BEGIN INIT INFO
+# Provides:          deps-mix
+# Required-Start:    $remote_fs dbus postgresql
+# Required-Stop:     $remote_fs dbus postgresql
+# Should-Start:      $network
+# Should-Stop:       $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Service with many dependency kinds
+### END INIT INFO
+# Pulls-In: dbus postgresql
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/deps-mix.service
+main_pid=/run/fake-systemd/deps-mix.service.pid
+exit_file=/run/fake-systemd/deps-mix.service.exit
+daemon_pid=/run/fake-systemd/deps-mix.service.daemon.pid
+stop_wait=100
+lock_file=/var/lock/subsys/deps-mix
+
+running() {
+	_pid=$(cat "$daemon_pid" 2>/dev/null)
+	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+}
+
+do_start() {
+	running && return 0
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	rm -f "$exit_file" "$main_pid"
+	mkdir -p /var/lock/subsys
+	echo "Starting deps-mix.service"
+	/usr/bin/fake-systemd --exec deps-mix.service --daemon --log --record-exit
+	_rc=$?
+	[ "$_rc" -eq 0 ] && : > "$lock_file"
+	return "$_rc"
+}
+
+stop_daemon() {
+	running || return 0
+	_pid=$(cat "$daemon_pid")
+	kill -TERM "$_pid" 2>/dev/null
+	_n=0
+	while running && [ "$_n" -lt $((stop_wait * 10)) ]; do
+		sleep 0.1
+		_n=$((_n + 1))
+	done
+	running || return 0
+	kill -KILL "$_pid" 2>/dev/null
+	_n=0
+	while running && [ "$_n" -lt 50 ]; do
+		sleep 0.1
+		_n=$((_n + 1))
+	done
+	! running
+}
+
+do_stop() {
+	rc=0
+	echo "Stopping deps-mix.service"
+	if [ -e "$daemon_pid" ]; then
+		stop_daemon || rc=$?
+		rm -f "$daemon_pid"
+	fi
+	rm -f "$main_pid" "$exit_file"
+	rm -f "$lock_file"
+	return "$rc"
+}
+
+do_status() {
+	if running; then
+		echo "deps-mix.service is running"
+		return 0
+	fi
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "deps-mix.service is not running"
+		return 3
+		;;
+	esac
+	if [ -e "$daemon_pid" ] || [ -e "$exit_file" ]; then
+		echo "deps-mix.service is dead"
+		return 1
+	fi
+	echo "deps-mix.service is not running"
+	return 3
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+try-restart)
+	if do_status > /dev/null 2>&1; then
+		do_stop
+		do_start
+	fi
+	;;
+reload)
+	echo "deps-mix.service does not support reload" >&2
+	exit 3
+	;;
+force-reload)
+	do_stop
+	do_start
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|try-restart|reload|force-reload|status}" >&2
+	exit 2
+	;;
+esac

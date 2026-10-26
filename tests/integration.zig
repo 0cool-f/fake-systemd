@@ -13,6 +13,13 @@ test {
     _ = @import("s6_rc_tests.zig");
     _ = @import("openrc_tests.zig");
     _ = @import("sysvinit_tests.zig");
+    _ = @import("s66_tests.zig");
+    _ = @import("busybox_tests.zig");
+    _ = @import("bsdrc_tests.zig");
+    _ = @import("procd_tests.zig");
+    _ = @import("finit_tests.zig");
+    _ = @import("shepherd_tests.zig");
+    _ = @import("nosh_tests.zig");
     _ = @import("exec_tests.zig");
     _ = @import("timer_tests.zig");
     _ = @import("timer_runtime_tests.zig");

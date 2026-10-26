@@ -1,0 +1,11 @@
+=== forking-pidfile 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1bd1dd6fde74e707
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit forking-pidfile.service
+hash 0123456789abcdef

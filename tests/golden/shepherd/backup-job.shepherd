@@ -1,0 +1,19 @@
+=== backup-job.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:852e833d101cee60
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(backup-job)
+           #:documentation "Nightly backup (started by backup-job.timer)"
+           #:one-shot? #t
+           #:start (lambda _
+                    (eqv? 0 (status:exit-val
+                              (spawn-command '("/usr/bin/fake-systemd" "--exec" "backup-job.service" "--log"))))))))

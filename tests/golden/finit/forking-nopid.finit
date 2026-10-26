@@ -1,0 +1,9 @@
+=== forking-nopid.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-nopid.service
+# Source: /usr/lib/systemd/system/forking-nopid.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fe66f9c18a850d9e
+# Generator: fake-systemd 0.1.0 finit/1
+# Type=forking without PIDFile=: the daemon is started but not supervised
+task [2345] name:forking-nopid /usr/bin/fake-systemd --exec forking-nopid.service --log --record-exit -- Forking daemon without a pid file

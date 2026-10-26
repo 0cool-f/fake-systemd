@@ -1,0 +1,21 @@
+=== deps-mix.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: deps-mix.service
+# Source: /usr/lib/systemd/system/deps-mix.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:12aaecbc58d5bc7c
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Wants= has no counterpart in Shepherd and is not expressed
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(deps-mix)
+           #:documentation "Service with many dependency kinds"
+           #:requirement '(dbus postgresql)
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "deps-mix.service" "--log"))
+           #:stop (make-kill-destructor))))

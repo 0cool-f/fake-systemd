@@ -1,0 +1,11 @@
+=== backup-job 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:5916d3de9094aabb
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit backup-job.service
+hash 0123456789abcdef

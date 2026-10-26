@@ -1,0 +1,87 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0114a37cb707b694
+# Generator: fake-systemd 0.1.0 sysvinit/1
+# chkconfig: 2345 80 20
+# description: Oneshot with several commands
+### BEGIN INIT INFO
+# Provides:          multi-oneshot
+# Required-Start:    $remote_fs
+# Required-Stop:     $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Oneshot with several commands
+### END INIT INFO
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/multi-oneshot.service
+main_pid=/run/fake-systemd/multi-oneshot.service.pid
+exit_file=/run/fake-systemd/multi-oneshot.service.exit
+
+do_start() {
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	echo "Starting multi-oneshot.service"
+	/usr/bin/fake-systemd --exec multi-oneshot.service --log --record-exit > /dev/null
+	_rc=$?
+	rm -f "$main_pid"
+	return "$_rc"
+}
+
+do_stop() {
+	rc=0
+	rm -f "$main_pid" "$exit_file"
+	return "$rc"
+}
+
+do_status() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "multi-oneshot.service has finished"
+		return 3
+		;;
+	failed*)
+		echo "multi-oneshot.service failed"
+		return 1
+		;;
+	esac
+	echo "multi-oneshot.service is not running"
+	return 3
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+try-restart)
+	if do_status > /dev/null 2>&1; then
+		do_stop
+		do_start
+	fi
+	;;
+reload)
+	echo "multi-oneshot.service does not support reload" >&2
+	exit 3
+	;;
+force-reload)
+	do_stop
+	do_start
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|try-restart|reload|force-reload|status}" >&2
+	exit 2
+	;;
+esac

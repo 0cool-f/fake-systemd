@@ -1,0 +1,32 @@
+#!/bin/sh /etc/rc.common
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-quoting.service
+# Source: /usr/lib/systemd/system/exec-quoting.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:96a22bb0d7f5ecb6
+# Generator: fake-systemd 0.1.0 procd/1
+# Command lines that need quoting
+
+USE_PROCD=1
+START=50
+STOP=50
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/bin/fake-systemd --exec exec-quoting.service --log
+	procd_set_param term_timeout 90
+	procd_close_instance
+}
+
+service_stopped() {
+	_n=0
+	while procd_running exec-quoting && [ "$_n" -lt 95 ]; do
+		sleep 1
+		_n=$((_n + 1))
+	done
+}
+
+reload_service() {
+	echo "exec-quoting.service does not support reload" >&2
+	return 3
+}

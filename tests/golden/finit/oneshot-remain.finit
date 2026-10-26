@@ -1,0 +1,9 @@
+=== oneshot-remain.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0eb67ed752ab1a0e
+# Generator: fake-systemd 0.1.0 finit/1
+# Wants= has no counterpart in finit and is not expressed
+task [2345] name:oneshot-remain /usr/bin/fake-systemd --exec oneshot-remain.service --log --record-exit -- Apply firewall rules

@@ -1,0 +1,17 @@
+=== runtime-dir.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: runtime-dir.service
+# Source: /usr/lib/systemd/system/runtime-dir.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:84f4824ac35688f0
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:runtime-dir norestart kill:60 post:/etc/finit.d/available/runtime-dir.stop-post /usr/bin/fake-systemd --exec runtime-dir.service --log -- Service with managed directories
+=== runtime-dir.stop-post 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: runtime-dir.service
+# Source: /usr/lib/systemd/system/runtime-dir.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:120cad9e8eb06fc5
+# Generator: fake-systemd 0.1.0 finit/1
+exec /usr/bin/fake-systemd --exec 'runtime-dir.service' --phase stop-post

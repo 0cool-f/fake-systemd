@@ -1,0 +1,8 @@
+=== restart-always.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1ffc11f04e90d33f
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:restart-always restart:always restart_sec:5 kill:2 halt:SIGUSR1 /usr/bin/fake-systemd --exec restart-always.service --log -- Always restarted worker

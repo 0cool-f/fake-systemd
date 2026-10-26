@@ -1,0 +1,65 @@
+#!/bin/sh /etc/rc.common
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3f5d6f5141674e36
+# Generator: fake-systemd 0.1.0 procd/1
+# Apply firewall rules
+
+START=50
+STOP=50
+EXTRA_COMMANDS="status running"
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/oneshot-remain.service
+main_pid=/run/fake-systemd/oneshot-remain.service.pid
+exit_file=/run/fake-systemd/oneshot-remain.service.exit
+
+start() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*) return 0 ;;
+	esac
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	/usr/bin/fake-systemd --exec oneshot-remain.service --log --record-exit > /dev/null
+	_rc=$?
+	rm -f "$main_pid"
+	return "$_rc"
+}
+
+stop() {
+	_rc=0
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		/usr/bin/fake-systemd --exec oneshot-remain.service --phase stop || _rc=$?
+		;;
+	esac
+	rm -f "$main_pid" "$exit_file"
+	return "$_rc"
+}
+
+status() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "oneshot-remain.service is active (exited)"
+		return 0
+		;;
+	failed*)
+		echo "oneshot-remain.service failed"
+		return 1
+		;;
+	esac
+	echo "oneshot-remain.service is not running"
+	return 3
+}
+
+running() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*) return 0 ;;
+	esac
+	return 1
+}
+
+reload() {
+	echo "oneshot-remain.service does not support reload" >&2
+	return 3
+}

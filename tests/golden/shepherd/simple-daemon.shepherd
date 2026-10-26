@@ -1,0 +1,20 @@
+=== simple-daemon.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:bb937902f246d266
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Restart=on-failure is approximated by respawning after every exit
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(simple-daemon)
+           #:documentation "Example metrics exporter"
+           #:respawn? #t
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "simple-daemon.service" "--log"))
+           #:stop (make-kill-destructor))))

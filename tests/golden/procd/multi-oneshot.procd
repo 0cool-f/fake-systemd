@@ -1,0 +1,57 @@
+#!/bin/sh /etc/rc.common
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1d02c44d72b779e9
+# Generator: fake-systemd 0.1.0 procd/1
+# Oneshot with several commands
+
+START=50
+STOP=50
+EXTRA_COMMANDS="status running"
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/multi-oneshot.service
+main_pid=/run/fake-systemd/multi-oneshot.service.pid
+exit_file=/run/fake-systemd/multi-oneshot.service.exit
+
+start() {
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	/usr/bin/fake-systemd --exec multi-oneshot.service --log --record-exit > /dev/null
+	_rc=$?
+	rm -f "$main_pid"
+	return "$_rc"
+}
+
+stop() {
+	_rc=0
+	rm -f "$main_pid" "$exit_file"
+	return "$_rc"
+}
+
+status() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "multi-oneshot.service has finished"
+		return 3
+		;;
+	failed*)
+		echo "multi-oneshot.service failed"
+		return 1
+		;;
+	esac
+	echo "multi-oneshot.service is not running"
+	return 3
+}
+
+running() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*) return 1 ;;
+	esac
+	return 1
+}
+
+reload() {
+	echo "multi-oneshot.service does not support reload" >&2
+	return 3
+}

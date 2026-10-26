@@ -200,6 +200,11 @@ pub fn writeCreatedFile(w: *Io.Writer, path: []const u8) Error!void {
     try w.print("Created '{s}'.\n", .{path});
 }
 
+/// `Made '<path>' executable.` for a script that is enabled by its execute permission.
+pub fn writeModeSet(w: *Io.Writer, path: []const u8, executable: bool) Error!void {
+    try w.print("Made '{s}' {s}executable.\n", .{ path, if (executable) "" else "not " });
+}
+
 /// `Removed '<path>'.` systemd writes this line to stderr; `-q` suppresses it.
 pub fn writeRemoved(w: *Io.Writer, path: []const u8) Error!void {
     try w.print("Removed '{s}'.\n", .{path});

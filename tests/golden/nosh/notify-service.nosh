@@ -1,0 +1,11 @@
+=== notify-service 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:b8cb748463951226
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit notify-service.service
+hash 0123456789abcdef

@@ -1,0 +1,8 @@
+=== env-exec-pre.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: env-exec-pre.service
+# Source: /usr/lib/systemd/system/env-exec-pre.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f32e67de9e577ea4
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:env-exec-pre norestart /usr/bin/fake-systemd --exec env-exec-pre.service --log -- Web application with a prepared environment

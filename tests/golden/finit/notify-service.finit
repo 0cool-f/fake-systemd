@@ -1,0 +1,9 @@
+=== notify-service.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:b38c462a3ff34175
+# Generator: fake-systemd 0.1.0 finit/1
+# Wants= has no counterpart in finit and is not expressed
+service [2345] <net/route/default> name:notify-service norestart kill:45 halt:SIGINT /usr/bin/fake-systemd --exec notify-service.service --log -- Notify-style database

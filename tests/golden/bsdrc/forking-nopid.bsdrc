@@ -1,0 +1,72 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-nopid.service
+# Source: /usr/lib/systemd/system/forking-nopid.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0daaac87314f1b4e
+# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Forking daemon without a pid file
+# Type=forking without PIDFile=: the daemon is started but not followed, and stop cannot signal it
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/forking-nopid.service
+main_pid=/run/fake-systemd/forking-nopid.service.pid
+exit_file=/run/fake-systemd/forking-nopid.service.exit
+
+do_start() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*) return 0 ;;
+	esac
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	echo "Starting forking-nopid.service"
+	/usr/bin/fake-systemd --exec forking-nopid.service --log --record-exit > /dev/null
+	_rc=$?
+	rm -f "$main_pid"
+	return "$_rc"
+}
+
+do_stop() {
+	rc=0
+	rm -f "$main_pid" "$exit_file"
+	return "$rc"
+}
+
+do_status() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "forking-nopid.service is active (exited)"
+		return 0
+		;;
+	failed*)
+		echo "forking-nopid.service failed"
+		return 1
+		;;
+	esac
+	echo "forking-nopid.service is not running"
+	return 3
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+reload)
+	echo "forking-nopid.service does not support reload" >&2
+	exit 3
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "usage: $0 start|stop|restart|reload|status" >&2
+	exit 2
+	;;
+esac

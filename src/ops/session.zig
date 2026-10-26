@@ -229,6 +229,7 @@ pub fn printChanges(s: *Session, changes: []const backend_pkg.interface.Change) 
                 .created => |l| try s.out().print("would create symlink '{s}' -> '{s}'\n", .{ l.link, l.target }),
                 .removed => |p| try s.out().print("would remove '{s}'\n", .{p}),
                 .created_file => |p| try s.out().print("would create '{s}'\n", .{p}),
+                .mode_set => |m| try s.out().print("would make '{s}' {s}executable\n", .{ m.path, if (m.executable) "" else "not " }),
             }
             continue;
         }
@@ -237,6 +238,7 @@ pub fn printChanges(s: *Session, changes: []const backend_pkg.interface.Change) 
             .created => |l| try output.writeCreatedSymlink(s.err(), s.style(), l.link, l.target),
             .removed => |p| try output.writeRemoved(s.err(), p),
             .created_file => |p| try output.writeCreatedFile(s.err(), p),
+            .mode_set => |m| try output.writeModeSet(s.err(), m.path, m.executable),
         }
     }
 }

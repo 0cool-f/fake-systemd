@@ -1,0 +1,21 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: oneshot-remain.service
+# Source: /usr/lib/systemd/system/oneshot-remain.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f594c14edebed301
+# Generator: fake-systemd 0.1.0 66/1
+# fake-systemd flags: remain
+[Main]
+Type = oneshot
+Description = "Apply firewall rules"
+Options = ( !log )
+
+[Start]
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec oneshot-remain.service --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec oneshot-remain.service --phase stop --log
+)

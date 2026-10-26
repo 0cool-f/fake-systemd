@@ -1,0 +1,30 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-unit.service
+# Source: /usr/lib/systemd/user/user-unit.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:eb6c5a123cf4f351
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Per-user clipboard manager"
+Options = ( !log )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec user-unit.service --user --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+r=$(/usr/bin/66 runstate -nf result user-unit)
+c=$(/usr/bin/66 runstate -nf code user-unit)
+clean=
+case "$r" in
+success) clean=1 ;;
+exited) case "$c" in 0) clean=1 ;; esac ;;
+signaled) case "$c" in 1|2|13|15) clean=1 ;; esac ;;
+esac
+[ -n "$clean" ] && exit 125
+exit 0
+)

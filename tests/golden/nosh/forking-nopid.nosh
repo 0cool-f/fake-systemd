@@ -1,0 +1,11 @@
+=== forking-nopid 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-nopid.service
+# Source: /usr/lib/systemd/system/forking-nopid.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6ab34a3f9582724f
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit forking-nopid.service
+hash 0123456789abcdef

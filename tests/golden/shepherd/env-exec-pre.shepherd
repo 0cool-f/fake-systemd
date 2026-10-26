@@ -1,0 +1,19 @@
+=== env-exec-pre.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: env-exec-pre.service
+# Source: /usr/lib/systemd/system/env-exec-pre.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:432eaa145ec598de
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(env-exec-pre)
+           #:documentation "Web application with a prepared environment"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "env-exec-pre.service" "--log"))
+           #:stop (make-kill-destructor))))

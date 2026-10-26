@@ -1,0 +1,11 @@
+=== admin-override 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: admin-override.service
+# Source: /etc/systemd/system/admin-override.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:96d978cc6099b4f9
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /etc/systemd/system
+unit admin-override.service
+hash 0123456789abcdef

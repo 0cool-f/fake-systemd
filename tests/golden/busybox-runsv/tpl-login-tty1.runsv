@@ -1,0 +1,19 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3b3d65f1ce198a05
+# Generator: fake-systemd 0.1.0 runit/1
+exec 2>&1
+exec /usr/sbin/agetty --noclear tty1 38400 linux
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:a803a69cbc45a21c
+# Generator: fake-systemd 0.1.0 runit/1
+exec /usr/bin/fake-systemd --log tpl-login@tty1.service

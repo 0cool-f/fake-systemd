@@ -1,0 +1,22 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:d8c219a4e0276fe6
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Notify-style database"
+Options = ( !log )
+
+[Start]
+Timeout = 45000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec notify-service.service --log
+)
+
+[Stop]
+DownSignal = SIGINT
+Execute = (#!/bin/sh
+exit 125
+)

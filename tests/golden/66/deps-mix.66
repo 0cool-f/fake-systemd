@@ -1,0 +1,22 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: deps-mix.service
+# Source: /usr/lib/systemd/system/deps-mix.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:482a418acda92125
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Service with many dependency kinds"
+Options = ( !log )
+Depends = ( dbus postgresql syslog )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec deps-mix.service --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+exit 125
+)

@@ -1,0 +1,21 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: runtime-dir.service
+# Source: /usr/lib/systemd/system/runtime-dir.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f3d2b35002a80c6a
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Service with managed directories"
+Options = ( !log )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec runtime-dir.service --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+exit 125
+)

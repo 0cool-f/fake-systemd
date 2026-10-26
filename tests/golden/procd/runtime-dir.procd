@@ -1,0 +1,41 @@
+#!/bin/sh /etc/rc.common
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: runtime-dir.service
+# Source: /usr/lib/systemd/system/runtime-dir.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:8d53216d85933e1a
+# Generator: fake-systemd 0.1.0 procd/1
+# Service with managed directories
+
+USE_PROCD=1
+START=50
+STOP=50
+
+registered() {
+	[ -n "$(ubus call service list '{"name": "runtime-dir"}' | jsonfilter -e '@["runtime-dir"]')" ]
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/bin/fake-systemd --exec runtime-dir.service --log
+	procd_set_param term_timeout 90
+	procd_close_instance
+}
+
+stop_service() {
+	registered && _was_up=1
+}
+
+service_stopped() {
+	_n=0
+	while procd_running runtime-dir && [ "$_n" -lt 95 ]; do
+		sleep 1
+		_n=$((_n + 1))
+	done
+	[ -n "$_was_up" ] && /usr/bin/fake-systemd --exec runtime-dir.service --phase stop-post
+}
+
+reload_service() {
+	echo "runtime-dir.service does not support reload" >&2
+	return 3
+}

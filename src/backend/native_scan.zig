@@ -135,9 +135,13 @@ fn recheckCached(gpa: Allocator, fs: Fs, scan: interface.NativeScan, dir: []cons
 
 /// Name of the service in directory entry `entry_name`.
 fn serviceName(scan: interface.NativeScan, entry_name: []const u8) []const u8 {
-    const suffix = scan.strip_suffix orelse return entry_name;
-    if (entry_name.len > suffix.len and std.mem.endsWith(u8, entry_name, suffix)) return entry_name[0 .. entry_name.len - suffix.len];
-    return entry_name;
+    var name = entry_name;
+    if (scan.strip_prefix) |prefix| {
+        if (name.len > prefix.len and std.mem.startsWith(u8, name, prefix)) name = name[prefix.len..];
+    }
+    const suffix = scan.strip_suffix orelse return name;
+    if (name.len > suffix.len and std.mem.endsWith(u8, name, suffix)) return name[0 .. name.len - suffix.len];
+    return name;
 }
 
 /// File that holds the command of the service at `path`.

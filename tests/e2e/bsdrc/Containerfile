@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Slackware 15.0 with sysvinit and the Slackware boot scripts, which the minimal image lacks, and
+# the system logger whose script is a native service. The image is a rolling tag (rebuilt from the
+# release and its patches), pinned by digest; slackpkg installs the packages of the release.
+FROM docker.io/aclemons/slackware:15.0@sha256:40f9b0b511e46933ff1ed5a32270c8099d6a84b98c41832a9aed480239fc5213
+
+RUN slackpkg -batch=on -default_answer=y update \
+    && slackpkg -batch=on -default_answer=y install sysvinit sysvinit-scripts sysvinit-functions procps-ng util-linux libcap-ng sysklogd \
+    && rm -rf /var/cache/packages/* \
+    && mkdir -p /usr/lib/systemd/system /out

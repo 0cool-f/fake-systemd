@@ -1,0 +1,21 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: admin-override.service
+# Source: /etc/systemd/system/admin-override.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:2c89478b0923f043
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Unit written by the administrator"
+Options = ( !log )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec admin-override.service --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+exit 125
+)

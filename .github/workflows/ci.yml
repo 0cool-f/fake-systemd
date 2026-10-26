@@ -55,19 +55,17 @@ jobs:
   e2e:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [dinit, runit, openrc, s6, sysvinit, "66", busybox, bsdrc, procd, finit, shepherd, nosh]
+    # nosh is experimental: its suite needs SYS_ADMIN inside the rootless user namespace.
+    continue-on-error: ${{ matrix.suite == 'nosh' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build the toolchain image
         run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
-      - name: Run the dinit end-to-end test
-        run: tests/e2e/dinit/run.sh
-      - name: Run the runit end-to-end test
-        run: tests/e2e/runit/run.sh
-      - name: Run the OpenRC end-to-end test
-        run: tests/e2e/openrc/run.sh
-      - name: Run the s6 end-to-end test
-        run: tests/e2e/s6/run.sh
-      - name: Run the sysvinit end-to-end test
-        run: tests/e2e/sysvinit/run.sh
+      - name: Run the ${{ matrix.suite }} end-to-end test
+        run: tests/e2e/${{ matrix.suite }}/run.sh

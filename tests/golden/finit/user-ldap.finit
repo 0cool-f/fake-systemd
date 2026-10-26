@@ -1,0 +1,8 @@
+=== user-ldap.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-ldap.service
+# Source: /usr/lib/systemd/system/user-ldap.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:41922547ff879d5c
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:user-ldap restart:always restart_sec:2 /usr/bin/setpriv --reuid=svc-directory "--regid=$(id -g svc-directory)" --init-groups /usr/bin/fake-systemd --exec user-ldap.service --log -- Daemon that runs as a directory-service account

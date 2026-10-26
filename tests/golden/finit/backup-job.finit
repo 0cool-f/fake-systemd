@@ -1,0 +1,9 @@
+=== backup-job.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:b187c616794718c1
+# Generator: fake-systemd 0.1.0 finit/1
+# flags: transient
+task [2345] name:backup-job /usr/bin/fake-systemd --exec backup-job.service --log --record-exit -- Nightly backup (started by backup-job.timer)

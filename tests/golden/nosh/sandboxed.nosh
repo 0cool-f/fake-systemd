@@ -1,0 +1,11 @@
+=== sandboxed 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6ec535f3f3d07966
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit sandboxed.service
+hash 0123456789abcdef

@@ -1,0 +1,17 @@
+=== reload-stop.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e1774916c1c1a7a2
+# Generator: fake-systemd 0.1.0 finit/1
+service [2345] name:reload-stop norestart kill:60 post:/etc/finit.d/available/reload-stop.stop-post /usr/bin/fake-systemd --exec reload-stop.service --log --stop-on-signal -- Daemon with reload and stop hooks
+=== reload-stop.stop-post 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:98e50bc385aace78
+# Generator: fake-systemd 0.1.0 finit/1
+exec /usr/bin/fake-systemd --exec 'reload-stop.service' --phase stop-post

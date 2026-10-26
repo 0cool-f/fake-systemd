@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# 66 0.9.1.2 with its library oblibs 0.4.0.1, built from the sources of git.obarun.org at the
+# commits of those tags: Obarun is the only distribution that packages 66, and an Alpine
+# container boots it without one. The sources are fetched by commit, which Dependabot does not track.
+FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395 AS build
+
+RUN apk add --no-cache build-base meson ninja git linux-headers pkgconf execline execline-dev lowdown
+
+RUN git clone -q https://git.obarun.org/Obarun/oblibs.git /build/oblibs \
+ && git -C /build/oblibs checkout -q 84f582a0200b8b2d40f2b2f5be468f5ed73c10d4 \
+ && git clone -q https://git.obarun.org/Obarun/66.git /build/66 \
+ && git -C /build/66 checkout -q 7a934ae06601738dac9cfa389698fa44da117a68
+
+RUN cd /build/oblibs \
+ && meson setup builddir --prefix=/usr --libdir=lib -D with-pkgconfig=true \
+ && meson compile -C builddir \
+ && meson install -C builddir \
+ && DESTDIR=/stage meson install -C builddir
+RUN cd /build/66 \
+ && meson setup builddir --prefix=/usr --libdir=lib \
+ && meson compile -C builddir \
+ && DESTDIR=/stage meson install -C builddir
+
+FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395
+
+RUN apk add --no-cache execline setpriv procps-ng util-linux-misc shadow
+COPY --from=build /stage/ /
+RUN 66 status

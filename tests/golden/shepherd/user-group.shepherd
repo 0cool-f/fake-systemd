@@ -1,0 +1,19 @@
+=== user-group.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:bba15ae7f94e2979
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(user-group)
+           #:documentation "Daemon with user, group and supplementary groups"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "user-group.service" "--log"))
+           #:stop (make-kill-destructor))))

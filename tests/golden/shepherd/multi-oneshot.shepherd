@@ -1,0 +1,19 @@
+=== multi-oneshot.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e60ea1f876691663
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(multi-oneshot)
+           #:documentation "Oneshot with several commands"
+           #:one-shot? #t
+           #:start (lambda _
+                    (eqv? 0 (status:exit-val
+                              (spawn-command '("/usr/bin/fake-systemd" "--exec" "multi-oneshot.service" "--log"))))))))

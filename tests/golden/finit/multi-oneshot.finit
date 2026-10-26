@@ -1,0 +1,9 @@
+=== multi-oneshot.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:d6f4a7c8f29288df
+# Generator: fake-systemd 0.1.0 finit/1
+# flags: transient
+task [2345] name:multi-oneshot /usr/bin/fake-systemd --exec multi-oneshot.service --log --record-exit -- Oneshot with several commands

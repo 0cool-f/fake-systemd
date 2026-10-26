@@ -1,0 +1,11 @@
+=== reload-stop 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:564355502927bfe5
+# Generator: fake-systemd 0.1.0 nosh/1
+# nosh converts the unit itself: system-control convert-systemd-units
+directory /usr/lib/systemd/system
+unit reload-stop.service
+hash 0123456789abcdef

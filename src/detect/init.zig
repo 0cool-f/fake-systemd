@@ -52,6 +52,7 @@ const exe_names = [_]ExeName{
     .{ .name = "finit", .kind = .finit },
     .{ .name = "shepherd", .kind = .shepherd },
     .{ .name = "66-boot", .kind = .s66 },
+    .{ .name = "66-scandir", .kind = .s66 },
     .{ .name = "procd", .kind = .procd },
     .{ .name = "system-manager", .kind = .nosh },
 };
@@ -67,10 +68,12 @@ const control_paths = [_]ControlPath{
     .{ .path = "/run/runit", .kind = .runit },
     .{ .path = "/run/service", .kind = .s6 },
     .{ .path = "/run/s6", .kind = .s6 },
-    .{ .path = "/run/66", .kind = .s66 },
+    .{ .path = "/run/66/scandir/0/.66-scandir/control", .kind = .s66 },
+    .{ .path = "/run/66/scandir/0/.s6-svscan/control", .kind = .s66 },
     .{ .path = "/run/finit", .kind = .finit },
     .{ .path = "/run/shepherd/socket", .kind = .shepherd },
     .{ .path = "/run/system-manager", .kind = .nosh },
+    .{ .path = "/run/service-manager", .kind = .nosh },
     .{ .path = "/run/initctl", .kind = .sysvinit },
     .{ .path = "/dev/initctl", .kind = .sysvinit },
 };
@@ -79,13 +82,22 @@ const ToolProbe = struct { tool: []const u8, kind: InitKind };
 
 const tool_probes = [_]ToolProbe{
     .{ .tool = "dinitctl", .kind = .dinit },
+    .{ .tool = "66", .kind = .s66 },
     .{ .tool = "s6-rc", .kind = .s6_rc },
     .{ .tool = "openrc-run", .kind = .openrc },
     .{ .tool = "sv", .kind = .runit },
+    // Debian ships update-rc.d with every init, so finit and herd come before it.
+    .{ .tool = "finit", .kind = .finit },
+    .{ .tool = "herd", .kind = .shepherd },
+    .{ .tool = "system-control", .kind = .nosh },
     .{ .tool = "update-rc.d", .kind = .sysvinit_debian },
     .{ .tool = "chkconfig", .kind = .sysvinit_redhat },
     .{ .tool = "s6-svscan", .kind = .s6 },
+    .{ .tool = "procd", .kind = .procd },
 };
+
+/// Slackware boots from sysvinit's `init`, whose scripts are the BSD-style ones of `/etc/rc.d`.
+const slackware_release = "/etc/slackware-version";
 
 const tool_dirs = [_][]const u8{ "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin" };
 
@@ -108,6 +120,8 @@ pub fn detect(ctx: *const Context, opts: Options) !Detection {
             kind = pk;
             result.signal = .proc_exe;
             if (pk == .s6 and control != null and control.? == .s6_rc) kind = .s6_rc;
+            // 66 before 0.9 supervises with s6-svscan and keeps its live directory in `/run/66`.
+            if (pk == .s6 and ctx.fs.exists("/run/66/scandir/0")) kind = .s66;
             // Alpine boots OpenRC from BusyBox init, whose executable is `busybox`.
             if (pk == .busybox and control != null and control.? == .openrc) kind = .openrc;
         } else if (control) |ck| {
@@ -132,8 +146,15 @@ pub fn detect(ctx: *const Context, opts: Options) !Detection {
     return result;
 }
 
+/// The init kind a backend runs on: BSD-style rc scripts run on sysvinit's `init`.
+fn initOf(kind: InitKind) InitKind {
+    return if (kind == .bsd_rc) .sysvinit else kind;
+}
+
 fn confirms(seen: ?InitKind, kind: InitKind) bool {
-    return seen != null and seen.?.sameBackend(kind);
+    // s6-svscan as PID 1 is the scanner of a 66 that supervises with s6.
+    if (seen != null and seen.? == .s6 and kind == .s66) return true;
+    return seen != null and seen.?.sameBackend(initOf(kind));
 }
 
 /// A control path confirms the init that was found. The socket of sysvinit does so only next to
@@ -141,7 +162,7 @@ fn confirms(seen: ?InitKind, kind: InitKind) bool {
 /// offers a socket of that name for the programs that talk to sysvinit.
 fn controlConfirms(control: ?InitKind, kind: InitKind, proc: ProcProbe) bool {
     const seen = control orelse return false;
-    return seen.sameBackend(kind) and (!seen.isSysvinit() or proc.init);
+    return seen.sameBackend(initOf(kind)) and (!seen.isSysvinit() or proc.init);
 }
 
 const Override = struct { kind: InitKind, signal: Signal };
@@ -190,10 +211,19 @@ fn probeControl(ctx: *const Context) ?InitKind {
     return null;
 }
 
+/// `/sbin/init` is BusyBox, whose applets include `sv` when it is built with the runit set.
+fn initIsBusybox(ctx: *const Context) bool {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const target = ctx.fs.readLink("/sbin/init", &buf) catch return false;
+    return std.mem.eql(u8, std.fs.path.basename(target), "busybox");
+}
+
 fn probeTools(ctx: *const Context) ?InitKind {
     for (tool_probes) |t| {
+        if (std.mem.eql(u8, t.tool, "sv") and initIsBusybox(ctx)) return .busybox;
         if (hasTool(ctx, t.tool)) return t.kind;
     }
+    if (ctx.fs.exists(slackware_release)) return .bsd_rc;
     return null;
 }
 
@@ -213,6 +243,7 @@ fn refineSysvinit(ctx: *const Context) InitKind {
     if (hasTool(ctx, "chkconfig")) return .sysvinit_redhat;
     if (ctx.fs.exists("/etc/debian_version")) return .sysvinit_debian;
     if (ctx.fs.exists("/etc/redhat-release")) return .sysvinit_redhat;
+    if (ctx.fs.exists(slackware_release)) return .bsd_rc;
     return .sysvinit;
 }
 
@@ -364,8 +395,9 @@ test "ambiguous init is resolved by control paths" {
         .{ "/run/runit/x", .runit },
         .{ "/run/s6-rc/x", .s6_rc },
         .{ "/run/service/x", .s6 },
-        .{ "/run/66/x", .s66 },
+        .{ "/run/66/scandir/0/.66-scandir/control", .s66 },
         .{ "/run/finit/x", .finit },
+        .{ "/run/service-manager/control", .nosh },
     };
     for (cases) |c| {
         var h: Harness = undefined;
@@ -529,6 +561,9 @@ test "tools are used when nothing else matches, always offline" {
         .{ "/usr/sbin/update-rc.d", .sysvinit_debian },
         .{ "/usr/sbin/chkconfig", .sysvinit_redhat },
         .{ "/usr/bin/s6-svscan", .s6 },
+        .{ "/usr/sbin/finit", .finit },
+        .{ "/usr/bin/herd", .shepherd },
+        .{ "/usr/bin/system-control", .nosh },
     };
     for (cases) |c| {
         var h: Harness = undefined;
@@ -699,4 +734,95 @@ test "an s6-rc live directory without s6-svscan as PID 1 is s6-rc by its control
     try h.dir("/run/s6-rc");
     try h.dir("/run/service");
     try expectDetection(&h, .{}, .s6_rc, true, .control_path);
+}
+
+test "Slackware is BSD-style rc on sysvinit's init, running with the control socket of sysvinit" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/sbin/init");
+    try h.file("/run/initctl");
+    try h.file("/etc/slackware-version");
+    try expectDetection(&h, .{}, .bsd_rc, true, .control_path);
+
+    // A chroot of Slackware has no PID 1 of its own and is found by its release file.
+    var off: Harness = undefined;
+    try off.init();
+    defer off.deinit();
+    try off.file("/etc/slackware-version");
+    try expectDetection(&off, .{ .offline_root = true }, .bsd_rc, false, .tool);
+}
+
+test "procd is found by its executable in a root without a running init" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.file("/sbin/procd");
+    try expectDetection(&h, .{ .offline_root = true }, .procd, false, .tool);
+}
+
+test "66 as PID 1 is detected by its scanner, or by s6-svscan with a live directory" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/usr/bin/66-scandir");
+    try expectDetection(&h, .{}, .s66, true, .proc_exe);
+
+    var old: Harness = undefined;
+    try old.init();
+    defer old.deinit();
+    try old.pid1("/usr/bin/s6-svscan");
+    try old.dir("/run/66/scandir/0");
+    try expectDetection(&old, .{}, .s66, true, .proc_exe);
+
+    var plain: Harness = undefined;
+    try plain.init();
+    defer plain.deinit();
+    try plain.pid1("/usr/bin/s6-svscan");
+    try expectDetection(&plain, .{}, .s6, true, .proc_exe);
+}
+
+test "the 66 tool alone is 66 in a root without a running init" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.file("/usr/bin/66");
+    try h.file("/usr/bin/sv");
+    try expectDetection(&h, .{}, .s66, false, .tool);
+}
+
+test "a root whose /sbin/init is BusyBox is BusyBox even with the runit applets installed" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.dir("/sbin");
+    try h.fs.symLink("/bin/busybox", "/sbin/init");
+    try h.file("/bin/busybox");
+    try h.file("/usr/bin/sv");
+    try expectDetection(&h, .{}, .busybox, false, .tool);
+
+    var openrc: Harness = undefined;
+    try openrc.init();
+    defer openrc.deinit();
+    try openrc.dir("/sbin");
+    try openrc.fs.symLink("/bin/busybox", "/sbin/init");
+    try openrc.file("/sbin/openrc-run");
+    try expectDetection(&openrc, .{}, .openrc, false, .tool);
+}
+
+test "the live directory of 66 alone is no running 66, its scandir control fifo is" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/sbin/init");
+    try h.dir("/run/66/state/0");
+    try h.file("/usr/bin/66");
+    try expectDetection(&h, .{}, .s66, false, .tool);
+
+    var running: Harness = undefined;
+    try running.init();
+    defer running.deinit();
+    try running.pid1("/sbin/init");
+    try running.file("/run/66/scandir/0/.66-scandir/control");
+    try expectDetection(&running, .{}, .s66, true, .control_path);
 }

@@ -1,0 +1,20 @@
+=== sandboxed.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:3f39cef5f751453b
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Restart=on-failure is approximated by respawning after every exit
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(sandboxed)
+           #:documentation "Heavily sandboxed daemon"
+           #:respawn? #t
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "sandboxed.service" "--log"))
+           #:stop (make-kill-destructor))))

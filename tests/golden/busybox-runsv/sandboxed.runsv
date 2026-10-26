@@ -1,0 +1,39 @@
+=== run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:bdc6c9dc966e8576
+# Generator: fake-systemd 0.1.0 runit/1
+exec 2>&1
+exec /usr/bin/sandboxd
+=== finish 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:7c16cc83f6f28291
+# Generator: fake-systemd 0.1.0 runit/1
+clean=
+case "$1" in
+-1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
+0) clean=1 ;;
+esac
+if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
+printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
+if [ -n "$clean" ]; then
+    sv down .
+else
+    :
+fi
+=== log/run 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c1aa27b9f04a7518
+# Generator: fake-systemd 0.1.0 runit/1
+exec /usr/bin/fake-systemd --log sandboxed.service

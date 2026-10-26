@@ -226,19 +226,83 @@ const sysv_redhat: BackendDirs = .{
     .native_logs = &.{"/var/log/messages"},
 };
 
+/// Finit reads `/etc/finit.d/*.conf` and `/etc/finit.d/enabled/*.conf`; generated files go to
+/// `available/` and a link in `enabled/` loads them at boot. Its start conditions replace
+/// network services.
 const finit_generic: BackendDirs = .{
-    .provenance = .generic,
+    .provenance = .spec,
     .admin = &.{"/etc/finit.d"},
+    .enable_dir = "/etc/finit.d/enabled",
+    .enable_tool = "initctl",
 };
 
+/// Shepherd reads one configuration file (`/etc/shepherd.scm`, `~/.config/shepherd/init.scm` for a
+/// user) that loads the service files; generated ones go to `available/` and a link in `init.d/`
+/// enables them. Checked against shepherd 1.0.3 on Debian; Guix System declares its services in
+/// the operating system and so cannot enable generated ones.
+const shepherd_generic: BackendDirs = .{
+    .provenance = .spec,
+    .admin = &.{"/etc/shepherd"},
+    .user = &.{"~/.config/shepherd"},
+    .enable_dir = "/etc/shepherd/init.d",
+    .network = &.{"networking"},
+    .network_online = &.{"networking"},
+};
+
+/// nosh keeps service bundles under `/etc/service-bundles/services` (administrator) and the same
+/// under `/usr/local/etc` and `/var/local`; target bundles with their `wants/` links are in the
+/// sibling `targets/`. Generated bundles go to the first directory. Checked against nosh 1.41.
+const nosh_generic: BackendDirs = .{
+    .provenance = .spec,
+    .admin = &.{ "/etc/service-bundles/services", "/usr/local/etc/service-bundles/services", "/var/local/service-bundles/services" },
+    .enable_dir = "/etc/service-bundles/targets",
+    .enable_tool = "system-control",
+    .boot_target = "multi-user",
+};
+
+/// OpenWrt keeps procd scripts in `/etc/init.d`, and the links that `/etc/init.d/<name> enable`
+/// writes in `/etc/rc.d` (`S<START><name>`, `K<STOP><name>`) start and stop them. The `network`
+/// script brings the interfaces up; procd logs to the `logd` ring buffer, not to a file.
 const procd_generic: BackendDirs = .{
+    .provenance = .spec,
+    .admin = sysv_dirs,
+    .enable_dir = "/etc/rc.d",
+    .network = &.{"network"},
+    .network_online = &.{"network"},
+};
+
+/// Slackware keeps one script per service in `/etc/rc.d`; its execute permission enables it,
+/// `rc.local` starts the generated ones and `rc.local_shutdown` stops them.
+const bsd_rc_generic: BackendDirs = .{
+    .provenance = .spec,
+    .admin = &.{"/etc/rc.d"},
+    .native_logs = &.{ "/var/log/messages", "/var/log/syslog" },
+};
+
+/// 66 as it builds by default: frontend files in `/usr/share/66/service` (packages) and
+/// `/etc/66/service` (administrator, which wins), under `user` of each for user services, and
+/// `~/.66/service` for a user's own. 66 enables a service in a tree, so there is no directory of
+/// links; `boot_target` names a tree and stays unset to use the default tree. Checked against
+/// 66 0.9.1.2 built from source.
+const s66_generic: BackendDirs = .{
+    .provenance = .generic,
+    .vendor = &.{"/usr/share/66/service"},
+    .admin = &.{"/etc/66/service"},
+    .user = &.{"~/.66/service"},
+    .vendor_write = "/usr/share/66/service",
+    .user_vendor = &.{"/usr/share/66/service/user"},
+    .user_admin = &.{"/etc/66/service/user"},
+    .network_providers = &.{ "dhcpcd", "networkmanager", "connmand", "iwd", "wpa_supplicant" },
+    .native_logs = &.{"/var/log/66/{name}/current"},
+};
+
+/// BusyBox init without a service manager: a service is a script in `/etc/init.d` that
+/// `/etc/inittab` runs at boot. With `runsvdir` in the inittab the services are runit service
+/// directories instead, which the backend lays out itself.
+const busybox_generic: BackendDirs = .{
     .provenance = .generic,
     .admin = sysv_dirs,
-};
-
-const bsd_rc_generic: BackendDirs = .{
-    .provenance = .generic,
-    .admin = &.{"/etc/rc.d"},
+    .native_logs = &.{"/var/log/messages"},
 };
 
 /// Backends whose tables are the same on every profile.
@@ -252,7 +316,11 @@ fn base() std.EnumArray(InitKind, BackendDirs) {
         .sysvinit = .{ .provenance = .generic, .admin = sysv_dirs },
         .sysvinit_debian = sysv_debian,
         .sysvinit_redhat = sysv_redhat,
+        .s66 = s66_generic,
+        .busybox = busybox_generic,
         .finit = finit_generic,
+        .shepherd = shepherd_generic,
+        .nosh = nosh_generic,
         .procd = procd_generic,
         .bsd_rc = bsd_rc_generic,
     });
@@ -293,7 +361,7 @@ pub const profiles = [_]Profile{
     .{ .id = "chimera", .match_ids = &.{"chimera"}, .backends = base() },
     .{ .id = "gentoo", .match_ids = &.{"gentoo"}, .backends = base() },
     .{ .id = "openwrt", .match_ids = &.{"openwrt"}, .backends = base() },
-    .{ .id = "slackware", .match_ids = &.{"slackware"}, .backends = base() },
+    .{ .id = "slackware", .match_ids = &.{"slackware"}, .backends = base(), .sysvinit = .bsd_rc },
     .{ .id = "guix", .match_ids = &.{"guix"}, .backends = base() },
     .{ .id = "obarun", .match_ids = &.{"obarun"}, .backends = base() },
 };
@@ -444,9 +512,20 @@ test "sysvinit flavours and profile refinement" {
 }
 
 test "backends without stated data are unset" {
-    try testing.expectEqual(Provenance.unset, generic.dirs(.shepherd).provenance);
-    try testing.expectEqual(@as(usize, 0), generic.dirs(.s66).admin.len);
-    try testing.expectEqual(Provenance.generic, generic.dirs(.finit).provenance);
+    try testing.expectEqual(Provenance.unset, generic.dirs(.unknown).provenance);
+}
+
+test "shepherd directories come from its configuration layout" {
+    try testing.expectEqual(Provenance.spec, generic.dirs(.shepherd).provenance);
+    try testing.expectEqualStrings("/etc/shepherd", generic.dirs(.shepherd).admin[0]);
+    try testing.expectEqualStrings("~/.config/shepherd", generic.dirs(.shepherd).user[0]);
+    try testing.expectEqualStrings("/etc/shepherd/init.d", generic.dirs(.shepherd).enable_dir.?);
+}
+
+test "finit directories come from the layout finit documents" {
+    try testing.expectEqual(Provenance.spec, generic.dirs(.finit).provenance);
+    try testing.expectEqualStrings("/etc/finit.d", generic.dirs(.finit).admin[0]);
+    try testing.expectEqualStrings("/etc/finit.d/enabled", generic.dirs(.finit).enable_dir.?);
 }
 
 test "every profile carries the same backend coverage" {
@@ -480,4 +559,38 @@ test "Artix drives s6-rc through the s6 frontend and its repository" {
     try testing.expectEqualStrings("s6", artix.enable_tool.?);
     try testing.expectEqualStrings("/etc/s6/repo", artix.repository.?);
     try testing.expectEqualStrings("/etc/s6/rc/compiled", artix.compiled.?);
+}
+
+test "66 tables carry the frontend directories of a default build" {
+    const d = generic.dirs(.s66);
+    try testing.expectEqual(Provenance.generic, d.provenance);
+    try testing.expectEqualStrings("/etc/66/service", d.admin[0]);
+    try testing.expectEqualStrings("/usr/share/66/service", d.vendor[0]);
+    try testing.expectEqualStrings("/usr/share/66/service", d.vendor_write.?);
+    try testing.expectEqualStrings("~/.66/service", d.user[0]);
+    try testing.expectEqualStrings("/etc/66/service/user", d.user_admin[0]);
+    try testing.expectEqualStrings("/usr/share/66/service/user", d.user_vendor[0]);
+    try testing.expect(d.enable_dir == null and d.enable_tool == null and d.boot_target == null);
+    try testing.expectEqualStrings("/etc/66/service", byName("obarun").?.dirs(.s66).admin[0]);
+}
+
+test "BusyBox init keeps its scripts in /etc/init.d" {
+    const d = generic.dirs(.busybox);
+    try testing.expectEqualStrings("/etc/init.d", d.admin[0]);
+    try testing.expectEqual(Provenance.generic, d.provenance);
+    try testing.expectEqualStrings("/etc/init.d", byName("alpine").?.dirs(.busybox).admin[0]);
+}
+
+test "Slackware boots BSD-style rc scripts on sysvinit's init, OpenWrt procd scripts" {
+    const slackware = byName("slackware").?;
+    try testing.expectEqual(InitKind.bsd_rc, slackware.refine(.sysvinit));
+    try testing.expectEqualStrings("/etc/rc.d", slackware.dirs(.bsd_rc).admin[0]);
+    try testing.expectEqual(Provenance.spec, slackware.dirs(.bsd_rc).provenance);
+    const openwrt = byName("openwrt").?.dirs(.procd);
+    try testing.expectEqualStrings("/etc/init.d", openwrt.admin[0]);
+    try testing.expectEqualStrings("/etc/rc.d", openwrt.enable_dir.?);
+    try testing.expectEqualStrings("network", openwrt.network[0]);
+    try testing.expectEqual(Provenance.spec, openwrt.provenance);
+    // Other distributions keep their sysvinit flavour.
+    try testing.expectEqual(InitKind.sysvinit_debian, byName("debian").?.refine(.sysvinit));
 }

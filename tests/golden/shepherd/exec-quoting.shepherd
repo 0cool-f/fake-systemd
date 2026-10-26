@@ -1,0 +1,19 @@
+=== exec-quoting.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-quoting.service
+# Source: /usr/lib/systemd/system/exec-quoting.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e2b5294cc08c7c30
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(exec-quoting)
+           #:documentation "Command lines that need quoting"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "exec-quoting.service" "--log"))
+           #:stop (make-kill-destructor))))

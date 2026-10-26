@@ -1,0 +1,9 @@
+=== simple-daemon.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: simple-daemon.service
+# Source: /usr/lib/systemd/system/simple-daemon.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:8c01291c38eeb66b
+# Generator: fake-systemd 0.1.0 finit/1
+# Restart=on-failure is approximated by restarting after every exit
+service [2345] name:simple-daemon restart:always /usr/bin/fake-systemd --exec simple-daemon.service --log -- Example metrics exporter

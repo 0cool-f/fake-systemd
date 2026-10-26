@@ -49,6 +49,8 @@ pub const NativeScan = struct {
     /// Suffix dropped from the name of a service directory, when the init names a service after
     /// its producer directory.
     strip_suffix: ?[]const u8 = null,
+    /// Prefix dropped from the name of a service file, when the init names its scripts `rc.<name>`.
+    strip_prefix: ?[]const u8 = null,
 };
 
 pub const Status = struct {
@@ -69,6 +71,8 @@ pub const Change = union(enum) {
     removed: []const u8,
     /// A marker file such as runit's `down` was written.
     created_file: []const u8,
+    /// The execute permission of a script, which is what enables it, was set or cleared.
+    mode_set: struct { path: []const u8, executable: bool },
 };
 
 pub const Power = enum { reboot, poweroff, halt };

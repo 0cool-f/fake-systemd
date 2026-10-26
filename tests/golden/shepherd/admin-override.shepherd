@@ -1,0 +1,19 @@
+=== admin-override.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: admin-override.service
+# Source: /etc/systemd/system/admin-override.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:22eb18cccfb1b2c9
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(admin-override)
+           #:documentation "Unit written by the administrator"
+           #:respawn? #f
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "admin-override.service" "--log"))
+           #:stop (make-kill-destructor))))

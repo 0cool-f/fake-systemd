@@ -611,3 +611,434 @@ test "corpus translates to the golden Debian sysvinit scripts" {
 test "corpus translates to the golden Red Hat sysvinit scripts" {
     for (s6Entries("sysvinit-redhat", "sysvinit")) |e| try runSysvinitEntry(.redhat, "sysvinit-redhat", e.entry, e.expected);
 }
+
+// ---- finit ------------------------------------------------------------------------------
+
+const finit_world = @import("finit_world.zig");
+
+/// Options of a stanza that finit.conf(5) documents; the rest of the words is the command.
+const known_finit_options = [_][]const u8{
+    "@",       "[",        "<",     ":",    "name:", "norestart", "restart:always", "restart_sec:",
+    "kill:",   "halt:SIG", "post:", "pid:", "log",   "env:",      "type:forking",   "manual:yes",
+    "respawn", "nowarn",
+};
+
+fn startsWithAny(word: []const u8, list: []const []const u8) bool {
+    for (list) |p| if (std.mem.startsWith(u8, word, p)) return true;
+    return false;
+}
+
+/// The stanza starts with `service` or `task`, carries only documented options, names an
+/// absolute command, and ends with a description that fits what finit keeps.
+fn expectKnownFinitSyntax(body: []const u8) !void {
+    var stanzas: usize = 0;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        stanzas += 1;
+        try testing.expect(line.len <= 1000);
+        const cut = std.mem.find(u8, line, " -- ") orelse return error.MissingDescription;
+        // finit cuts the line at the first "-- ": it has to be the separator before the description.
+        try testing.expectEqual(cut + 1, std.mem.find(u8, line, "-- ").?);
+        var words = std.mem.tokenizeScalar(u8, line[0..cut], ' ');
+        const keyword = words.next().?;
+        try testing.expect(std.mem.eql(u8, keyword, "service") or std.mem.eql(u8, keyword, "task"));
+        var in_command = false;
+        while (words.next()) |w| {
+            if (in_command) continue;
+            if (startsWithAny(w, &known_finit_options)) continue;
+            if (w[0] != '/') {
+                std.debug.print("unknown finit option or relative command '{s}' in:\n{s}\n", .{ w, body });
+                return error.UnknownFinitOption;
+            }
+            in_command = true;
+        }
+        try testing.expect(in_command);
+    }
+    try testing.expectEqual(@as(usize, 1), stanzas);
+}
+
+fn runFinitEntry(e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try finit_world.populate(&t);
+    const loaded = try load(&t, e);
+    var f: finit_world.finit = undefined;
+    finit_world.use(&t, &f);
+    const be = f.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}-{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    try testing.expectEqualStrings(service, generated.service_name);
+    try testing.expect(generated.files.len == 1 or generated.files.len == 2);
+    const conf = generated.files[0];
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.conf", .{service}), conf.path);
+    try testing.expectEqual(@as(u16, 0o644), conf.mode);
+    for (generated.files) |file| {
+        const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+        try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+        try testing.expect(parsed.bodyIntact());
+        try testing.expectEqualStrings(service, be.serviceOfFile(file.path));
+    }
+    try expectKnownFinitSyntax(marker.parse(conf.content).?.rest);
+    if (generated.files.len == 2) {
+        const script = generated.files[1];
+        try testing.expectEqual(@as(u16, 0o755), script.mode);
+        try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.stop-post", .{service}), script.path);
+        try testing.expectEqualStrings("#!/bin/sh\n", marker.parse(script.content).?.shebang);
+        try expectShellSyntax(&t, script.content);
+        try testing.expect(std.mem.find(u8, conf.content, try std.fmt.allocPrint(a, " post:{s} ", .{script.path})) != null);
+    }
+
+    const text = try composeRunit(a, "/etc/finit.d/available", generated.files);
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/finit/{s}", .{e.golden});
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = text });
+        return;
+    }
+    testing.expectEqualStrings(expected, text) catch |err| {
+        std.debug.print("golden mismatch for finit/{s}\n", .{e.golden});
+        return err;
+    };
+}
+
+test "corpus translates to the golden finit services" {
+    for (s6Entries("finit", "finit")) |e| try runFinitEntry(e.entry, e.expected);
+}
+
+// ---- 66 ---------------------------------------------------------------------------------
+
+const s66_world = @import("s66_world.zig");
+
+/// Keys of each section of a frontend file that the generator writes; any other would be one
+/// 66 reads differently than intended.
+const s66_keys = [_]struct { section: []const u8, keys: []const []const u8 }{
+    .{ .section = "Main", .keys = &.{ "Type", "Description", "Options", "Depends" } },
+    .{ .section = "Start", .keys = &.{ "Timeout", "Execute" } },
+    .{ .section = "Stop", .keys = &.{ "Timeout", "DownSignal", "Execute" } },
+};
+
+fn s66KeyKnown(section: []const u8, key: []const u8) bool {
+    for (s66_keys) |s| {
+        if (!std.mem.eql(u8, s.section, section)) continue;
+        for (s.keys) |k| if (std.mem.eql(u8, k, key)) return true;
+    }
+    return false;
+}
+
+/// Sections and keys of the frontend file are the ones 66 documents, and every `Execute` is a
+/// script `sh -n` accepts.
+fn expectFrontendSyntax(t: *h.Harness, body: []const u8) !void {
+    var section: ?[]const u8 = null;
+    var script: std.ArrayList(u8) = .empty;
+    var in_script = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (in_script) {
+            if (std.mem.eql(u8, line, ")")) {
+                try expectShellSyntax(t, script.items);
+                script.clearRetainingCapacity();
+                in_script = false;
+            } else {
+                try script.appendSlice(t.a(), line);
+                try script.append(t.a(), '\n');
+            }
+            continue;
+        }
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            section = line[1 .. line.len - 1];
+            continue;
+        }
+        const key = std.mem.trim(u8, line[0 .. std.mem.findScalar(u8, line, '=') orelse return error.NotAKeyValueLine], " ");
+        const known = s66KeyKnown(section orelse return error.KeyBeforeSection, key);
+        if (!known) {
+            std.debug.print("unexpected 66 key '{s}' in section [{s}]:\n{s}\n", .{ key, section.?, body });
+            return error.UnknownFrontendKey;
+        }
+        if (std.mem.eql(u8, key, "Execute")) {
+            const value = std.mem.trim(u8, line[std.mem.findScalar(u8, line, '=').? + 1 ..], " ");
+            try testing.expect(std.mem.startsWith(u8, value, "(#!/bin/sh"));
+            in_script = true;
+            try script.appendSlice(t.a(), value[1..]);
+            try script.append(t.a(), '\n');
+        }
+    }
+    try testing.expect(!in_script);
+}
+
+fn runS66Entry(e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try s66_world.populate(&t);
+    const loaded = try load(&t, e);
+    var b: s66_world.S66 = undefined;
+    s66_world.use(&t, &b);
+    const be = b.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    try testing.expectEqual(@as(usize, 1), generated.files.len);
+    const file = generated.files[0];
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}-{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    try testing.expectEqualStrings(service, generated.service_name);
+    try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
+    try testing.expectEqualStrings(e.dest, std.fs.path.dirname(file.path).?);
+    try testing.expectEqual(@as(u16, 0o644), file.mode);
+
+    const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+    try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+    try testing.expect(parsed.bodyIntact());
+    try testing.expectEqualStrings("", parsed.shebang);
+    try testing.expect(std.mem.startsWith(u8, std.mem.trimStart(u8, parsed.rest, "#"), " fake-systemd flags:") or std.mem.startsWith(u8, parsed.rest, "[Main]\n"));
+    try expectFrontendSyntax(&t, parsed.rest);
+
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/66/{s}.66", .{e.golden});
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = file.content });
+        return;
+    }
+    testing.expectEqualStrings(expected, file.content) catch |err| {
+        std.debug.print("golden mismatch for 66/{s}.66\n", .{e.golden});
+        return err;
+    };
+}
+
+test "corpus translates to the golden 66 frontend files" {
+    for (s6Entries("66", "66")) |e| try runS66Entry(.{
+        .file = e.entry.file,
+        .request = e.entry.request,
+        .src_dir = e.entry.src_dir,
+        .dest = if (std.mem.eql(u8, e.entry.src_dir, vendor)) "/usr/share/66/service" else "/etc/66/service",
+        .golden = std.mem.cutSuffix(u8, e.entry.golden, ".66").?,
+        .unit_text = e.entry.unit_text,
+        .expected = "",
+    }, e.expected);
+    try runS66Entry(.{
+        .file = "user-unit.service",
+        .request = "user-unit.service",
+        .src_dir = "/usr/lib/systemd/user",
+        .scope = .user,
+        .dest = "/home/tester/.66/service",
+        .golden = "user-unit",
+        .unit_text = @embedFile("corpus/user-unit.service"),
+        .expected = "",
+    }, @embedFile("golden/66/user-unit.66"));
+}
+
+// ---- Shepherd ---------------------------------------------------------------------------
+
+const shepherd_world = @import("shepherd_world.zig");
+
+/// Keywords of `service`, `make-forkexec-constructor` and `make-kill-destructor` that a generated
+/// file uses; Guile rejects an unknown one when the service is registered.
+const known_shepherd_keywords = [_][]const u8{
+    "#:documentation", "#:requirement", "#:respawn?", "#:respawn-delay", "#:one-shot?", "#:start", "#:stop", "#:grace-period",
+};
+
+/// Parentheses and strings balance, the block comment of the marker is closed, only the two
+/// expected forms stand at the top level, and every keyword is a known one.
+fn expectKnownSchemeSyntax(body: []const u8) !void {
+    try testing.expect(std.mem.startsWith(u8, body, "!#\n"));
+    var depth: usize = 0;
+    var top_forms: usize = 0;
+    var in_string = false;
+    var i: usize = 3;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (in_string) {
+            if (c == '\\') i += 1 else if (c == '"') in_string = false;
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            ';' => while (i < body.len and body[i] != '\n') : (i += 1) {},
+            '(' => {
+                if (depth == 0) top_forms += 1;
+                depth += 1;
+            },
+            ')' => {
+                try testing.expect(depth > 0);
+                depth -= 1;
+            },
+            '#' => if (i + 1 < body.len and body[i + 1] == ':') {
+                const end = std.mem.findAnyPos(u8, body, i, " \n") orelse body.len;
+                const kw = body[i..end];
+                const known = for (known_shepherd_keywords) |k| {
+                    if (std.mem.eql(u8, k, kw)) break true;
+                } else false;
+                if (!known) {
+                    std.debug.print("unknown Shepherd keyword '{s}' in:\n{s}\n", .{ kw, body });
+                    return error.UnknownShepherdKeyword;
+                }
+            },
+            else => {},
+        }
+    }
+    try testing.expect(!in_string and depth == 0);
+    try testing.expectEqual(@as(usize, 2), top_forms);
+    try testing.expect(std.mem.find(u8, body, "(use-modules (shepherd service))\n") != null);
+    try testing.expect(std.mem.find(u8, body, "(register-services\n") != null);
+}
+
+fn runShepherdEntry(e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try shepherd_world.populate(&t);
+    const loaded = try load(&t, e);
+    var s: shepherd_world.shepherd = undefined;
+    shepherd_world.use(&t, &s);
+    const be = s.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}-{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    try testing.expectEqualStrings(service, generated.service_name);
+    try testing.expectEqual(@as(usize, 1), generated.files.len);
+    const file = generated.files[0];
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/shepherd/available/{s}.scm", .{service}), file.path);
+    try testing.expectEqual(@as(u16, 0o644), file.mode);
+    try testing.expectEqualStrings(service, be.serviceOfFile(file.path));
+
+    const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+    try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+    try testing.expect(parsed.bodyIntact());
+    try testing.expectEqualStrings("#!\n", parsed.shebang);
+    try expectKnownSchemeSyntax(parsed.rest);
+
+    const text = try composeRunit(a, "/etc/shepherd/available", generated.files);
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/shepherd/{s}", .{e.golden});
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = text });
+        return;
+    }
+    testing.expectEqualStrings(expected, text) catch |err| {
+        std.debug.print("golden mismatch for shepherd/{s}\n", .{e.golden});
+        return err;
+    };
+}
+
+test "corpus translates to the golden Shepherd services" {
+    for (s6Entries("shepherd", "shepherd")) |e| try runShepherdEntry(e.entry, e.expected);
+}
+
+// ---- BusyBox init -----------------------------------------------------------------------
+
+const busybox_world = @import("busybox_world.zig");
+
+/// One golden file per unit, for each kind of BusyBox system: the runit service directory the
+/// inittab with `runsvdir` gets, and the init script the one without gets. The generators are
+/// those of runit and sysvinit, so the files are what those backends write, with the markers of
+/// their own generators.
+fn runBusyboxEntry(setup: busybox_world.Setup, e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try busybox_world.populate(&t, setup);
+    const loaded = try load(&t, e);
+    var b: busybox_world.Busybox = undefined;
+    busybox_world.use(&t, &b);
+    const be = b.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}@{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    const flat = if (setup == .inittab and loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}.{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        service;
+    try testing.expectEqualStrings(flat, generated.service_name);
+    for (generated.files) |file| {
+        try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
+        const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+        try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+        try testing.expect(parsed.bodyIntact());
+        try testing.expectEqualStrings("#!/bin/sh\n", parsed.shebang);
+        try expectShellSyntax(&t, file.content);
+    }
+    const dir = if (setup == .inittab) "/etc/init.d" else try std.fs.path.join(a, &.{ "/etc/sv", generated.service_name });
+    const text = if (setup == .inittab) blk: {
+        try testing.expectEqual(@as(usize, 1), generated.files.len);
+        try testing.expectEqualStrings(try std.fs.path.join(a, &.{ dir, generated.service_name }), generated.files[0].path);
+        break :blk generated.files[0].content;
+    } else try composeRunit(a, dir, generated.files);
+    const golden_dir = if (setup == .inittab) "busybox-inittab" else "busybox-runsv";
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/{s}/{s}", .{ golden_dir, e.golden });
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = text });
+        return;
+    }
+    testing.expectEqualStrings(expected, text) catch |err| {
+        std.debug.print("golden mismatch for {s}/{s}\n", .{ golden_dir, e.golden });
+        return err;
+    };
+}
+
+test "corpus translates to the golden BusyBox runsvdir services" {
+    for (s6Entries("busybox-runsv", "runsv")) |e| try runBusyboxEntry(.runsv, e.entry, e.expected);
+}
+
+test "corpus translates to the golden BusyBox init scripts" {
+    for (s6Entries("busybox-inittab", "initd")) |e| try runBusyboxEntry(.inittab, e.entry, e.expected);
+}
+
+// ---- nosh -------------------------------------------------------------------------------
+
+const nosh_world = @import("nosh_world.zig");
+
+fn runNoshEntry(e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try nosh_world.populate(&t);
+    const loaded = try load(&t, e);
+    var n: nosh_world.nosh = undefined;
+    nosh_world.use(&t, &n);
+    const be = n.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    const service = if (loaded.name.isInstance())
+        try std.fmt.allocPrint(a, "{s}@{s}", .{ loaded.name.prefix, loaded.name.instance.? })
+    else
+        loaded.name.prefix;
+    try testing.expectEqualStrings(service, generated.service_name);
+    try testing.expectEqual(@as(usize, 1), generated.files.len);
+    const file = generated.files[0];
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/service-bundles/fake-systemd/{s}", .{service}), file.path);
+    try testing.expectEqualStrings(service, be.serviceOfFile(file.path));
+    const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+    try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+    try testing.expect(parsed.bodyIntact());
+    try testing.expect(std.mem.startsWith(u8, parsed.rest, "# nosh converts the unit itself: system-control convert-systemd-units\ndirectory "));
+
+    const text = try composeRunit(a, "/etc/service-bundles/fake-systemd", generated.files);
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/nosh/{s}", .{e.golden});
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = text });
+        return;
+    }
+    testing.expectEqualStrings(expected, text) catch |err| {
+        std.debug.print("golden mismatch for nosh/{s}\n", .{e.golden});
+        return err;
+    };
+}
+
+test "corpus translates to the golden nosh records" {
+    for (s6Entries("nosh", "nosh")) |e| try runNoshEntry(e.entry, e.expected);
+}

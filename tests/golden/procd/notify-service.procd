@@ -1,0 +1,40 @@
+#!/bin/sh /etc/rc.common
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:0cd8a0e6d21cb2ea
+# Generator: fake-systemd 0.1.0 procd/1
+# Notify-style database
+# KillSignal= is not honored: procd stops an instance with SIGTERM
+
+USE_PROCD=1
+START=50
+STOP=50
+
+registered() {
+	[ -n "$(ubus call service list '{"name": "notify-service"}' | jsonfilter -e '@["notify-service"]')" ]
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/bin/fake-systemd --exec notify-service.service --log
+	procd_set_param term_timeout 45
+	procd_close_instance
+}
+
+service_stopped() {
+	_n=0
+	while procd_running notify-service && [ "$_n" -lt 50 ]; do
+		sleep 1
+		_n=$((_n + 1))
+	done
+}
+
+reload_service() {
+	procd_running notify-service || {
+		echo "notify-service.service is not running" >&2
+		return 7
+	}
+	/usr/bin/fake-systemd --exec notify-service.service --phase reload
+}

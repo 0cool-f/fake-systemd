@@ -1,0 +1,22 @@
+=== user-ldap.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-ldap.service
+# Source: /usr/lib/systemd/system/user-ldap.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1eceddbb9d6ce02b
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(user-ldap)
+           #:documentation "Daemon that runs as a directory-service account"
+           #:respawn? #t
+           #:respawn-delay 2
+           #:start (lambda args
+                      (apply (make-forkexec-constructor
+                              (list "/usr/bin/setpriv" "--reuid=svc-directory" (string-append "--regid=" (number->string (passwd:gid (getpw "svc-directory")))) "--init-groups" "/usr/bin/fake-systemd" "--exec" "user-ldap.service" "--log"))
+                             args))
+           #:stop (make-kill-destructor))))

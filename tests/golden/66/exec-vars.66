@@ -1,0 +1,21 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-vars.service
+# Source: /usr/lib/systemd/system/exec-vars.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:abc9f4400ccef232
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Command lines with variable expansion"
+Options = ( !log )
+
+[Start]
+Timeout = 90000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec exec-vars.service --log
+)
+
+[Stop]
+Execute = (#!/bin/sh
+exit 125
+)

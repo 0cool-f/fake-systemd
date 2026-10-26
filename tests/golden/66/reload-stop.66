@@ -1,0 +1,23 @@
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e00d5c18bfed14f3
+# Generator: fake-systemd 0.1.0 66/1
+[Main]
+Type = classic
+Description = "Daemon with reload and stop hooks"
+Options = ( !log )
+
+[Start]
+Timeout = 190000
+Execute = (#!/bin/sh
+exec /usr/bin/fake-systemd --exec reload-stop.service --log --stop-on-signal
+)
+
+[Stop]
+Timeout = 190000
+Execute = (#!/bin/sh
+/usr/bin/fake-systemd --exec reload-stop.service --phase stop-post
+exit 125
+)

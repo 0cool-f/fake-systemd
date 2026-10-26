@@ -1,0 +1,68 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:449feb1d2fa8863e
+# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Nightly backup (started by backup-job.timer)
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/backup-job.service
+main_pid=/run/fake-systemd/backup-job.service.pid
+exit_file=/run/fake-systemd/backup-job.service.exit
+
+do_start() {
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	echo "Starting backup-job.service"
+	/usr/bin/fake-systemd --exec backup-job.service --log --record-exit > /dev/null
+	_rc=$?
+	rm -f "$main_pid"
+	return "$_rc"
+}
+
+do_stop() {
+	rc=0
+	rm -f "$main_pid" "$exit_file"
+	return "$rc"
+}
+
+do_status() {
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "backup-job.service has finished"
+		return 3
+		;;
+	failed*)
+		echo "backup-job.service failed"
+		return 1
+		;;
+	esac
+	echo "backup-job.service is not running"
+	return 3
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+reload)
+	echo "backup-job.service does not support reload" >&2
+	exit 3
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "usage: $0 start|stop|restart|reload|status" >&2
+	exit 2
+	;;
+esac

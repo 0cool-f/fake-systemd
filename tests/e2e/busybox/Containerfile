@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# BusyBox 1.37.0 built from the release tarball with its default configuration, which has the init
+# and the runit applets (runsv, runsvdir, sv, chpst) that the stock BusyBox of Alpine, Debian and
+# Void leaves out. The tarball is pinned by checksum, which Dependabot does not track.
+FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395 AS build
+
+RUN apk add --no-cache build-base linux-headers perl curl bzip2
+RUN curl -fsSL -o /busybox.tar.bz2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2 \
+ && echo "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4  /busybox.tar.bz2" | sha256sum -c - \
+ && mkdir /src && tar -xjf /busybox.tar.bz2 -C /src --strip-components=1
+WORKDIR /src
+RUN make defconfig >/dev/null \
+ && sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/; s/^CONFIG_TC=y/# CONFIG_TC is not set/' .config \
+ && make -j"$(nproc)" busybox >/dev/null 2>&1
+
+FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395
+
+COPY --from=build /src/busybox /bin/busybox
+RUN /bin/busybox --install -s /bin && ln -sf /bin/busybox /sbin/init && mkdir -p /etc/sv /var/service
+# The inittab of a system that runs no service manager: a console and nothing else.
+RUN printf '%s\n' '::sysinit:/bin/mkdir -p /run /var/log' '::ctrlaltdel:/sbin/reboot' '::shutdown:/bin/sync' >/etc/inittab

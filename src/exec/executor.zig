@@ -692,6 +692,10 @@ fn startLogger(prep: *Prepared) void {
     switch (sys.fork()) {
         .child => {
             sys.closeFd(fds[1]);
+            // Own session, so an init that kills the service's process group keeps the logger until EOF.
+            if (linux.errno(linux.setsid()) != .SUCCESS) {
+                ctx.diag.warn("{s}: logger stays in the service's process group", .{prep.unit.name.full});
+            }
             sys.exitNow(logger.run(ctx, ctx.gpa, prep.unit.name.full, .{}, fds[0]));
         },
         .failed => |e| {

@@ -1,0 +1,19 @@
+=== tpl-login-tty1.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:1f267b2276df626b
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(tpl-login-tty1)
+           #:documentation "Login prompt on tty1"
+           #:respawn? #t
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "tpl-login@tty1.service" "--log"))
+           #:stop (make-kill-destructor))))

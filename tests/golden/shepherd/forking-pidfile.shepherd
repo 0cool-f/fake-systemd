@@ -1,0 +1,20 @@
+=== forking-pidfile.scm 0644
+#!
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:455ef68253327e69
+# Generator: fake-systemd 0.1.0 shepherd/1
+!#
+;; Restart=on-abnormal is approximated by respawning after every exit
+(use-modules (shepherd service))
+
+(register-services
+ (list
+  (service '(forking-pidfile)
+           #:documentation "Legacy forking daemon"
+           #:respawn? #t
+           #:start (make-forkexec-constructor
+                    '("/usr/bin/fake-systemd" "--exec" "forking-pidfile.service" "--log"))
+           #:stop (make-kill-destructor))))

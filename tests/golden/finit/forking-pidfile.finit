@@ -1,0 +1,9 @@
+=== forking-pidfile.conf 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f9703631bea945be
+# Generator: fake-systemd 0.1.0 finit/1
+# Restart=on-abnormal is approximated by restarting after every exit
+service [2345] name:forking-pidfile restart:always /usr/bin/fake-systemd --exec forking-pidfile.service --log -- Legacy forking daemon
