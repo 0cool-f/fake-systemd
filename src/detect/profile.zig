@@ -170,12 +170,38 @@ const s6_rc_artix: BackendDirs = .{
     .native_logs = &.{"/var/log/{name}/current"},
 };
 
+/// OpenRC keeps scripts in `/etc/init.d` whatever the tier and enables a service with a link in
+/// `/etc/runlevels/<runlevel>`, which `rc-update` writes. User sessions (0.60 and later) read
+/// `/etc/user/init.d` and `~/.config/rc/init.d`, with runlevels in `~/.config/rc/runlevels`.
+/// `net` is the virtual service every network provider declares with `provide`, and
+/// `network-online` the one `net-online` provides; both exist on Alpine, Gentoo and Artix.
 const openrc_generic: BackendDirs = .{
     .provenance = .spec,
     .admin = &.{"/etc/init.d"},
+    .enable_dir = "/etc/runlevels",
     .enable_tool = "rc-update",
     .boot_target = "default",
+    .user = &.{"~/.config/rc/init.d"},
+    .user_admin = &.{"/etc/user/init.d"},
+    .user_enable_dir = "~/.config/rc/runlevels",
+    .network = &.{"net"},
+    .network_online = &.{ "net", "network-online" },
     .native_logs = &.{"/var/log/rc.log"},
+};
+
+/// Alpine logs through the BusyBox syslog service, to `/var/log/messages`.
+const openrc_alpine: BackendDirs = .{
+    .provenance = .spec,
+    .admin = &.{"/etc/init.d"},
+    .enable_dir = "/etc/runlevels",
+    .enable_tool = "rc-update",
+    .boot_target = "default",
+    .user = &.{"~/.config/rc/init.d"},
+    .user_admin = &.{"/etc/user/init.d"},
+    .user_enable_dir = "~/.config/rc/runlevels",
+    .network = &.{"net"},
+    .network_online = &.{ "net", "network-online" },
+    .native_logs = &.{ "/var/log/messages", "/var/log/rc.log" },
 };
 
 const sysv_debian: BackendDirs = .{
@@ -230,6 +256,12 @@ fn withRunit(runit: BackendDirs) std.EnumArray(InitKind, BackendDirs) {
     return b;
 }
 
+fn withOpenrc(openrc: BackendDirs) std.EnumArray(InitKind, BackendDirs) {
+    var b = base();
+    b.set(.openrc, openrc);
+    return b;
+}
+
 fn withRunitAndS6Rc(runit: BackendDirs, s6_rc: BackendDirs) std.EnumArray(InitKind, BackendDirs) {
     var b = withRunit(runit);
     b.set(.s6_rc, s6_rc);
@@ -249,7 +281,7 @@ pub const profiles = [_]Profile{
         .sysvinit = .sysvinit_redhat,
         .schedulers = &.{"crond"},
     },
-    .{ .id = "alpine", .match_ids = &.{"alpine"}, .backends = base() },
+    .{ .id = "alpine", .match_ids = &.{"alpine"}, .backends = withOpenrc(openrc_alpine) },
     .{ .id = "chimera", .match_ids = &.{"chimera"}, .backends = base() },
     .{ .id = "gentoo", .match_ids = &.{"gentoo"}, .backends = base() },
     .{ .id = "openwrt", .match_ids = &.{"openwrt"}, .backends = base() },
@@ -369,6 +401,22 @@ test "OpenRC table matches the specification" {
     try testing.expectEqualStrings("/etc/init.d", o.admin[0]);
     try testing.expectEqualStrings("rc-update", o.enable_tool.?);
     try testing.expectEqualStrings("default", o.boot_target.?);
+}
+
+test "OpenRC tables carry the runlevel directory, user directories and virtual network services" {
+    const o = generic.dirs(.openrc);
+    try testing.expectEqualStrings("/etc/runlevels", o.enable_dir.?);
+    try testing.expectEqualStrings("~/.config/rc/init.d", o.user[0]);
+    try testing.expectEqualStrings("/etc/user/init.d", o.user_admin[0]);
+    try testing.expectEqualStrings("~/.config/rc/runlevels", o.user_enable_dir.?);
+    try testing.expectEqualStrings("net", o.network[0]);
+    try testing.expectEqualStrings("network-online", o.network_online[1]);
+    for ([_][]const u8{ "alpine", "gentoo", "artix", "debian" }) |id| {
+        try testing.expectEqualStrings("/etc/init.d", byName(id).?.dirs(.openrc).admin[0]);
+        try testing.expectEqualStrings("default", byName(id).?.dirs(.openrc).boot_target.?);
+    }
+    try testing.expectEqualStrings("/var/log/messages", byName("alpine").?.dirs(.openrc).native_logs[0]);
+    try testing.expectEqualStrings("/var/log/rc.log", byName("artix").?.dirs(.openrc).native_logs[0]);
 }
 
 test "sysvinit flavours and profile refinement" {

@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: backup-job.service
+# Source: /usr/lib/systemd/system/backup-job.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:cae88bbaadeaf87d
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: transient
+# A oneshot stays started in OpenRC; status reads it as inactive
+description='Nightly backup (started by backup-job.timer)'
+
+start() {
+	ebegin "Starting ${RC_SVCNAME}"
+	exec 4>&1
+	_rc=$( { { /usr/bin/fake-systemd --exec backup-job.service 2>&1; echo $? >&3; } | /usr/bin/fake-systemd --log backup-job.service >&4; } 3>&1 )
+	exec 4>&-
+	rm -f /run/fake-systemd/backup-job.service.pid
+	eend "${_rc:-1}" "Failed to start ${RC_SVCNAME}"
+}

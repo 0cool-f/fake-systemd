@@ -10,6 +10,7 @@ const Dinit = @import("dinit.zig");
 const Runit = @import("runit.zig");
 const S6 = @import("s6.zig");
 const S6Rc = @import("s6_rc.zig");
+const OpenRc = @import("openrc.zig");
 const Backend = @import("interface.zig").Backend;
 
 pub const Entry = struct {
@@ -23,6 +24,7 @@ pub const registered = [_]Entry{
     .{ .kind = .runit, .name = Runit.backend_name },
     .{ .kind = .s6, .name = S6.backend_name },
     .{ .kind = .s6_rc, .name = S6Rc.backend_name },
+    .{ .kind = .openrc, .name = OpenRc.backend_name },
 };
 
 pub fn isRegistered(kind: InitKind) bool {
@@ -37,6 +39,7 @@ pub const Storage = struct {
     runit: Runit = undefined,
     s6: S6 = undefined,
     s6_rc: S6Rc = undefined,
+    openrc: OpenRc = undefined,
 };
 
 /// What a real backend needs to be built.
@@ -64,6 +67,10 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
             storage.s6_rc = .init(setup.ctx, setup.profile.dirs(.s6_rc));
             return storage.s6_rc.backend();
         },
+        .openrc => {
+            storage.openrc = .init(setup.ctx, setup.profile.dirs(.openrc));
+            return storage.openrc.backend();
+        },
         else => {
             storage.null_backend = .{ .detected = kind.name() };
             return storage.null_backend.backend();
@@ -71,17 +78,18 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
     }
 }
 
-test "dinit, runit, s6 and s6-rc are registered and other kinds fall back to the null backend" {
+test "dinit, runit, s6, s6-rc and OpenRC are registered and other kinds fall back to the null backend" {
     try std.testing.expect(isRegistered(.dinit));
     try std.testing.expect(isRegistered(.runit));
     try std.testing.expect(isRegistered(.s6));
     try std.testing.expect(isRegistered(.s6_rc));
-    try std.testing.expect(!isRegistered(.openrc));
+    try std.testing.expect(isRegistered(.openrc));
+    try std.testing.expect(!isRegistered(.finit));
     var storage: Storage = .{};
     var ctx: core.Context = undefined;
-    const b = select(.openrc, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
+    const b = select(.finit, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
     try std.testing.expectEqualStrings("null", b.name());
-    try std.testing.expectEqualStrings("openrc", storage.null_backend.detected);
+    try std.testing.expectEqualStrings("finit", storage.null_backend.detected);
     const s = select(.s6, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
     try std.testing.expectEqualStrings("s6", s.name());
     try std.testing.expect(s.caps().supervision and s.caps().per_service_logger and !s.caps().oneshot);

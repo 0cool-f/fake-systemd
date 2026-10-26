@@ -138,7 +138,7 @@ fn runService(init: std.process.Init, args: []const [:0]const u8, stderr: *Io.Wr
         return fail(stderr, "cannot initialise: {t}", .{e});
     };
     switch (req.mode) {
-        .exec => return exec.executor.run(&ctx, .{ .unit = req.unit, .phase = req.phase, .stop_on_signal = req.stop_on_signal }),
+        .exec => return exec.executor.run(&ctx, .{ .unit = req.unit, .phase = req.phase, .stop_on_signal = req.stop_on_signal, .log = req.log, .record_exit = req.record_exit }),
         .log => {
             var opts: exec.logger.Options = .{};
             if (req.max_size) |v| opts.max_size = v;

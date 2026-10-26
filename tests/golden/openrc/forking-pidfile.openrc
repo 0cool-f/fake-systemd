@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: forking-pidfile.service
+# Source: /usr/lib/systemd/system/forking-pidfile.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:95ae15fda2efd7a6
+# Generator: fake-systemd 0.1.0 openrc/1
+# Restart=on-abnormal is approximated by respawning on every exit
+description='Legacy forking daemon'
+supervisor=supervise-daemon
+command=/usr/bin/fake-systemd
+command_args="--exec forking-pidfile.service"
+retry=TERM/90/KILL/5
+respawn_delay=1
+respawn_max=5
+respawn_period=10
+output_logger='/usr/bin/fake-systemd --log forking-pidfile.service'
+error_logger='/usr/bin/fake-systemd --log forking-pidfile.service'
+
+depend() {
+	use net
+}

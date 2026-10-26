@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: deps-mix.service
+# Source: /usr/lib/systemd/system/deps-mix.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:65bae9fffbee259e
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Service with many dependency kinds'
+command=/usr/bin/fake-systemd
+command_args="--exec deps-mix.service --log --record-exit"
+command_background=yes
+pidfile=/run/deps-mix.fake-systemd.pid
+retry=TERM/100/KILL/5
+
+depend() {
+	need dbus postgresql
+	want syslog
+	use net network-online
+}

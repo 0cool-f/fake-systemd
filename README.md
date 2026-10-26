@@ -27,7 +27,7 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 | runit (Void, Artix) | supported |
 | s6-rc (Artix with the `s6` frontend; elsewhere compiled from source directories) | supported |
 | s6 (scan directory without s6-rc) | supported |
-| OpenRC | planned |
+| OpenRC (Alpine, Gentoo, Artix) | supported |
 | sysvinit | planned |
 | 66, BSD-style rc, BusyBox init, finit, procd, GNU Shepherd, nosh | planned (second block) |
 
@@ -154,6 +154,36 @@ builds it again.
   stops the services that depend on it.
 - There are no user services.
 
+### OpenRC
+
+A unit becomes an `openrc-run` script in `/etc/init.d` (`foo@bar.service` becomes `foo.bar`), and
+`enable` adds a link to it in the `default` runlevel with `rc-update`. Verified on Alpine (OpenRC
+0.63.2), Gentoo (0.63.3), Artix (0.64.1) and Devuan (0.45.2). Units with `Restart=` run under
+`supervise-daemon`, with the output going to the uniform log through `output_logger` and
+`error_logger`. The others run their executor under `start-stop-daemon` with a pid file of its own;
+the executor logs the output of the service itself and records how the main process ended, so the
+service does not depend on what `start-stop-daemon` can do (the one of dpkg can do little).
+
+- `Requires=` and `BindsTo=` become `need`, `Wants=` becomes `want`, `After=` and `Before=` become
+  `after` and `before`, and the network targets become `use net` and `use network-online`.
+  OpenRC starts the services a script needs itself, so they are not enabled.
+- `supervise-daemon` respawns on every exit, so `Restart=on-failure` and its variants restart after a
+  clean exit too.
+- OpenRC records a service whose process is gone as started and crashed. For a service without
+  `Restart=`, `status` reads the file its executor wrote: a clean end (or `SuccessExitStatus=`) is
+  `inactive`, anything else, and a death without a file, is `failed`. A service that `supervise-daemon`
+  gave up on is `failed` as well.
+- A oneshot stays started in OpenRC; `status` reads it as inactive unless `RemainAfterExit=yes`, and
+  each `start` runs it again.
+- A service with `ExecStop=` runs under the executor, which stays resident and runs the stop commands
+  when it gets SIGTERM, so they run on every stop: `systemctl stop`, a runlevel change, a shutdown.
+- `User=` and `Group=` use `command_user` under `supervise-daemon`, which applies the groups of the
+  account, and `setpriv` in front of the executor for the others. The account that the executor cannot
+  read from `/etc/passwd` gets a log directory it owns, because the logger runs as it.
+- OpenRC reads dependencies from a cache that it does not rebuild when a script appears, so `start` and
+  `restart` run `rc-update -u` first when the script directory is newer than the cache.
+- User services need OpenRC 0.60 or later with a user session (`openrc-user`).
+
 ## Configuration
 
 INI files, read in this order, later ones overriding earlier ones: `/etc/fake-systemd/fake-systemd.conf`,
@@ -205,6 +235,7 @@ podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build test   # u
 tests/e2e/dinit/run.sh                                                       # real dinit in a container
 tests/e2e/runit/run.sh                                                       # real runsvdir in a Void container
 tests/e2e/s6/run.sh                                                          # real s6-svscan and s6-rc in Artix and Alpine containers
+tests/e2e/openrc/run.sh                                                      # real OpenRC in Alpine and Devuan containers
 packaging/aur/test.sh                                                        # AUR package: makepkg and namcap
 ```
 

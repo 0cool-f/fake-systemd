@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c1fc2d180b070c7d
+# Generator: fake-systemd 0.1.0 openrc/1
+description='Login prompt on tty1'
+supervisor=supervise-daemon
+command=/usr/sbin/agetty
+command_args="--noclear tty1 38400 linux"
+retry=TERM/90/KILL/5
+respawn_delay=1
+respawn_max=5
+respawn_period=10
+output_logger='/usr/bin/fake-systemd --log tpl-login@tty1.service'
+error_logger='/usr/bin/fake-systemd --log tpl-login@tty1.service'

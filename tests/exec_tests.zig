@@ -763,3 +763,60 @@ test "a SIGTERM that comes while ExecStartPre runs ends the start" {
     try testing.expectEqual(@as(u8, 143), term.exited);
     try testing.expect(began.untilNow(testing.io, .awake).toMilliseconds() < 4000);
 }
+
+test "record-exit keeps the executor resident and writes how the main process ended" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("bad.service", "ExecStart=/bin/sh -c 'exit 3'");
+    try f.unit("good.service", "ExecStart=/bin/sh -c 'exit 0'");
+    try f.unit("accepted.service", "ExecStart=/bin/sh -c 'exit 3'\nSuccessExitStatus=3");
+    try f.write("/run/fake-systemd/good.service.exit", "failed 9\n");
+
+    const bad = try f.exec("bad.service", &.{"--record-exit"});
+    try testing.expectEqual(@as(u8, 3), bad.code);
+    try testing.expectEqualStrings("failed 3\n", try f.read("/run/fake-systemd/bad.service.exit"));
+    const good = try f.exec("good.service", &.{"--record-exit"});
+    try testing.expectEqual(@as(u8, 0), good.code);
+    try testing.expectEqualStrings("ok 0\n", try f.read("/run/fake-systemd/good.service.exit"));
+    const accepted = try f.exec("accepted.service", &.{"--record-exit"});
+    try testing.expectEqual(@as(u8, 0), accepted.code);
+    try testing.expectEqualStrings("ok 0\n", try f.read("/run/fake-systemd/accepted.service.exit"));
+}
+
+test "record-exit records a stop by SIGTERM as clean and a kill as no file" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("sleeper.service", "ExecStart=/bin/sleep 30");
+    var args: std.ArrayList([]const u8) = .empty;
+    try args.appendSlice(f.a(), &.{ "--exec", "sleeper.service", "--record-exit" });
+    var child = try std.process.spawn(testing.io, .{ .argv = try f.argv(args.items), .environ_map = &f.env });
+    errdefer child.kill(testing.io);
+    try waitForFile(&f, "/run/fake-systemd/sleeper.service.pid");
+    try testing.expect(!f.fs.exists("/run/fake-systemd/sleeper.service.exit"));
+    sys_kill(child.id.?, .TERM);
+    const term = try child.wait(testing.io);
+    try testing.expectEqual(@as(u8, 0), term.exited);
+    try testing.expectEqualStrings("ok 0\n", try f.read("/run/fake-systemd/sleeper.service.exit"));
+}
+
+test "log sends stdout and stderr of the unit to one logger child" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("noisy.service", "ExecStart=/bin/sh -c 'echo out-line; echo err-line >&2'");
+    const r = try f.exec("noisy.service", &.{ "--log", "--record-exit" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqualStrings("", r.out);
+    try waitForFile(&f, "/var/log/fake-systemd/noisy.service/current");
+    var tries: usize = 0;
+    while (tries < 50) : (tries += 1) {
+        const text = try f.read("/var/log/fake-systemd/noisy.service/current");
+        if (std.mem.count(u8, text, "\n") >= 2) break;
+        try testing.io.sleep(.fromMilliseconds(100), .awake);
+    }
+    const text = try f.read("/var/log/fake-systemd/noisy.service/current");
+    try expectContains(text, " out-line\n");
+    try expectContains(text, " err-line\n");
+}

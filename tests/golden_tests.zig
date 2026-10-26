@@ -408,3 +408,108 @@ test "corpus translates to the golden s6 services" {
 test "corpus translates to the golden s6-rc services" {
     for (s6Entries("s6-rc", "s6-rc")) |e| try runS6Entry(.rc, e.entry, "s6-rc", e.expected);
 }
+
+// ---- OpenRC -----------------------------------------------------------------------------
+
+const openrc_world = @import("openrc_world.zig");
+
+/// Variables of `openrc-run` that a generated script sets at its top level.
+const known_openrc_variables = [_][]const u8{
+    "description",            "extra_started_commands", "rc_ulimit",     "supervisor",  "command",        "command_args",
+    "command_user",           "command_background",     "pidfile",       "directory",   "umask",          "no_new_privs",
+    "start_stop_daemon_args", "retry",                  "respawn_delay", "respawn_max", "respawn_period", "output_logger",
+    "error_logger",           "output_log",             "error_log",
+};
+
+/// Functions `openrc-run` calls.
+const known_openrc_functions = [_][]const u8{ "depend", "start_pre", "start", "stop", "stop_post", "reload" };
+
+fn inNames(list: []const []const u8, name: []const u8) bool {
+    for (list) |l| if (std.mem.eql(u8, l, name)) return true;
+    return false;
+}
+
+/// Every top-level line of the script is a comment, an `export`, a known variable assignment,
+/// the head or the end of a known function, or a line inside one.
+fn expectKnownOpenRcSyntax(body: []const u8) !void {
+    var in_function = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        if (in_function) {
+            if (line[0] == '}') in_function = false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "export ")) continue;
+        if (std.mem.endsWith(u8, line, "() {")) {
+            const name = line[0 .. line.len - "() {".len];
+            if (!inNames(&known_openrc_functions, name)) {
+                std.debug.print("unknown OpenRC function '{s}' in:\n{s}\n", .{ name, body });
+                return error.UnknownOpenRcFunction;
+            }
+            in_function = true;
+            continue;
+        }
+        const eq = std.mem.findScalar(u8, line, '=') orelse {
+            std.debug.print("unexpected top-level line '{s}' in:\n{s}\n", .{ line, body });
+            return error.UnexpectedOpenRcLine;
+        };
+        if (!inNames(&known_openrc_variables, line[0..eq])) {
+            std.debug.print("unknown OpenRC variable '{s}' in:\n{s}\n", .{ line[0..eq], body });
+            return error.UnknownOpenRcVariable;
+        }
+    }
+    try testing.expect(!in_function);
+}
+
+fn runOpenRcEntry(e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try openrc_world.populate(&t);
+    const loaded = try load(&t, e);
+    var o: openrc_world.openrc = undefined;
+    openrc_world.use(&t, &o);
+    const be = o.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    try testing.expectEqual(@as(usize, 1), generated.files.len);
+    const file = generated.files[0];
+    try testing.expectEqual(@as(u16, 0o755), file.mode);
+    try testing.expectEqualStrings(std.fs.path.basename(file.path), generated.service_name);
+    try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
+    if (e.dest.len > 0) try testing.expectEqualStrings(e.dest, file.path);
+    try testing.expectEqualStrings(if (e.scope == .user) "/home/tester/.config/rc/init.d" else "/etc/init.d", std.fs.path.dirname(file.path).?);
+
+    const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+    try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+    try testing.expect(parsed.bodyIntact());
+    try testing.expectEqualStrings("#!/sbin/openrc-run\n", parsed.shebang);
+    try expectKnownOpenRcSyntax(parsed.rest);
+
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/openrc/{s}", .{e.golden});
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = file.content });
+        return;
+    }
+    testing.expectEqualStrings(expected, file.content) catch |err| {
+        std.debug.print("golden mismatch for {s}\n", .{e.golden});
+        return err;
+    };
+}
+
+test "corpus translates to the golden OpenRC scripts" {
+    for (s6Entries("openrc", "openrc")) |e| try runOpenRcEntry(e.entry, e.expected);
+    const user: Entry = .{
+        .file = "user-unit.service",
+        .request = "user-unit.service",
+        .src_dir = "/usr/lib/systemd/user",
+        .scope = .user,
+        .dest = "/home/tester/.config/rc/init.d/user-unit",
+        .golden = "user-unit.openrc",
+        .unit_text = @embedFile("corpus/user-unit.service"),
+        .expected = "",
+    };
+    try runOpenRcEntry(user, @embedFile("golden/openrc/user-unit.openrc"));
+}

@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Devuan packages OpenRC 0.45 and leaves start-stop-daemon to dpkg.
+FROM docker.io/devuan/devuan:daedalus-2026-09-17@sha256:0cd6fc5365a948c7c8afbeeb3fa4db124c68e2eca97c69a68df949c37b0c3efd
+
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends openrc procps && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-unit.service
+# Source: /usr/lib/systemd/user/user-unit.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:ec794833e82453ed
+# Generator: fake-systemd 0.1.0 openrc/1
+# Restart=on-failure is approximated by respawning on every exit
+description='Per-user clipboard manager'
+supervisor=supervise-daemon
+command=/usr/bin/clipd
+command_args="--watch"
+retry=TERM/90/KILL/5
+respawn_delay=1
+respawn_max=5
+respawn_period=10
+output_logger='/usr/bin/fake-systemd --log user-unit.service --user'
+error_logger='/usr/bin/fake-systemd --log user-unit.service --user'

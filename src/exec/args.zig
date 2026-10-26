@@ -14,6 +14,10 @@ pub const Parsed = struct {
     phase: executor.Phase = .start,
     /// `--exec` only: the process stays resident and SIGTERM runs `ExecStop=` before it ends the unit.
     stop_on_signal: bool = false,
+    /// `--exec` only: stdout and stderr of the unit go to one `fake-systemd --log` child.
+    log: bool = false,
+    /// `--exec` only: the process stays resident and records how the main process ended.
+    record_exit: bool = false,
     /// Filesystem root for units, accounts, directories and logs; defaults to `/`.
     root: ?[]const u8 = null,
     /// Logger only: size at which `current` is rotated, in bytes.
@@ -28,7 +32,7 @@ pub const Result = union(enum) {
 };
 
 pub const usage =
-    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--root DIR]
+    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--log] [--record-exit] [--root DIR]
     \\       fake-systemd --log <unit> [--user] [--root DIR] [--max-size BYTES] [--keep N]
     \\
 ;
@@ -60,6 +64,10 @@ pub fn parse(gpa: Allocator, args: []const []const u8) Allocator.Error!Result {
             parsed.root = value(args, &i) orelse return .{ .err = "--root needs a directory" };
         } else if (mode == .exec and std.mem.eql(u8, a, "--stop-on-signal")) {
             parsed.stop_on_signal = true;
+        } else if (mode == .exec and std.mem.eql(u8, a, "--log")) {
+            parsed.log = true;
+        } else if (mode == .exec and std.mem.eql(u8, a, "--record-exit")) {
+            parsed.record_exit = true;
         } else if (mode == .exec and std.mem.eql(u8, a, "--phase")) {
             const v = value(args, &i) orelse return .{ .err = "--phase needs a value" };
             parsed.phase = std.meta.stringToEnum(executor.Phase, v) orelse
@@ -112,6 +120,8 @@ test "exec arguments" {
     const d = try expectOk(&.{ "--exec", "x" });
     try std.testing.expect(!d.stop_on_signal);
     try std.testing.expect((try expectOk(&.{ "--exec", "x", "--stop-on-signal" })).stop_on_signal);
+    const flags = try expectOk(&.{ "--exec", "x", "--log", "--record-exit" });
+    try std.testing.expect(flags.log and flags.record_exit and !d.log and !d.record_exit);
     try std.testing.expectEqual(executor.Phase.start, d.phase);
     try std.testing.expectEqual(core.Scope.system, d.scope);
 }
@@ -131,6 +141,7 @@ test "argument errors" {
     try expectErr(&.{ "--exec", "a", "--phase" }, "--phase needs a value");
     try expectErr(&.{ "--exec", "a", "--keep", "1" }, "unknown option '--keep'");
     try expectErr(&.{ "--log", "a", "--stop-on-signal" }, "unknown option '--stop-on-signal'");
+    try expectErr(&.{ "--log", "a", "--record-exit" }, "unknown option '--record-exit'");
     try expectErr(&.{ "--log", "a", "--max-size", "x" }, "invalid --max-size");
     try expectErr(&.{"--other"}, "expected --exec or --log");
     try std.testing.expect(isServiceCommand(&.{ "--log", "x" }));

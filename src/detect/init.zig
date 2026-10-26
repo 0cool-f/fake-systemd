@@ -108,6 +108,8 @@ pub fn detect(ctx: *const Context, opts: Options) !Detection {
             kind = pk;
             result.signal = .proc_exe;
             if (pk == .s6 and control != null and control.? == .s6_rc) kind = .s6_rc;
+            // Alpine boots OpenRC from BusyBox init, whose executable is `busybox`.
+            if (pk == .busybox and control != null and control.? == .openrc) kind = .openrc;
         } else if (control) |ck| {
             kind = ck;
             result.signal = .control_path;
@@ -384,6 +386,25 @@ test "OpenRC wins over the sysvinit control socket" {
     try h.file("/run/initctl");
     try h.file("/run/openrc/softlevel");
     try expectDetection(&h, .{}, .openrc, true, .control_path);
+}
+
+test "BusyBox init with the OpenRC state directory is OpenRC, and without it BusyBox" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/bin/busybox");
+    try expectDetection(&h, .{}, .busybox, true, .proc_exe);
+    try h.file("/run/openrc/softlevel");
+    try expectDetection(&h, .{}, .openrc, true, .proc_exe);
+}
+
+test "openrc-init as PID 1 is OpenRC" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    try h.pid1("/usr/bin/openrc-init");
+    try h.file("/run/openrc/softlevel");
+    try expectDetection(&h, .{}, .openrc, true, .proc_exe);
 }
 
 test "s6-svscan with an s6-rc directory is s6-rc" {

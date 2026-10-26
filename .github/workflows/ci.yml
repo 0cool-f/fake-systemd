@@ -65,5 +65,7 @@ jobs:
         run: tests/e2e/dinit/run.sh
       - name: Run the runit end-to-end test
         run: tests/e2e/runit/run.sh
+      - name: Run the OpenRC end-to-end test
+        run: tests/e2e/openrc/run.sh
       - name: Run the s6 end-to-end test
         run: tests/e2e/s6/run.sh

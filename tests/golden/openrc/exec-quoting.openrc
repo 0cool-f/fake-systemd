@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: exec-quoting.service
+# Source: /usr/lib/systemd/system/exec-quoting.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6edd9e1e0ef58861
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Command lines that need quoting'
+command=/usr/bin/fake-systemd
+command_args="--exec exec-quoting.service --log --record-exit"
+command_background=yes
+pidfile=/run/exec-quoting.fake-systemd.pid
+retry=TERM/100/KILL/5

@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: reload-stop.service
+# Source: /usr/lib/systemd/system/reload-stop.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6abe4782b4054be4
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Daemon with reload and stop hooks'
+extra_started_commands="reload"
+command=/usr/bin/fake-systemd
+command_args="--exec reload-stop.service --stop-on-signal --log --record-exit"
+command_background=yes
+pidfile=/run/reload-stop.fake-systemd.pid
+retry=TERM/100/KILL/5
+
+stop_post() {
+	/usr/bin/fake-systemd --exec reload-stop.service --phase stop-post
+}
+
+reload() {
+	ebegin "Reloading ${RC_SVCNAME}"
+	/usr/bin/fake-systemd --exec reload-stop.service --phase reload
+	eend $?
+}

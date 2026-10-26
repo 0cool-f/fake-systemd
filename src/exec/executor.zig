@@ -33,6 +33,7 @@ const expand = @import("expand.zig");
 const identity = @import("identity.zig");
 const limits = @import("limits.zig");
 const sys = @import("sys.zig");
+const logger = @import("logger.zig");
 
 pub const Phase = enum { start, stop, reload, @"stop-post", @"stop-main" };
 
@@ -41,6 +42,10 @@ pub const Request = struct {
     phase: Phase = .start,
     /// `start` only: SIGTERM runs `ExecStop=` and terminates the main process.
     stop_on_signal: bool = false,
+    /// `start` only: stdout and stderr of the unit go to one `fake-systemd --log` child.
+    log: bool = false,
+    /// `start` only: the executor stays resident and writes how the main process ended to `execExitPath`.
+    record_exit: bool = false,
 };
 
 pub const search_path = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
@@ -159,6 +164,7 @@ const Prepared = struct {
     /// Main process of the unit for `stop` and `reload`.
     main_pid: ?i32 = null,
     stop_on_signal: bool = false,
+    record_exit: bool = false,
 };
 
 fn lookupUser(context: ?*anyopaque, name: []const u8) ?specifier.UserInfo {
@@ -320,7 +326,7 @@ fn writeMainPid(ctx: *core.Context, unit: model.Unit, pid: i32) void {
     const dir = std.fs.path.dirname(path) orelse return;
     ctx.fs.makePath(dir) catch |e| return ctx.diag.warn("{s}: cannot create {s}: {t}", .{ unit.name.full, dir, e });
     const text = std.fmt.allocPrint(ctx.gpa, "{d}\n", .{pid}) catch return;
-    ctx.fs.writeFileAtomic(path, text, 0o644) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
+    ctx.fs.writeFileInPlace(path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
 }
 
 /// `$MAINPID` for control commands and the process to stop: inherited from the caller, else
@@ -626,7 +632,8 @@ fn supervise(prep: *Prepared, cmd: model.Command, wait_exec: bool) u8 {
 }
 
 fn stopsOnSignal(prep: *const Prepared) bool {
-    return prep.stop_on_signal and prep.unit.exec_stop.len > 0;
+    // A recording executor is the parent of the main process, so SIGTERM stops it as `ExecStop=` would.
+    return (prep.stop_on_signal and prep.unit.exec_stop.len > 0) or prep.record_exit;
 }
 
 fn startSimple(prep: *Prepared) u8 {
@@ -634,11 +641,11 @@ fn startSimple(prep: *Prepared) u8 {
     const unit = prep.unit;
     if (unit.exec_start.len == 0) return fail(ctx, "{s}: no ExecStart=", .{unit.name.full});
     if (unit.exec_start.len > 1) ctx.diag.warn("{s}: only the first ExecStart= is run for Type={t}", .{ unit.name.full, unit.service_type });
-    if (unit.exec_start_post.len > 0 or stopsOnSignal(prep)) return supervise(prep, unit.exec_start[0], unit.service_type == .exec);
+    if (unit.exec_start_post.len > 0 or stopsOnSignal(prep) or prep.record_exit) return supervise(prep, unit.exec_start[0], unit.service_type == .exec);
     execCommand(prep, unit.exec_start[0]);
 }
 
-fn start(prep: *Prepared) u8 {
+fn startPhase(prep: *Prepared) u8 {
     installHandlers(stopsOnSignal(prep));
     writeMainPid(prep.ctx, prep.unit, linux.getpid());
     if (runSequence(prep, prep.unit.exec_start_pre, .control)) |code| return code;
@@ -648,6 +655,64 @@ fn start(prep: *Prepared) u8 {
         .forking => startForking(prep),
         else => startSimple(prep),
     };
+}
+
+/// File the executor writes with `record_exit`: `ok <status>` when the main process ended in a
+/// way `SuccessExitStatus=` accepts, `failed <status>` otherwise.
+pub fn execExitPath(ctx: *const core.Context, unit_name: []const u8) Allocator.Error![]const u8 {
+    const file = try std.fmt.allocPrint(ctx.gpa, "fake-systemd/{s}.exit", .{unit_name});
+    return std.fs.path.join(ctx.gpa, &.{ if (ctx.scope == .user) ctx.xdg_runtime_dir else "/run", file });
+}
+
+fn removeExit(ctx: *core.Context, unit: model.Unit) void {
+    const path = execExitPath(ctx, unit.name.full) catch return;
+    ctx.fs.deleteFile(path) catch |e| switch (e) {
+        error.FileNotFound => {},
+        else => ctx.diag.warn("{s}: cannot remove {s}: {t}", .{ unit.name.full, path, e }),
+    };
+}
+
+/// Written in place, so that a file the service account owns can be rewritten in a directory it
+/// cannot create files in.
+fn writeExit(ctx: *core.Context, unit: model.Unit, code: u8) void {
+    const path = execExitPath(ctx, unit.name.full) catch return;
+    if (std.fs.path.dirname(path)) |dir| ctx.fs.makePath(dir) catch |e| ctx.diag.warn("{s}: cannot create {s}: {t}", .{ unit.name.full, dir, e });
+    const text = std.fmt.allocPrint(ctx.gpa, "{s} {d}\n", .{ if (code == 0) "ok" else "failed", code }) catch return;
+    ctx.fs.writeFileInPlace(path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
+}
+
+/// Forks a `fake-systemd --log` child and points stdout and stderr at it. The child outlives
+/// nothing: it ends when the last writer of the pipe is gone.
+fn startLogger(prep: *Prepared) void {
+    const ctx = prep.ctx;
+    var fds: [2]i32 = .{ -1, -1 };
+    if (linux.errno(linux.pipe2(&fds, .{ .CLOEXEC = true })) != .SUCCESS) {
+        return ctx.diag.warn("{s}: cannot create the pipe to the logger", .{prep.unit.name.full});
+    }
+    switch (sys.fork()) {
+        .child => {
+            sys.closeFd(fds[1]);
+            sys.exitNow(logger.run(ctx, ctx.gpa, prep.unit.name.full, .{}, fds[0]));
+        },
+        .failed => |e| {
+            ctx.diag.warn("{s}: cannot start the logger: {t}", .{ prep.unit.name.full, e });
+            sys.closeFd(fds[0]);
+            sys.closeFd(fds[1]);
+        },
+        .parent => {
+            sys.closeFd(fds[0]);
+            _ = linux.dup2(fds[1], 1);
+            _ = linux.dup2(fds[1], 2);
+            sys.closeFd(fds[1]);
+        },
+    }
+}
+
+fn start(prep: *Prepared) u8 {
+    if (prep.record_exit) removeExit(prep.ctx, prep.unit);
+    const code = startPhase(prep);
+    if (prep.record_exit) writeExit(prep.ctx, prep.unit, code);
+    return code;
 }
 
 fn control(prep: *Prepared, cmds: []const model.Command) u8 {
@@ -739,6 +804,8 @@ fn runInner(ctx: *core.Context, req: Request) !u8 {
     var prep: Prepared = undefined;
     if (try prepare(ctx, unit, db, req.phase, &prep)) |code| return code;
     prep.stop_on_signal = req.stop_on_signal;
+    prep.record_exit = req.record_exit;
+    if (req.log and req.phase == .start) startLogger(&prep);
     return switch (req.phase) {
         .start => start(&prep),
         .stop => stopPhase(&prep),

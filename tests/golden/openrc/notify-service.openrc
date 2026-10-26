@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:c216e1bb6916836f
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Notify-style database'
+extra_started_commands="reload"
+command=/usr/bin/fake-systemd
+command_args="--exec notify-service.service --log --record-exit"
+command_background=yes
+pidfile=/run/notify-service.fake-systemd.pid
+retry=TERM/55/KILL/5
+
+depend() {
+	use net network-online
+}
+
+reload() {
+	ebegin "Reloading ${RC_SVCNAME}"
+	/usr/bin/fake-systemd --exec notify-service.service --phase reload
+	eend $?
+}

@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: admin-override.service
+# Source: /etc/systemd/system/admin-override.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:6d213cce1da5ef32
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Unit written by the administrator'
+command=/usr/bin/fake-systemd
+command_args="--exec admin-override.service --log --record-exit"
+command_background=yes
+pidfile=/run/admin-override.fake-systemd.pid
+retry=TERM/100/KILL/5

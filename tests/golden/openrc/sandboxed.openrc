@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: sandboxed.service
+# Source: /usr/lib/systemd/system/sandboxed.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fbfebffdc77cc188
+# Generator: fake-systemd 0.1.0 openrc/1
+# Restart=on-failure is approximated by respawning on every exit
+description='Heavily sandboxed daemon'
+supervisor=supervise-daemon
+command=/usr/bin/sandboxd
+retry=TERM/90/KILL/5
+respawn_delay=1
+respawn_max=5
+respawn_period=10
+output_logger='/usr/bin/fake-systemd --log sandboxed.service'
+error_logger='/usr/bin/fake-systemd --log sandboxed.service'
+
+depend() {
+	use net
+}

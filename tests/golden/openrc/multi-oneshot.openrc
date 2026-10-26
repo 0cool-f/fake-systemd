@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: multi-oneshot.service
+# Source: /usr/lib/systemd/system/multi-oneshot.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:fa02e4c3ffe2ea76
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: transient
+# A oneshot stays started in OpenRC; status reads it as inactive
+description='Oneshot with several commands'
+
+start() {
+	ebegin "Starting ${RC_SVCNAME}"
+	exec 4>&1
+	_rc=$( { { /usr/bin/fake-systemd --exec multi-oneshot.service 2>&1; echo $? >&3; } | /usr/bin/fake-systemd --log multi-oneshot.service >&4; } 3>&1 )
+	exec 4>&-
+	rm -f /run/fake-systemd/multi-oneshot.service.pid
+	eend "${_rc:-1}" "Failed to start ${RC_SVCNAME}"
+}

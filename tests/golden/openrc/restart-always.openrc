@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: restart-always.service
+# Source: /usr/lib/systemd/system/restart-always.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:f1788aceba977e6f
+# Generator: fake-systemd 0.1.0 openrc/1
+description='Always restarted worker'
+supervisor=supervise-daemon
+command=/usr/bin/worker
+command_args="--queue default"
+retry=USR1/2/KILL/5
+respawn_delay=5
+respawn_max=0
+output_logger='/usr/bin/fake-systemd --log restart-always.service'
+error_logger='/usr/bin/fake-systemd --log restart-always.service'

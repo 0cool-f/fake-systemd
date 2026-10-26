@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-group.service
+# Source: /usr/lib/systemd/system/user-group.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:e392bc8e5ec3bf77
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Daemon with user, group and supplementary groups'
+command=/usr/bin/fake-systemd
+command_args="--exec user-group.service --log --record-exit"
+command_background=yes
+pidfile=/run/user-group.fake-systemd.pid
+retry=TERM/100/KILL/5

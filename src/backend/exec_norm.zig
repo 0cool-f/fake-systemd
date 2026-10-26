@@ -34,6 +34,12 @@ const setpriv_flags = [_][]const u8{
     "--no-new-privs", "--init-groups", "--clear-groups", "--keep-groups", "--reset-env", "--list-caps", "--dump",
 };
 
+const supervise_daemon_valued = [_][]const u8{
+    "-A",                  "-a",                  "-D",             "-d",        "-e",              "-g",                   "-I",                  "-k",       "-m",    "-N",      "-p",       "-P",      "-R",            "-r",          "-s",              "-u",        "-0",               "-1",      "-2",
+    "--healthcheck-timer", "--healthcheck-delay", "--capabilities", "--secbits", "--respawn-delay", "--respawn-delay-step", "--respawn-delay-cap", "--chdir",  "--env", "--group", "--ionice", "--umask", "--respawn-max", "--nicelevel", "--oom-score-adj", "--pidfile", "--respawn-period", "--retry", "--chroot",
+    "--signal",            "--user",              "--stdin",        "--stdout",  "--stderr",        "--stdout-logger",      "--stderr-logger",     "--notify",
+};
+
 const shells = [_][]const u8{ "sh", "bash", "dash", "ash", "zsh", "ksh" };
 const interpreters = [_][]const u8{ "python", "perl", "ruby", "node", "nodejs", "lua", "luajit", "php", "bun" };
 
@@ -130,6 +136,12 @@ fn strip(gpa: Allocator, words: []const []const u8, depth: usize) Allocator.Erro
             w = afterDoubleDash(args) orelse return null;
             continue;
         }
+        if (std.mem.eql(u8, base, "supervise-daemon")) {
+            // supervise-daemon <service> [options] [command [-- args]]
+            const operands = if (args.len > 0 and args[0].len > 0 and args[0][0] != '-') args[1..] else args;
+            w = skipOptions(operands, &supervise_daemon_valued, false);
+            continue;
+        }
         if (std.mem.eql(u8, base, "runuser")) {
             if (optionValue(args, "--command", "-c")) |cmd| return stripShellString(gpa, cmd, depth);
             w = skipOptions(args, &.{ "-u", "-g", "-G", "-l", "-s", "--user", "--group" }, false);
@@ -213,6 +225,12 @@ test "start-stop-daemon and runuser" {
     try expectExe("/usr/sbin/foo", &.{ "start-stop-daemon", "--start", "--pidfile", "p", "--", "/usr/sbin/foo", "a" });
     try expectExe("/usr/bin/foo", &.{ "runuser", "-u", "svc", "--", "/usr/bin/foo" });
     try expectExe("/usr/bin/foo", &.{ "runuser", "-l", "svc", "-c", "exec /usr/bin/foo --x" });
+}
+
+test "supervise-daemon skips the service name and its options" {
+    try expectExe("/usr/bin/foo", &.{ "supervise-daemon", "foo", "--start", "--respawn-delay", "2", "--user", "svc:grp", "/usr/bin/foo", "--", "-x" });
+    try expectExe("/usr/bin/foo", &.{ "supervise-daemon", "foo", "--start", "--", "/usr/bin/foo" });
+    try expectExe("/usr/bin/foo", &.{ "supervise-daemon", "--start", "-m", "3", "/usr/bin/foo" });
 }
 
 test "shells and interpreters resolve to the script" {

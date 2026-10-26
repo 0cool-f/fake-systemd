@@ -14,6 +14,9 @@ const logpath = @import("logpath.zig");
 const name_mod = @import("../unit/name.zig");
 
 pub const current_name = "current";
+const lock_name = ".lock";
+const lock_exclusive = 2;
+const lock_unlock = 8;
 
 pub const Options = struct {
     /// Size at which `current` is rotated.
@@ -130,6 +133,8 @@ pub const Logger = struct {
     tz: tz_mod.Tz,
     opts: Options,
     fd: ?i32 = null,
+    /// Descriptor of `<dir>/.lock`, which serializes rotation between loggers of the same unit.
+    lock_fd: ?i32 = null,
     size: u64 = 0,
     lost: u64 = 0,
     line: std.ArrayList(u8) = .empty,
@@ -144,6 +149,8 @@ pub const Logger = struct {
 
     pub fn deinit(l: *Logger) void {
         l.closeFile();
+        if (l.lock_fd) |fd| _ = linux.close(fd);
+        l.lock_fd = null;
         l.line.deinit(l.gpa);
     }
 
@@ -183,8 +190,50 @@ pub const Logger = struct {
         l.fd = fd;
     }
 
+    fn openLock(l: *Logger) !i32 {
+        if (l.lock_fd) |fd| return fd;
+        const rel = try l.path(lock_name);
+        defer l.gpa.free(rel);
+        const rc = linux.openat(l.fs.root.handle, rel.ptr, .{
+            .ACCMODE = .RDWR,
+            .CREAT = true,
+            .CLOEXEC = true,
+            .NOFOLLOW = true,
+        }, 0o644);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {},
+            else => |e| return errnoError(e),
+        }
+        l.lock_fd = @intCast(rc);
+        return l.lock_fd.?;
+    }
+
+    /// True when `current` on disk is no longer the file this logger has open.
+    fn replaced(l: *Logger) !bool {
+        const fd = l.fd orelse return true;
+        const ours = try (Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).stat(l.fs.io);
+        const current = try std.fs.path.join(l.gpa, &.{ l.dir, current_name });
+        defer l.gpa.free(current);
+        const theirs = l.fs.stat(current) catch |e| switch (e) {
+            error.FileNotFound => return true,
+            else => return e,
+        };
+        return theirs.inode != ours.inode;
+    }
+
+    /// Rotates `current` under the lock of the log directory, unless another logger did it since
+    /// this one opened the file; the caller opens the new `current` either way.
     fn rotate(l: *Logger, unix_secs: i64) !void {
+        const lock = try l.openLock();
+        while (true) switch (linux.errno(linux.flock(lock, lock_exclusive))) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => |e| return errnoError(e),
+        };
+        defer _ = linux.flock(lock, lock_unlock);
+        const done = try l.replaced();
         l.closeFile();
+        if (done) return;
         const current = try std.fs.path.join(l.gpa, &.{ l.dir, current_name });
         defer l.gpa.free(current);
         var secs = unix_secs;
@@ -231,6 +280,8 @@ pub const Logger = struct {
         l.line.appendAssumeCapacity('\n');
 
         if (l.fd == null) try l.open();
+        // Other loggers append to the same file, so the size is read, not counted.
+        l.size = seek(l.fd.?, 0, linux.SEEK.END) catch l.size;
         if (l.size > 0 and l.size + l.line.items.len > l.opts.max_size) {
             try l.rotate(@divFloor(unix_ms, 1000));
             try l.open();
@@ -519,4 +570,75 @@ test "run reads a descriptor to EOF and flushes the last partial line" {
     try testing.expect(std.mem.endsWith(u8, lines.next().?, " beta"));
     try testing.expect(std.mem.endsWith(u8, lines.next().?, " partial"));
     try testing.expectEqualStrings("", lines.next().?);
+}
+
+const Writer = struct {
+    fs: Fs,
+    id: u8,
+    lines: usize,
+    max_size: u64,
+
+    fn run(w: *Writer) void {
+        var buf: [256]u8 = undefined;
+        var sink: Io.Writer = .fixed(&buf);
+        var diag: core.Diag = .init(&sink, .notice);
+        var l: Logger = .init(std.heap.page_allocator, w.fs, &diag, "/log/shared", rome, .{ .max_size = w.max_size, .keep = 1000 });
+        defer l.deinit();
+        var msg: [24]u8 = undefined;
+        var i: usize = 0;
+        while (i < w.lines) : (i += 1) {
+            const text = std.fmt.bufPrint(&msg, "{c}{d:0>6} abcdefghijklm", .{ 'A' + w.id, i }) catch unreachable;
+            l.writeLine(@as(i64, 1000 + @as(i64, @intCast(i))) * 1000, text);
+        }
+    }
+};
+
+test "two loggers of one unit rotate without losing or duplicating a line" {
+    var t: TestEnv = undefined;
+    t.init();
+    defer t.deinit();
+    const per_writer = 400;
+    const max_size = 600;
+    var a: Writer = .{ .fs = t.fs, .id = 0, .lines = per_writer, .max_size = max_size };
+    var b: Writer = .{ .fs = t.fs, .id = 1, .lines = per_writer, .max_size = max_size };
+    try t.fs.makePath("/log/shared");
+    const ta = try std.Thread.spawn(.{}, Writer.run, .{&a});
+    const tb = try std.Thread.spawn(.{}, Writer.run, .{&b});
+    ta.join();
+    tb.join();
+
+    const gpa = testing.allocator;
+    const rotated = try rotatedFiles(gpa, t.fs, "/log/shared");
+    defer {
+        for (rotated) |n| gpa.free(n);
+        gpa.free(rotated);
+    }
+    try testing.expect(rotated.len >= 5);
+    const seen = try gpa.alloc(u8, 2 * per_writer);
+    defer gpa.free(seen);
+    @memset(seen, 0);
+    var total: usize = 0;
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(gpa);
+    for (rotated) |n| try names.append(gpa, n);
+    try names.append(gpa, current_name);
+    for (names.items) |name| {
+        const path_ = try std.fs.path.join(gpa, &.{ "/log/shared", name });
+        defer gpa.free(path_);
+        const content = try t.fs.readFileAlloc(gpa, path_, 1 << 20);
+        defer gpa.free(content);
+        const line_len = std.mem.findScalar(u8, content, '\n') orelse continue;
+        try testing.expect(content.len <= max_size + line_len + 1);
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const parsed = parseLine(line).?;
+            const id: usize = parsed.message[0] - 'A';
+            const n = try std.fmt.parseInt(usize, parsed.message[1..7], 10);
+            seen[id * per_writer + n] += 1;
+            total += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2 * per_writer), total);
+    for (seen) |c| try testing.expectEqual(@as(u8, 1), c);
 }

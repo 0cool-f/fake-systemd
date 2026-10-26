@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: env-exec-pre.service
+# Source: /usr/lib/systemd/system/env-exec-pre.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:01c330cffa5dee1b
+# Generator: fake-systemd 0.1.0 openrc/1
+# flags: record-exit
+description='Web application with a prepared environment'
+command=/usr/bin/fake-systemd
+command_args="--exec env-exec-pre.service --log --record-exit"
+command_background=yes
+pidfile=/run/env-exec-pre.fake-systemd.pid
+retry=TERM/100/KILL/5
+
+depend() {
+	use net
+}

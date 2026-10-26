@@ -246,6 +246,13 @@ pub fn writeFileAtomic(fs: Fs, abs: []const u8, content: []const u8, mode: u16) 
     try fs.syncDir(std.fs.path.dirname(real) orelse "/");
 }
 
+/// Truncates and writes `abs` in place, creating it when it is missing. Unlike `writeFileAtomic`
+/// it needs no write permission on the directory when the file exists and is writable.
+pub fn writeFileInPlace(fs: Fs, abs: []const u8, content: []const u8) !void {
+    var real_buf: [path_cap]u8 = undefined;
+    const real = try fs.followParent(&real_buf, abs);
+    try fs.root.writeFile(fs.io, .{ .sub_path = rel(real), .data = content });
+}
 fn refuseSymlinkDestination(fs: Fs, abs: []const u8) !void {
     const st = fs.lstat(abs) catch |e| switch (e) {
         error.FileNotFound => return,
