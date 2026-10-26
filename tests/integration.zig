@@ -12,6 +12,7 @@ test {
     _ = @import("s6_tests.zig");
     _ = @import("s6_rc_tests.zig");
     _ = @import("openrc_tests.zig");
+    _ = @import("sysvinit_tests.zig");
     _ = @import("exec_tests.zig");
     _ = @import("timer_tests.zig");
     _ = @import("timer_runtime_tests.zig");

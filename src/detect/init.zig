@@ -117,7 +117,7 @@ pub fn detect(ctx: *const Context, opts: Options) !Detection {
     }
 
     const running = !opts.offline_root and kind != null and sameRoot(ctx) and
-        (confirms(proc.kind, kind.?) or confirms(control, kind.?));
+        (confirms(proc.kind, kind.?) or controlConfirms(control, kind.?, proc));
 
     if (kind == null) {
         if (probeTools(ctx)) |tk| {
@@ -134,6 +134,14 @@ pub fn detect(ctx: *const Context, opts: Options) !Detection {
 
 fn confirms(seen: ?InitKind, kind: InitKind) bool {
     return seen != null and seen.?.sameBackend(kind);
+}
+
+/// A control path confirms the init that was found. The socket of sysvinit does so only next to
+/// an `init` as PID 1: container images keep `/run/initctl` where no init runs, and systemd
+/// offers a socket of that name for the programs that talk to sysvinit.
+fn controlConfirms(control: ?InitKind, kind: InitKind, proc: ProcProbe) bool {
+    const seen = control orelse return false;
+    return seen.sameBackend(kind) and (!seen.isSysvinit() or proc.init);
 }
 
 const Override = struct { kind: InitKind, signal: Signal };
@@ -158,6 +166,8 @@ fn parseOverride(ctx: *const Context, source: []const u8, value: []const u8) !?I
 const ProcProbe = struct {
     kind: ?InitKind = null,
     systemd: bool = false,
+    /// PID 1 is an executable named `init`, which says nothing about which init it is.
+    init: bool = false,
 };
 
 fn probeProcExe(ctx: *const Context) ProcProbe {
@@ -170,7 +180,7 @@ fn probeProcExe(ctx: *const Context) ProcProbe {
         if (std.mem.eql(u8, e.name, base)) return .{ .kind = e.kind };
     }
     if (std.mem.eql(u8, base, "busybox")) return .{ .kind = .busybox };
-    return .{};
+    return .{ .init = std.mem.eql(u8, base, "init") };
 }
 
 fn probeControl(ctx: *const Context) ?InitKind {
@@ -468,6 +478,45 @@ test "sysvinit flavour comes from tools and release files" {
         try h.pid1("/sbin/init");
         try h.file("/run/initctl");
         try expectDetection(&h, .{}, .sysvinit, true, .control_path);
+    }
+}
+
+test "the sysvinit socket confirms a running init only next to an init as PID 1" {
+    {
+        // Container images keep /run/initctl where no init runs.
+        var h: Harness = undefined;
+        try h.init();
+        defer h.deinit();
+        try h.pid1("/usr/bin/sleep");
+        try h.file("/run/initctl");
+        try h.file("/usr/sbin/update-rc.d");
+        try expectDetection(&h, .{}, .sysvinit_debian, false, .control_path);
+    }
+    {
+        var h: Harness = undefined;
+        try h.init();
+        defer h.deinit();
+        try h.file("/run/initctl");
+        try expectDetection(&h, .{}, .sysvinit, false, .control_path);
+    }
+    {
+        // systemd offers a socket of that name for the programs that talk to sysvinit.
+        var h: Harness = undefined;
+        try h.init();
+        defer h.deinit();
+        try h.pid1("/usr/lib/systemd/systemd");
+        try h.file("/run/initctl");
+        const d = try detect(&h.ctx, .{});
+        try testing.expect(d.systemd_pid1 and !d.running);
+    }
+    {
+        // Other control paths are left as they were: they name their init without help.
+        var h: Harness = undefined;
+        try h.init();
+        defer h.deinit();
+        try h.pid1("/usr/bin/sleep");
+        try h.file("/run/openrc/softlevel");
+        try expectDetection(&h, .{}, .openrc, true, .control_path);
     }
 }
 

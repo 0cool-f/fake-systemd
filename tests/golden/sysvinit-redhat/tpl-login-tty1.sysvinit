@@ -1,0 +1,128 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: tpl-login@tty1.service
+# Source: /usr/lib/systemd/system/tpl-login@.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:9ec3169cae3b12d3
+# Generator: fake-systemd 0.1.0 sysvinit/1
+# chkconfig: 2345 80 20
+# description: Login prompt on tty1
+### BEGIN INIT INFO
+# Provides:          tpl-login.tty1
+# Required-Start:    $remote_fs
+# Required-Stop:     $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Login prompt on tty1
+### END INIT INFO
+# Restart=always is not honored: sysvinit does not supervise services, a service that dies stays dead
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/tpl-login@tty1.service
+main_pid=/run/fake-systemd/tpl-login@tty1.service.pid
+exit_file=/run/fake-systemd/tpl-login@tty1.service.exit
+daemon_pid=/run/fake-systemd/tpl-login@tty1.service.daemon.pid
+stop_wait=100
+lock_file=/var/lock/subsys/tpl-login.tty1
+
+running() {
+	_pid=$(cat "$daemon_pid" 2>/dev/null)
+	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+}
+
+do_start() {
+	running && return 0
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	rm -f "$exit_file" "$main_pid"
+	mkdir -p /var/lock/subsys
+	echo "Starting tpl-login@tty1.service"
+	/usr/bin/fake-systemd --exec tpl-login@tty1.service --daemon --log --record-exit
+	_rc=$?
+	[ "$_rc" -eq 0 ] && : > "$lock_file"
+	return "$_rc"
+}
+
+stop_daemon() {
+	running || return 0
+	_pid=$(cat "$daemon_pid")
+	kill -TERM "$_pid" 2>/dev/null
+	_n=0
+	while running && [ "$_n" -lt $((stop_wait * 10)) ]; do
+		sleep 0.1
+		_n=$((_n + 1))
+	done
+	running || return 0
+	kill -KILL "$_pid" 2>/dev/null
+	_n=0
+	while running && [ "$_n" -lt 50 ]; do
+		sleep 0.1
+		_n=$((_n + 1))
+	done
+	! running
+}
+
+do_stop() {
+	rc=0
+	echo "Stopping tpl-login@tty1.service"
+	if [ -e "$daemon_pid" ]; then
+		stop_daemon || rc=$?
+		rm -f "$daemon_pid"
+	fi
+	rm -f "$main_pid" "$exit_file"
+	rm -f "$lock_file"
+	return "$rc"
+}
+
+do_status() {
+	if running; then
+		echo "tpl-login@tty1.service is running"
+		return 0
+	fi
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "tpl-login@tty1.service is not running"
+		return 3
+		;;
+	esac
+	if [ -e "$daemon_pid" ] || [ -e "$exit_file" ]; then
+		echo "tpl-login@tty1.service is dead and is not restarted: sysvinit does not supervise services"
+		return 1
+	fi
+	echo "tpl-login@tty1.service is not running"
+	return 3
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+try-restart)
+	if do_status > /dev/null 2>&1; then
+		do_stop
+		do_start
+	fi
+	;;
+reload)
+	echo "tpl-login@tty1.service does not support reload" >&2
+	exit 3
+	;;
+force-reload)
+	do_stop
+	do_start
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|try-restart|reload|force-reload|status}" >&2
+	exit 2
+	;;
+esac

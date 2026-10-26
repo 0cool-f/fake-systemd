@@ -513,3 +513,101 @@ test "corpus translates to the golden OpenRC scripts" {
     };
     try runOpenRcEntry(user, @embedFile("golden/openrc/user-unit.openrc"));
 }
+
+// ---- sysvinit ---------------------------------------------------------------------------
+
+const sysvinit_world = @import("sysvinit_world.zig");
+
+/// Fields of the LSB block that `insserv` insists on, even when empty.
+const lsb_required = [_][]const u8{ "Provides:", "Required-Start:", "Required-Stop:", "Default-Start:", "Default-Stop:", "Short-Description:" };
+
+/// Keys of the LSB block that `insserv` reads.
+const lsb_known = lsb_required ++ [_][]const u8{ "Should-Start:", "Should-Stop:", "X-Start-Before:", "X-Stop-After:" };
+
+/// The LSB block holds every required field once and no unknown one, and `chkconfig` finds its
+/// line before the block on Red Hat.
+fn expectLsbHeader(variant: sysvinit_world.Variant, body: []const u8) !void {
+    const begin = std.mem.find(u8, body, "### BEGIN INIT INFO\n") orelse return error.MissingLsbHeader;
+    const end = std.mem.find(u8, body, "### END INIT INFO\n") orelse return error.MissingLsbHeader;
+    try testing.expect(begin < end);
+    const block = body[begin + "### BEGIN INIT INFO\n".len .. end];
+    var seen: [lsb_required.len]bool = @splat(false);
+    var lines = std.mem.splitScalar(u8, block, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try testing.expect(std.mem.startsWith(u8, line, "# "));
+        const key = line[2 .. 2 + (std.mem.findScalar(u8, line[2..], ':') orelse return error.MalformedLsbLine) + 1];
+        if (!inNames(&lsb_known, key)) {
+            std.debug.print("unknown LSB key '{s}' in:\n{s}\n", .{ key, body });
+            return error.UnknownLsbKey;
+        }
+        for (lsb_required, 0..) |r, i| if (std.mem.eql(u8, r, key)) {
+            try testing.expect(!seen[i]);
+            seen[i] = true;
+        };
+    }
+    for (seen) |s| try testing.expect(s);
+    const chk = std.mem.find(u8, body, "# chkconfig: ");
+    switch (variant) {
+        .debian => try testing.expect(chk == null),
+        .redhat => try testing.expect(chk != null and chk.? < begin and std.mem.find(u8, body, "# description: ") != null),
+    }
+}
+
+/// `sh -n` accepts the script.
+fn expectShellSyntax(t: *h.Harness, content: []const u8) !void {
+    try t.write("/syntax-check.sh", content, 0o755);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try t.tmp.dir.realPath(testing.io, &buf);
+    const path = try std.fmt.allocPrint(t.a(), "{s}/syntax-check.sh", .{buf[0..n]});
+    const res = try std.process.run(t.a(), testing.io, .{ .argv = &.{ "/bin/sh", "-n", path } });
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print("sh -n rejects:\n{s}\n{s}\n", .{ content, res.stderr });
+        return error.ShellSyntaxError;
+    }
+}
+
+fn runSysvinitEntry(variant: sysvinit_world.Variant, golden_dir: []const u8, e: Entry, expected: []const u8) !void {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    const a = t.a();
+    try sysvinit_world.populate(&t, variant);
+    const loaded = try load(&t, e);
+    var s: sysvinit_world.sysvinit = undefined;
+    sysvinit_world.use(&t, &s, variant);
+    const be = s.backend();
+    const generated = try be.generate(a, .{ .unit = &loaded.unit, .tier = loaded.resolved.tier().?, .source = loaded.resolved.fragment.?.path, .src_hash = 0x0123456789abcdef });
+
+    try testing.expectEqual(@as(usize, 1), generated.files.len);
+    const file = generated.files[0];
+    try testing.expectEqual(@as(u16, 0o755), file.mode);
+    try testing.expectEqualStrings(std.fs.path.basename(file.path), generated.service_name);
+    try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
+    try testing.expectEqualStrings("/etc/init.d", std.fs.path.dirname(file.path).?);
+
+    const parsed = marker.parse(file.content) orelse return error.MissingMarker;
+    try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
+    try testing.expect(parsed.bodyIntact());
+    try testing.expectEqualStrings("#!/bin/sh\n", parsed.shebang);
+    try expectLsbHeader(variant, parsed.rest);
+    try expectShellSyntax(&t, file.content);
+
+    if (updateRequested()) {
+        const path = try std.fmt.allocPrint(a, "tests/golden/{s}/{s}", .{ golden_dir, e.golden });
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = file.content });
+        return;
+    }
+    testing.expectEqualStrings(expected, file.content) catch |err| {
+        std.debug.print("golden mismatch for {s}/{s}\n", .{ golden_dir, e.golden });
+        return err;
+    };
+}
+
+test "corpus translates to the golden Debian sysvinit scripts" {
+    for (s6Entries("sysvinit-debian", "sysvinit")) |e| try runSysvinitEntry(.debian, "sysvinit-debian", e.entry, e.expected);
+}
+
+test "corpus translates to the golden Red Hat sysvinit scripts" {
+    for (s6Entries("sysvinit-redhat", "sysvinit")) |e| try runSysvinitEntry(.redhat, "sysvinit-redhat", e.entry, e.expected);
+}

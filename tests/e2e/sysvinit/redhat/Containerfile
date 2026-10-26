@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Rocky Linux 10 ships chkconfig and initscripts (the `functions` library and `service`). It boots
+# systemd, which a container does not run; `init`, a copy of bash that reaps orphans, stands in for
+# the PID 1 of a sysvinit system, with the control socket that run.sh creates.
+FROM docker.io/rockylinux/rockylinux:10.2@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+
+RUN dnf install -y -q chkconfig initscripts initscripts-service procps-ng util-linux findutils && dnf clean all -q
+RUN cp /usr/bin/bash /usr/local/sbin/init

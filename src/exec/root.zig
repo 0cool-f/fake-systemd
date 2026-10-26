@@ -13,6 +13,7 @@ pub const identity = @import("identity.zig");
 pub const dirs = @import("dirs.zig");
 pub const environment = @import("environment.zig");
 pub const executor = @import("executor.zig");
+pub const daemon = @import("daemon.zig");
 pub const args = @import("args.zig");
 
 test {

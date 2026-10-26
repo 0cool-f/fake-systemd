@@ -820,3 +820,35 @@ test "log sends stdout and stderr of the unit to one logger child" {
     try expectContains(text, " out-line\n");
     try expectContains(text, " err-line\n");
 }
+
+test "daemon detaches, writes the pid of the executor and leaves no stream open" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("bg.service", "ExecStart=/bin/sleep 30");
+    // `run` returns only when the standard streams of every process that inherited them are closed.
+    const r = try f.exec("bg.service", &.{ "--daemon", "--log", "--record-exit" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    const pid_file = "/run/fake-systemd/bg.service.daemon.pid";
+    const pid = try std.fmt.parseInt(i32, std.mem.trim(u8, try f.read(pid_file), " \n"), 10);
+    try testing.expect(sys_kill_check(pid));
+    const stat = try std.fmt.allocPrint(f.a(), "/proc/{d}/stat", .{pid});
+    const text = (try f.runArgv(&.{ "/bin/cat", stat })).out;
+    // Fields after the command name: state, ppid, pgrp, session.
+    const close = std.mem.findScalarLast(u8, text, ')').?;
+    var it = std.mem.tokenizeScalar(u8, text[close + 1 ..], ' ');
+    _ = it.next();
+    _ = it.next();
+    const group = try std.fmt.parseInt(i32, it.next().?, 10);
+    const session = try std.fmt.parseInt(i32, it.next().?, 10);
+    // The session was made by the first child, which is gone: the executor leads nothing.
+    try testing.expect(session == group and session != pid);
+    try waitForFile(&f, "/run/fake-systemd/bg.service.pid");
+    sys_kill(pid, .TERM);
+    try waitForFile(&f, "/run/fake-systemd/bg.service.exit");
+    try testing.expectEqualStrings("ok 0\n", try f.read("/run/fake-systemd/bg.service.exit"));
+}
+
+fn sys_kill_check(pid: i32) bool {
+    return linux.errno(linux.kill(pid, @fromBackingInt(@intCast(0)))) == .SUCCESS;
+}

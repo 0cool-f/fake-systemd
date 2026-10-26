@@ -28,7 +28,7 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 | s6-rc (Artix with the `s6` frontend; elsewhere compiled from source directories) | supported |
 | s6 (scan directory without s6-rc) | supported |
 | OpenRC (Alpine, Gentoo, Artix) | supported |
-| sysvinit | planned |
+| sysvinit (Devuan, Debian, Red Hat family) | supported |
 | 66, BSD-style rc, BusyBox init, finit, procd, GNU Shepherd, nosh | planned (second block) |
 
 ## Installation
@@ -184,6 +184,57 @@ service does not depend on what `start-stop-daemon` can do (the one of dpkg can 
   `restart` run `rc-update -u` first when the script directory is newer than the cache.
 - User services need OpenRC 0.60 or later with a user session (`openrc-user`).
 
+### sysvinit
+
+A unit becomes an LSB init script in `/etc/init.d` (`foo@bar.service` becomes `foo.bar`) with the LSB
+header that `insserv` reads, and on Red Hat the `chkconfig:` header as well. `enable` links it with
+`update-rc.d <script> defaults` on Debian and Devuan and with `chkconfig <script> on` on Red Hat, and
+`is-enabled` looks for a start link in the default runlevel: the `initdefault` of `/etc/inittab`, else 2
+on Debian and 3 on Red Hat. The scripts have the actions `start`, `stop`, `restart`, `try-restart`,
+`reload`, `force-reload` and `status`, and answer `status` with the exit statuses of the LSB (0 running,
+1 dead with a pid file, 3 not running). Verified with sysvinit as PID 1 on Devuan 5 (sysvinit 3.06,
+insserv 1.24.0, dpkg 1.21.23) and Debian 13 (sysvinit 3.14, insserv 1.26.0, dpkg 1.22.22). The Red Hat
+family is verified on Rocky Linux 10 (chkconfig 1.30, initscripts 10.26) and 9 (chkconfig 1.24,
+initscripts 10.11.8), which boot systemd: no sysvinit runs there, so the tests stand in a process
+named `init` and the control socket for it. The `/etc/rc.d/rc` of a sysvinit system (CentOS 6,
+initscripts 9.03.61) was read for the lock files, not run.
+
+- Every service runs under the executor, which logs, records how the main process ended in
+  `/run/fake-systemd/<unit>.exit`, and turns SIGTERM into the stop, so `ExecStop=` runs whenever the
+  script stops the service: `systemctl stop`, a runlevel change, a shutdown. A daemon is started in the
+  background by `start-stop-daemon` on Debian and by `fake-systemd --exec <unit> --daemon` on Red Hat,
+  and its executor pid is in `<unit>.daemon.pid`; `<unit>.pid` holds the main process.
+- sysvinit supervises nothing: `Restart=` is not honored, and a service that dies stays dead. `status`
+  reads `failed` for it (the script says it is dead and not restarted), which is also how a timer
+  runner that died shows, since the runner is such a service. A oneshot runs to the end in `start` and
+  is `inactive` afterwards, or `active` with `RemainAfterExit=yes`; a `Type=forking` service without
+  `PIDFile=` is that kind of oneshot, which stop cannot signal.
+- `Requires=` and `BindsTo=` are named in a `# Pulls-In:` line, and `enable` enables those scripts with
+  the service (`daemon-reload` does for a requirement added later). `After=` and `Wants=` only order.
+  On Debian every unit a unit follows, wants or requires is `Should-Start`: `insserv` stops with a fatal
+  error at a `Required-Start` that names a script that is not enabled, and then at every later run for
+  any script. Red Hat's `chkconfig` sorts by `Required-Start` and `Should-Start` alike and ignores a missing
+  script, so the hard dependencies are `Required-Start` there. `Before=` is `X-Start-Before`, which
+  `insserv` honors and `chkconfig` does not. The network targets are the `$network` facility, and the
+  filesystems `$remote_fs`.
+- `update-rc.d` calls `systemctl` for `enable` and `disable` when one is installed, and `chkconfig` does
+  for a script that has a unit of the same name; both would call this program, so they run with
+  `_SKIP_SYSTEMD_NATIVE=1` and `SYSTEMCTL_SKIP_REDIRECT=1`.
+- Offline, in a chroot or a container build, the tools are used as they are online, since they write
+  the links without an init. For another `--root` they cannot be called, and the links are written
+  directly: late start links and early stop links (80 and 20, or the priorities of `chkconfig:`), which
+  `insserv` or `chkconfig` sort at their next run.
+- On Red Hat a start creates `/var/lock/subsys/<script>` and a stop removes it, because `/etc/rc.d/rc`
+  runs a stop link only for a script that has one.
+- `policy-rc.d` is consulted by `invoke-rc.d` and by the maintainer scripts of packages, not by
+  `systemctl`, which does not consult it with systemd either. `systemctl start` starts the service where
+  `invoke-rc.d` is denied; offline, nothing starts in any case.
+- A socket `/run/initctl` is no running init unless PID 1 is an `init`: container images keep one where
+  nothing runs, and systemd offers a socket of that name.
+- Power verbs run `shutdown -r now`, `shutdown -h -P now` and `shutdown -h -H now`, which go through the
+  stop links of runlevel 6 and 0.
+- There are no user services.
+
 ## Configuration
 
 INI files, read in this order, later ones overriding earlier ones: `/etc/fake-systemd/fake-systemd.conf`,
@@ -236,6 +287,7 @@ tests/e2e/dinit/run.sh                                                       # r
 tests/e2e/runit/run.sh                                                       # real runsvdir in a Void container
 tests/e2e/s6/run.sh                                                          # real s6-svscan and s6-rc in Artix and Alpine containers
 tests/e2e/openrc/run.sh                                                      # real OpenRC in Alpine and Devuan containers
+tests/e2e/sysvinit/run.sh                                                    # real sysvinit as PID 1 in Devuan and Debian, chkconfig in Rocky containers
 packaging/aur/test.sh                                                        # AUR package: makepkg and namcap
 ```
 

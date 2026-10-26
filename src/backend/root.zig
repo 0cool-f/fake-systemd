@@ -12,6 +12,7 @@ pub const Runit = @import("runit.zig");
 pub const S6 = @import("s6.zig");
 pub const S6Rc = @import("s6_rc.zig");
 pub const OpenRc = @import("openrc.zig");
+pub const Sysvinit = @import("sysvinit.zig");
 pub const policy = @import("policy.zig");
 pub const network = @import("network.zig");
 pub const registry = @import("registry.zig");
@@ -32,6 +33,7 @@ test {
     _ = S6;
     _ = S6Rc;
     _ = OpenRc;
+    _ = Sysvinit;
     _ = policy;
     _ = network;
     _ = registry;

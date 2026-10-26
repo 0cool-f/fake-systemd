@@ -69,3 +69,5 @@ jobs:
         run: tests/e2e/openrc/run.sh
       - name: Run the s6 end-to-end test
         run: tests/e2e/s6/run.sh
+      - name: Run the sysvinit end-to-end test
+        run: tests/e2e/sysvinit/run.sh

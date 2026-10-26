@@ -11,6 +11,7 @@ const Runit = @import("runit.zig");
 const S6 = @import("s6.zig");
 const S6Rc = @import("s6_rc.zig");
 const OpenRc = @import("openrc.zig");
+const Sysvinit = @import("sysvinit.zig");
 const Backend = @import("interface.zig").Backend;
 
 pub const Entry = struct {
@@ -25,6 +26,7 @@ pub const registered = [_]Entry{
     .{ .kind = .s6, .name = S6.backend_name },
     .{ .kind = .s6_rc, .name = S6Rc.backend_name },
     .{ .kind = .openrc, .name = OpenRc.backend_name },
+    .{ .kind = .sysvinit, .name = Sysvinit.backend_name },
 };
 
 pub fn isRegistered(kind: InitKind) bool {
@@ -40,6 +42,7 @@ pub const Storage = struct {
     s6: S6 = undefined,
     s6_rc: S6Rc = undefined,
     openrc: OpenRc = undefined,
+    sysvinit: Sysvinit = undefined,
 };
 
 /// What a real backend needs to be built.
@@ -71,6 +74,12 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
             storage.openrc = .init(setup.ctx, setup.profile.dirs(.openrc));
             return storage.openrc.backend();
         },
+        .sysvinit, .sysvinit_debian, .sysvinit_redhat => {
+            const variant = Sysvinit.variantFor(setup.ctx, kind);
+            const dirs = setup.profile.dirs(if (variant == .redhat) .sysvinit_redhat else .sysvinit_debian);
+            storage.sysvinit = .init(setup.ctx, dirs, variant);
+            return storage.sysvinit.backend();
+        },
         else => {
             storage.null_backend = .{ .detected = kind.name() };
             return storage.null_backend.backend();
@@ -78,12 +87,13 @@ pub fn select(kind: InitKind, storage: *Storage, setup: Setup) Backend {
     }
 }
 
-test "dinit, runit, s6, s6-rc and OpenRC are registered and other kinds fall back to the null backend" {
+test "dinit, runit, s6, s6-rc, OpenRC and sysvinit are registered and other kinds fall back to the null backend" {
     try std.testing.expect(isRegistered(.dinit));
     try std.testing.expect(isRegistered(.runit));
     try std.testing.expect(isRegistered(.s6));
     try std.testing.expect(isRegistered(.s6_rc));
     try std.testing.expect(isRegistered(.openrc));
+    try std.testing.expect(isRegistered(.sysvinit) and isRegistered(.sysvinit_debian) and isRegistered(.sysvinit_redhat));
     try std.testing.expect(!isRegistered(.finit));
     var storage: Storage = .{};
     var ctx: core.Context = undefined;
@@ -99,4 +109,8 @@ test "dinit, runit, s6, s6-rc and OpenRC are registered and other kinds fall bac
     const d = select(.dinit, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
     try std.testing.expectEqualStrings("dinit", d.name());
     try std.testing.expect(d.caps().supervision and d.caps().soft_deps and d.caps().translates);
+    const sv = select(.sysvinit_redhat, &storage, .{ .ctx = &ctx, .profile = &profile.generic });
+    try std.testing.expectEqualStrings("sysvinit", sv.name());
+    try std.testing.expect(sv.caps().hard_deps and sv.caps().soft_deps and sv.caps().ordering and !sv.caps().supervision and !sv.caps().restart_policy);
+    try std.testing.expectEqual(Sysvinit.Variant.redhat, storage.sysvinit.variant);
 }

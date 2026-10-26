@@ -204,17 +204,25 @@ const openrc_alpine: BackendDirs = .{
     .native_logs = &.{ "/var/log/messages", "/var/log/rc.log" },
 };
 
+/// Debian and Devuan keep scripts in `/etc/init.d` and the links in `/etc/rc<N>.d`, which
+/// `update-rc.d` writes; `/etc/inittab` names the default runlevel, 2 when it says nothing.
 const sysv_debian: BackendDirs = .{
     .provenance = .spec,
     .admin = sysv_dirs,
+    .enable_dir = "/etc",
     .enable_tool = "update-rc.d",
+    .boot_target = "2",
     .native_logs = &.{ "/var/log/syslog", "/var/log/daemon.log" },
 };
 
+/// Red Hat keeps the links in `/etc/rc.d/rc<N>.d`, which `chkconfig` writes, and boots into
+/// runlevel 3 (multi-user) or 5 (graphical); 3 stands when `/etc/inittab` says nothing.
 const sysv_redhat: BackendDirs = .{
     .provenance = .spec,
     .admin = sysv_dirs,
+    .enable_dir = "/etc/rc.d",
     .enable_tool = "chkconfig",
+    .boot_target = "3",
     .native_logs = &.{"/var/log/messages"},
 };
 
@@ -273,10 +281,10 @@ pub const generic: Profile = .{ .id = "generic", .backends = base() };
 pub const profiles = [_]Profile{
     .{ .id = "void", .match_ids = &.{"void"}, .backends = withRunit(runit_void) },
     .{ .id = "artix", .match_ids = &.{"artix"}, .backends = withRunitAndS6Rc(runit_artix, s6_rc_artix) },
-    .{ .id = "debian", .match_ids = &.{ "debian", "devuan", "ubuntu" }, .backends = base(), .sysvinit = .sysvinit_debian, .schedulers = &.{"cron"} },
+    .{ .id = "debian", .match_ids = &.{ "debian", "devuan", "ubuntu", "raspbian" }, .backends = base(), .sysvinit = .sysvinit_debian, .schedulers = &.{"cron"} },
     .{
         .id = "redhat",
-        .match_ids = &.{ "rhel", "fedora", "centos", "rocky", "almalinux", "ol" },
+        .match_ids = &.{ "rhel", "fedora", "centos", "rocky", "almalinux", "ol", "amzn", "scientific", "mageia", "pclinuxos" },
         .backends = base(),
         .sysvinit = .sysvinit_redhat,
         .schedulers = &.{"crond"},
@@ -331,6 +339,9 @@ test "selection by ID" {
     try testing.expectEqualStrings("artix", (try selectFor(&arena, "ID=artix\nID_LIKE=arch\n")).id);
     try testing.expectEqualStrings("debian", (try selectFor(&arena, "ID=devuan\n")).id);
     try testing.expectEqualStrings("redhat", (try selectFor(&arena, "ID=fedora\n")).id);
+    try testing.expectEqualStrings("redhat", (try selectFor(&arena, "ID=rocky\nID_LIKE=\"rhel centos fedora\"\n")).id);
+    try testing.expectEqualStrings("redhat", (try selectFor(&arena, "ID=pclinuxos\n")).id);
+    try testing.expectEqualStrings("debian", (try selectFor(&arena, "ID=raspbian\nID_LIKE=debian\n")).id);
 }
 
 test "ID wins over ID_LIKE" {
@@ -422,6 +433,10 @@ test "OpenRC tables carry the runlevel directory, user directories and virtual n
 test "sysvinit flavours and profile refinement" {
     try testing.expectEqualStrings("update-rc.d", generic.dirs(.sysvinit_debian).enable_tool.?);
     try testing.expectEqualStrings("chkconfig", generic.dirs(.sysvinit_redhat).enable_tool.?);
+    try testing.expectEqualStrings("/etc", generic.dirs(.sysvinit_debian).enable_dir.?);
+    try testing.expectEqualStrings("2", generic.dirs(.sysvinit_debian).boot_target.?);
+    try testing.expectEqualStrings("/etc/rc.d", generic.dirs(.sysvinit_redhat).enable_dir.?);
+    try testing.expectEqualStrings("3", generic.dirs(.sysvinit_redhat).boot_target.?);
     try testing.expectEqual(InitKind.sysvinit_debian, byName("debian").?.refine(.sysvinit));
     try testing.expectEqual(InitKind.sysvinit_redhat, byName("redhat").?.refine(.sysvinit));
     try testing.expectEqual(InitKind.sysvinit, generic.refine(.sysvinit));

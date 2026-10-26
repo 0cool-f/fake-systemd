@@ -150,7 +150,13 @@ pub fn freeEntries(gpa: std.mem.Allocator, entries: []Entry) void {
 /// Creates `abs` and its missing parents. Existing components that are symlinks are resolved
 /// inside the root.
 pub fn makePath(fs: Fs, abs: []const u8) !void {
-    if (fs.host_root) return fs.root.createDirPath(fs.io, rel(abs));
+    if (fs.host_root) {
+        // `/etc/init.d` is a link to `rc.d/init.d` on Red Hat; the creation refuses a link.
+        if (fs.root.statFile(fs.io, rel(abs), .{})) |st| {
+            if (st.kind == .directory) return;
+        } else |_| {}
+        return fs.root.createDirPath(fs.io, rel(abs));
+    }
     var cur: [path_cap]u8 = undefined;
     var cur_len: usize = 0;
     var cand_buf: [path_cap]u8 = undefined;
@@ -628,6 +634,20 @@ test "makePath reuses a directory reached through a symlink component" {
     try testing.expect(fs.exists("/usr/lib/x/y"));
     try fs.writeFileAtomic("/f", "", 0o644);
     try testing.expectError(error.NotDir, fs.makePath("/f/sub"));
+}
+
+test "makePath of the host root accepts a directory reached through a symlink" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var fs = tmpFs(&tmp);
+    fs.host_root = true;
+    try fs.makePath("/etc/rc.d/init.d");
+    try fs.symLink("rc.d/init.d", "/etc/init.d");
+    try fs.makePath("/etc/init.d");
+    try fs.writeFileAtomic("/etc/init.d/svc", "x", 0o755);
+    try testing.expect(fs.exists("/etc/rc.d/init.d/svc"));
+    try fs.writeFileAtomic("/f", "", 0o644);
+    try testing.expectError(error.NotDir, fs.makePath("/f"));
 }
 
 test "rename moves a link inside a symlinked directory" {

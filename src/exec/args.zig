@@ -18,6 +18,8 @@ pub const Parsed = struct {
     log: bool = false,
     /// `--exec` only: the process stays resident and records how the main process ended.
     record_exit: bool = false,
+    /// `--exec` only: the executor detaches from its caller and records its own pid.
+    daemon: bool = false,
     /// Filesystem root for units, accounts, directories and logs; defaults to `/`.
     root: ?[]const u8 = null,
     /// Logger only: size at which `current` is rotated, in bytes.
@@ -32,7 +34,7 @@ pub const Result = union(enum) {
 };
 
 pub const usage =
-    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--log] [--record-exit] [--root DIR]
+    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--log] [--record-exit] [--daemon] [--root DIR]
     \\       fake-systemd --log <unit> [--user] [--root DIR] [--max-size BYTES] [--keep N]
     \\
 ;
@@ -68,6 +70,8 @@ pub fn parse(gpa: Allocator, args: []const []const u8) Allocator.Error!Result {
             parsed.log = true;
         } else if (mode == .exec and std.mem.eql(u8, a, "--record-exit")) {
             parsed.record_exit = true;
+        } else if (mode == .exec and std.mem.eql(u8, a, "--daemon")) {
+            parsed.daemon = true;
         } else if (mode == .exec and std.mem.eql(u8, a, "--phase")) {
             const v = value(args, &i) orelse return .{ .err = "--phase needs a value" };
             parsed.phase = std.meta.stringToEnum(executor.Phase, v) orelse
@@ -86,6 +90,7 @@ pub fn parse(gpa: Allocator, args: []const []const u8) Allocator.Error!Result {
         } else return .{ .err = "only one unit name is accepted" };
     }
     if (!have_unit) return .{ .err = "missing unit name" };
+    if (parsed.daemon and parsed.phase != .start) return .{ .err = "--daemon applies to the start phase only" };
     return .{ .ok = parsed };
 }
 
@@ -124,6 +129,7 @@ test "exec arguments" {
     try std.testing.expect(flags.log and flags.record_exit and !d.log and !d.record_exit);
     try std.testing.expectEqual(executor.Phase.start, d.phase);
     try std.testing.expectEqual(core.Scope.system, d.scope);
+    try std.testing.expect((try expectOk(&.{ "--exec", "x", "--daemon", "--log" })).daemon and !d.daemon);
 }
 
 test "log arguments" {
@@ -142,6 +148,8 @@ test "argument errors" {
     try expectErr(&.{ "--exec", "a", "--keep", "1" }, "unknown option '--keep'");
     try expectErr(&.{ "--log", "a", "--stop-on-signal" }, "unknown option '--stop-on-signal'");
     try expectErr(&.{ "--log", "a", "--record-exit" }, "unknown option '--record-exit'");
+    try expectErr(&.{ "--log", "a", "--daemon" }, "unknown option '--daemon'");
+    try expectErr(&.{ "--exec", "a", "--daemon", "--phase", "stop" }, "--daemon applies to the start phase only");
     try expectErr(&.{ "--log", "a", "--max-size", "x" }, "invalid --max-size");
     try expectErr(&.{"--other"}, "expected --exec or --log");
     try std.testing.expect(isServiceCommand(&.{ "--log", "x" }));

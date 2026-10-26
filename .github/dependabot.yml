@@ -14,6 +14,10 @@ updates:
       - /tests/e2e/s6/alpine
       - /tests/e2e/openrc/alpine
       - /tests/e2e/openrc/devuan
+      - /tests/e2e/sysvinit/devuan
+      - /tests/e2e/sysvinit/debian
+      - /tests/e2e/sysvinit/redhat
+      - /tests/e2e/sysvinit/redhat9
       - /packaging/aur
     schedule:
       interval: weekly

@@ -1,0 +1,108 @@
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: notify-service.service
+# Source: /usr/lib/systemd/system/notify-service.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:772c94e3c0523ed9
+# Generator: fake-systemd 0.1.0 sysvinit/1
+### BEGIN INIT INFO
+# Provides:          notify-service
+# Required-Start:    $remote_fs
+# Required-Stop:     $remote_fs
+# Should-Start:      $network
+# Should-Stop:       $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Notify-style database
+### END INIT INFO
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+state_dir=/run/fake-systemd
+log_dir=/var/log/fake-systemd/notify-service.service
+main_pid=/run/fake-systemd/notify-service.service.pid
+exit_file=/run/fake-systemd/notify-service.service.exit
+daemon_pid=/run/fake-systemd/notify-service.service.daemon.pid
+stop_wait=55
+
+running() {
+	_pid=$(cat "$daemon_pid" 2>/dev/null)
+	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+}
+
+do_start() {
+	running && return 0
+	mkdir -p "$state_dir" "$log_dir" || return 1
+	rm -f "$exit_file" "$main_pid"
+	echo "Starting notify-service.service"
+	start-stop-daemon --start --quiet --background --make-pidfile --pidfile "$daemon_pid" --exec /usr/bin/fake-systemd -- --exec notify-service.service --log --record-exit
+}
+
+do_stop() {
+	rc=0
+	echo "Stopping notify-service.service"
+	if [ -e "$daemon_pid" ]; then
+		start-stop-daemon --stop --quiet --oknodo --retry "TERM/$stop_wait/KILL/5" --pidfile "$daemon_pid" --name fake-systemd || rc=$?
+		rm -f "$daemon_pid"
+	fi
+	rm -f "$main_pid" "$exit_file"
+	return "$rc"
+}
+
+do_status() {
+	if running; then
+		echo "notify-service.service is running"
+		return 0
+	fi
+	case $(cat "$exit_file" 2>/dev/null) in
+	ok*)
+		echo "notify-service.service is not running"
+		return 3
+		;;
+	esac
+	if [ -e "$daemon_pid" ] || [ -e "$exit_file" ]; then
+		echo "notify-service.service is dead"
+		return 1
+	fi
+	echo "notify-service.service is not running"
+	return 3
+}
+
+do_reload() {
+	running || {
+		echo "notify-service.service is not running" >&2
+		return 7
+	}
+	/usr/bin/fake-systemd --exec notify-service.service --phase reload
+}
+
+case "$1" in
+start)
+	do_start
+	;;
+stop)
+	do_stop
+	;;
+restart)
+	do_stop
+	do_start
+	;;
+try-restart)
+	if do_status > /dev/null 2>&1; then
+		do_stop
+		do_start
+	fi
+	;;
+reload)
+	do_reload
+	;;
+force-reload)
+	do_reload
+	;;
+status)
+	do_status
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|try-restart|reload|force-reload|status}" >&2
+	exit 2
+	;;
+esac
