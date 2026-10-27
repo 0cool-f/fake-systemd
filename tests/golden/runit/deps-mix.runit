@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:3ef2c7f2027b9f48
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
 sv start dbus || exit 1
 sv start postgresql || exit 1
@@ -18,7 +18,7 @@ exec /usr/bin/depsvc
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0a64380829e1c75f
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -34,5 +34,14 @@ sv once .
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:702a01f63f500b0e
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log deps-mix.service
+=== fake-systemd.meta 0644
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+Unit: deps-mix.service
+Source: /usr/lib/systemd/system/deps-mix.service
+Source-Hash: xxh3:0123456789abcdef
+Generator: fake-systemd 0.1.0 runit/2
+Starts: dbus
+Starts: postgresql
+Starts: syslog

@@ -246,25 +246,32 @@ test "units a stanza cannot express are refused" {
     try h.expectContains(t.stderr(), "finit has no service manager for users");
 }
 
-test "an account the executor cannot resolve is switched by setpriv, and the reload runs behind it" {
+test "an account the executor cannot resolve runs it through a script that looks the numeric ids up, and the reload uses the script" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
     const t = &f.t;
     try addSvc(t, "ldap", "", "User=ldapuser\nExecReload=/usr/bin/ldap --reload");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap" }));
-    try h.expectContains(try f.conf("ldap"), "/usr/bin/setpriv --reuid=ldapuser \"--regid=$(id -g ldapuser)\" --init-groups /usr/bin/fake-systemd --exec ldap.service --log");
+    try h.expectContains(try f.conf("ldap"), "/etc/finit.d/available/ldap.exec --exec ldap.service --log");
+    try h.expectNotContains(try f.conf("ldap"), "setpriv");
+    const script = marker.parse(try t.read(available ++ "/ldap.exec")).?;
+    try testing.expectEqualStrings("exec /usr/bin/fake-systemd \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"\n", script.rest);
+    try testing.expectEqual(@as(u16, 0o755), (try t.fs.stat(available ++ "/ldap.exec")).mode);
     try f.known("ldap", world.running_text);
     f.ic.known.items[0].text = world.running_text;
     f.ic.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "reload", "ldap" }));
     try f.expectCalls(&.{
-        &.{ "id", "-g", "ldapuser" },
-        &.{ "/usr/bin/setpriv", "--reuid=ldapuser", "--regid=" ++ world.group_id, "--init-groups", "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" },
+        &.{ available ++ "/ldap.exec", "--exec", "ldap.service", "--phase", "reload" },
     });
+    // The script goes with the unit.
+    try t.fs.deleteFile("/usr/lib/systemd/system/ldap.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!t.exists(available ++ "/ldap.exec"));
 }
 
-test "an account the executor resolves needs no wrapper, and without setpriv the unit is refused" {
+test "an account the executor resolves needs no ids" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -272,10 +279,7 @@ test "an account the executor resolves needs no wrapper, and without setpriv the
     try addSvc(t, "appsvc", "", "User=app");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "appsvc" }));
     try h.expectContains(try f.conf("appsvc"), "norestart /usr/bin/fake-systemd --exec appsvc.service");
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "ldap", "", "User=ldapuser");
-    try testing.expectEqual(@as(u8, 1), t.run(&.{ "enable", "ldap" }));
-    try h.expectContains(t.stderr(), "setpriv is needed to switch to ldapuser");
+    try h.expectNotContains(try f.conf("appsvc"), "--uid");
 }
 
 test "stop hooks and runtime directories add the stop-post script" {
@@ -623,4 +627,24 @@ test "a tool that is not installed fails the command" {
     f.ic.fail_commands = &.{"stop"};
     try f.known("foo", world.running_text);
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "stop", "foo" }));
+}
+
+test "two units that map to the same finit name are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo-bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo-bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read("/etc/finit.d/available/foo-bar.conf"), "# Unit: foo-bar.service\n");
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
 }

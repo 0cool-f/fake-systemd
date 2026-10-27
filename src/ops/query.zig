@@ -19,6 +19,10 @@ const Exit = output.Exit;
 fn prepareQuiet(s: *Session, name: Name) !?pipeline.Plan {
     return pipeline.prepare(s, name) catch |e| switch (e) {
         error.OutOfMemory => return e,
+        error.UnitFileTooLarge => {
+            s.ctx.diag.err("{s}: cannot load unit: a unit file is larger than {d} bytes", .{ name.full, unit.resolve.max_unit_file_size });
+            return null;
+        },
         else => {
             s.ctx.diag.err("{s}: cannot load unit: {t}", .{ name.full, e });
             return null;
@@ -127,9 +131,13 @@ fn writePendingBackups(s: *Session, name: Name) !void {
     const entry = idx.findUnit(name.full) orelse return;
     for (entry.files) |f| {
         for ([_]index_pkg.Layout.BackupKind{ .fsnew, .fssave }) |kind| {
-            const path = try s.layout.backupPath(s.ctx.gpa, f.path, kind);
-            if (!s.ctx.fs.exists(path)) continue;
-            try s.out().print("{s:>12} pending {s} backup {s}\n", .{ "Backups:", @tagName(kind), path });
+            // Backups are numbered consecutively: the plain name, then `.1`, `.2`, ...
+            var n: usize = 0;
+            while (true) : (n += 1) {
+                const path = try s.layout.backupPathNumbered(s.ctx.gpa, f.path, kind, n);
+                if (!s.ctx.fs.exists(path)) break;
+                try s.out().print("{s:>12} pending {s} backup {s}\n", .{ "Backups:", @tagName(kind), path });
+            }
         }
     }
 }
@@ -171,7 +179,7 @@ fn statusOne(s: *Session, name: Name) !u8 {
     });
     switch (plan.outcome) {
         .unsupported => try s.out().print("{s:>12} not translated by fake-systemd: {s}\n", .{ "Note:", plan.class.?.reason }),
-        .native => |n| try s.out().print("{s:>12} served by native service '{s}' ({s})\n", .{ "Note:", n.name, n.path }),
+        .native => |n| try s.out().print("{s:>12} served by native service '{f}' ({f})\n", .{ "Note:", output.safe(n.name), output.safe(n.path) }),
         else => {},
     }
     try writePendingBackups(s, name);
@@ -251,7 +259,13 @@ fn catOne(s: *Session, name: Name, first: bool) !u8 {
     }
     for (resolved.files, 0..) |ref, i| {
         if (i > 0) try s.out().writeByte('\n');
-        const content = try s.ctx.fs.readFileAlloc(s.ctx.gpa, ref.read_path, unit.resolve.max_unit_file_size);
+        const content = s.ctx.fs.readFileAlloc(s.ctx.gpa, ref.read_path, unit.resolve.max_unit_file_size) catch |e| switch (e) {
+            error.StreamTooLong => {
+                s.ctx.diag.err("{s}: {s} is larger than {d} bytes, the limit for unit files", .{ name.full, ref.path, unit.resolve.max_unit_file_size });
+                return Exit.failure;
+            },
+            else => return e,
+        };
         try s.out().print("# {s}\n{s}", .{ ref.path, content });
         if (content.len > 0 and content[content.len - 1] != '\n') try s.out().writeByte('\n');
     }
@@ -323,7 +337,7 @@ pub fn listUnits(s: *Session) !u8 {
             .load = "loaded",
             .active = st.state.text(),
             .sub = subState(st.state),
-            .description = if (plan.unit) |u| u.description orelse entry.name else entry.name,
+            .description = if (plan.unit) |u| try output.sanitize(gpa, u.description orelse entry.name, false) else entry.name,
             .failed = st.state == .failed,
         });
     }

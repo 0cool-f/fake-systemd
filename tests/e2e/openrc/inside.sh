@@ -201,7 +201,7 @@ check "the script goes through the executor" grep -q -- "--exec e2e-pre.service"
 wait_for "ExecStartPre= ran before the main command" 5 test -e /tmp/e2e-pre-ran
 wait_for "EnvironmentFile= reached the service" 5 grep -q '^E2E_VAR=hello$' /tmp/e2e-pre-env
 wait_for "executor service is active" 5 active e2e-pre active
-check "the main process is the one the executor recorded" sh -c 'grep -q sleep /proc/$(cat /run/fake-systemd/e2e-pre.service.pid)/cmdline'
+check "the main process is the one the executor recorded" sh -c 'grep -q sleep /proc/$(cut -d" " -f1 /run/fake-systemd/e2e-pre.service.pid)/cmdline'
 expect "stop succeeds" 0 "" systemctl stop e2e-pre
 
 # --- ExecStop= runs before the process is terminated, ExecStopPost= after it ended ---------------

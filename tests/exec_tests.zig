@@ -312,10 +312,11 @@ test "reload runs ExecReload with MAINPID and fails without one" {
         \\ExecStart=/bin/sleep 30
         \\ExecReload=/bin/echo reload ${MAINPID}
     );
-    try f.write("/run/fake-systemd/rel.service.pid", "1\n");
+    // Any live process of the account the service runs as is a valid main process.
+    try f.write("/run/fake-systemd/rel.service.pid", try pidRecord(f.a(), linux.getpid()));
     const r = try f.exec("rel.service", &.{ "--phase", "reload" });
     try testing.expectEqual(@as(u8, 0), r.code);
-    try testing.expectEqualStrings("reload 1\n", r.out);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(f.a(), "reload {d}\n", .{linux.getpid()}), r.out);
 
     try f.unit("norel.service", "ExecStart=/bin/sleep 30");
     const n = try f.exec("norel.service", &.{ "--phase", "reload" });
@@ -409,18 +410,19 @@ test "forking services are followed through the pid file" {
         \\PIDFile=/run/d.pid
         \\ExecStartPre=/bin/echo prepare
         \\ExecStart=/bin/sh -c 'sleep 1 & echo $! > {s}/run/d.pid'
-        \\ExecStartPost=/bin/echo started
-    , .{f.root});
+        \\ExecStartPost=/bin/sh -c 'cut -d" " -f1 {s}/run/fake-systemd/d.service.pid'
+    , .{ f.root, f.root });
     try f.unit("d.service", body);
     const began = Io.Timestamp.now(testing.io, .awake);
     const r = try f.exec("d.service", &.{});
     const elapsed = began.untilNow(testing.io, .awake).toMilliseconds();
     try testing.expectEqual(@as(u8, 0), r.code);
-    try testing.expectEqualStrings("prepare\nstarted\n", r.out);
     try testing.expect(elapsed >= 800);
     const daemon_pid = std.mem.trim(u8, try f.read("/run/d.pid"), "\n");
-    const tracked = std.mem.trim(u8, try f.read("/run/fake-systemd/d.service.pid"), "\n");
-    try testing.expectEqualStrings(daemon_pid, tracked);
+    // ExecStartPost saw the pid file of the executor name the daemon.
+    try testing.expectEqualStrings(try std.fmt.allocPrint(f.a(), "prepare\n{s}\n", .{daemon_pid}), r.out);
+    // The pid file goes with the main process.
+    try testing.expect(!f.fs.exists("/run/fake-systemd/d.service.pid"));
 }
 
 test "forking without a live pid file times out" {
@@ -463,20 +465,69 @@ test "accounts from /etc/passwd are used for the identity" {
     try testing.expectEqualStrings("4000 4001\n", ls.out);
 }
 
-test "unresolved accounts leave the identity alone with a warning" {
+test "unresolved accounts are refused as root instead of running the service as root" {
     if (!isRoot()) return error.SkipZigTest;
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
+    try f.write("/etc/passwd", "app:x:4000:4001::/:/bin/sh\n");
+    try f.write("/etc/group", "appgrp:x:4001:app\n");
     try f.unit("ghost.service",
         \\Type=oneshot
         \\User=ldapuser
         \\ExecStart=/usr/bin/id -u
     );
     const r = try f.exec("ghost.service", &.{});
-    try testing.expectEqual(@as(u8, 0), r.code);
-    try testing.expectEqualStrings("0\n", r.out);
+    try testing.expectEqual(@as(u8, 217), r.code);
+    try testing.expectEqualStrings("", r.out);
     try expectContains(r.err, "'ldapuser' is not in /etc/passwd");
+
+    try f.unit("noshadowgroup.service",
+        \\Type=oneshot
+        \\User=app
+        \\Group=nosuchgroup
+        \\ExecStart=/usr/bin/id -u
+    );
+    const g = try f.exec("noshadowgroup.service", &.{});
+    try testing.expectEqual(@as(u8, 216), g.code);
+    try testing.expectEqualStrings("", g.out);
+
+    try f.unit("nosupp.service",
+        \\Type=oneshot
+        \\User=app
+        \\SupplementaryGroups=nosuchgroup
+        \\ExecStart=/usr/bin/id -u
+    );
+    const s = try f.exec("nosupp.service", &.{});
+    try testing.expectEqual(@as(u8, 216), s.code);
+    try testing.expectEqualStrings("", s.out);
+
+    // A unit without accounts is not affected.
+    try f.unit("plain.service",
+        \\Type=oneshot
+        \\ExecStart=/usr/bin/id -u
+    );
+    const p = try f.exec("plain.service", &.{});
+    try testing.expectEqual(@as(u8, 0), p.code);
+    try testing.expectEqualStrings("0\n", p.out);
+}
+
+test "an account database that cannot be read does not read as no such account" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // A directory in place of /etc/passwd cannot be read.
+    try f.fs.makePath("/etc/passwd");
+    try f.unit("db.service",
+        \\Type=oneshot
+        \\User=app
+        \\ExecStart=/usr/bin/id -u
+    );
+    const r = try f.exec("db.service", &.{});
+    try testing.expectEqual(@as(u8, 217), r.code);
+    try testing.expectEqualStrings("", r.out);
+    try expectContains(r.err, "cannot read /etc/passwd or /etc/group");
 }
 
 test "executor reports unknown units and bad arguments" {
@@ -652,7 +703,8 @@ fn mainPidOf(f: *Fixture, unit_name: []const u8) !i32 {
     const path = try std.fmt.allocPrint(f.a(), "/run/fake-systemd/{s}.pid", .{unit_name});
     try waitForFile(f, path);
     try testing.io.sleep(.fromMilliseconds(300), .awake);
-    return std.fmt.parseInt(i32, std.mem.trim(u8, try f.read(path), " \n"), 10);
+    var fields = std.mem.tokenizeAny(u8, try f.read(path), " \n");
+    return std.fmt.parseInt(i32, fields.next() orelse return error.TestUnexpectedResult, 10);
 }
 
 test "SIGTERM to a supervisor in stop mode runs ExecStop with MAINPID, ends the main process and exits cleanly" {
@@ -851,4 +903,532 @@ test "daemon detaches, writes the pid of the executor and leaves no stream open"
 
 fn sys_kill_check(pid: i32) bool {
     return linux.errno(linux.kill(pid, @fromBackingInt(@intCast(0)))) == .SUCCESS;
+}
+
+const Meta = struct { uid: u32, gid: u32, mode: u16 };
+
+fn realPath(f: *Fixture, path: []const u8) ![:0]const u8 {
+    return std.fmt.allocPrintSentinel(f.a(), "{s}{s}", .{ f.root, path }, 0);
+}
+
+fn metaOf(f: *Fixture, path: []const u8) !Meta {
+    var stx: linux.Statx = undefined;
+    const p = try realPath(f, path);
+    const rc = linux.statx(linux.AT.FDCWD, p.ptr, linux.AT.SYMLINK_NOFOLLOW, .{ .UID = true, .GID = true, .MODE = true }, &stx);
+    if (linux.errno(rc) != .SUCCESS) return error.StatFailed;
+    return .{ .uid = stx.uid, .gid = stx.gid, .mode = stx.mode & 0o7777 };
+}
+
+fn setMode(f: *Fixture, path: []const u8, mode: u16) !void {
+    const p = try realPath(f, path);
+    if (linux.errno(linux.chmod(p.ptr, mode)) != .SUCCESS) return error.ChmodFailed;
+}
+
+/// The text of an executor state file that records process `pid`.
+fn pidRecord(gpa: std.mem.Allocator, pid: i32) ![]const u8 {
+    const start = fs_sys.exec.procs.startTime(pid) orelse return error.TestUnexpectedResult;
+    return std.fmt.allocPrint(gpa, "{d} {d}\n", .{ pid, start });
+}
+
+fn setOwner(f: *Fixture, path: []const u8, uid: u32, gid: u32) !void {
+    const p = try realPath(f, path);
+    if (linux.errno(linux.chown(p.ptr, uid, gid)) != .SUCCESS) return error.ChownFailed;
+}
+
+/// Process state letter from `/proc/<pid>/stat`; null when the process does not exist.
+fn procState(f: *Fixture, pid: i32) !?u8 {
+    const path = try std.fmt.allocPrint(f.a(), "/proc/{d}/stat", .{pid});
+    const res = try f.runArgv(&.{ "/bin/cat", path });
+    if (res.code != 0) return null;
+    const close_paren = std.mem.findScalarLast(u8, res.out, ')') orelse return null;
+    var fields = std.mem.tokenizeScalar(u8, res.out[close_paren + 1 ..], ' ');
+    return (fields.next() orelse return null)[0];
+}
+
+fn isAlive(f: *Fixture, pid: i32) !bool {
+    const state = (try procState(f, pid)) orelse return false;
+    return state != 'Z' and state != 'X';
+}
+
+const directory_keys = [_]struct { key: []const u8, code: u8, base: []const u8 }{
+    .{ .key = "RuntimeDirectory", .code = 233, .base = "/run" },
+    .{ .key = "StateDirectory", .code = 238, .base = "/var/lib" },
+    .{ .key = "CacheDirectory", .code = 239, .base = "/var/cache" },
+    .{ .key = "LogsDirectory", .code = 240, .base = "/var/log" },
+    .{ .key = "ConfigurationDirectory", .code = 241, .base = "/etc" },
+};
+
+test "dot and empty directory components are refused for every kind and change nothing" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    for (directory_keys) |k| {
+        try f.fs.makePath(k.base);
+        try setMode(&f, k.base, 0o711);
+    }
+    for (directory_keys) |k| {
+        for ([_][]const u8{ ".", "./", "a/./b", "a//b", "a/" }) |bad| {
+            const body = try std.fmt.allocPrint(f.a(), "Type=oneshot\nExecStart=/bin/true\n{s}={s}", .{ k.key, bad });
+            try f.unit("dot.service", body);
+            const r = try f.exec("dot.service", &.{});
+            try testing.expectEqual(k.code, r.code);
+            try expectContains(r.err, "invalid directory");
+        }
+    }
+    for (directory_keys) |k| try testing.expectEqual(@as(u16, 0o711), (try metaOf(&f, k.base)).mode);
+}
+
+test "stop-post with RuntimeDirectory=. does not remove the runtime base" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/run/precious/data", "x");
+    try f.unit("dot.service",
+        \\ExecStart=/bin/sleep 30
+        \\RuntimeDirectory=.
+    );
+    const r = try f.exec("dot.service", &.{ "--phase", "stop-post" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expect(f.fs.exists("/run/precious/data"));
+}
+
+test "a symlink below the base is refused and its target is left alone" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.fs.makePath("/etc/target");
+    try setMode(&f, "/etc/target", 0o700);
+    try f.fs.makePath("/var/lib/app");
+    try f.fs.symLink("/etc/target", "/var/lib/app/sub");
+    try f.fs.symLink("/etc/target", "/var/lib/direct");
+    try f.unit("nested.service", "Type=oneshot\nExecStart=/bin/true\nStateDirectory=app/sub");
+    const nested = try f.exec("nested.service", &.{});
+    try testing.expectEqual(@as(u8, 238), nested.code);
+    try expectContains(nested.err, "cannot set up");
+    try f.unit("direct.service", "Type=oneshot\nExecStart=/bin/true\nStateDirectory=direct");
+    const direct = try f.exec("direct.service", &.{});
+    try testing.expectEqual(@as(u8, 238), direct.code);
+    try testing.expectEqual(@as(u16, 0o700), (try metaOf(&f, "/etc/target")).mode);
+}
+
+test "stop-post does not remove through a symlink below the base" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/srv/keep/sub/data", "x");
+    try f.fs.makePath("/run");
+    try f.fs.symLink("/srv/keep", "/run/app");
+    try f.unit("rm.service",
+        \\ExecStart=/bin/sleep 30
+        \\RuntimeDirectory=app/sub
+    );
+    const r = try f.exec("rm.service", &.{ "--phase", "stop-post" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expect(f.fs.exists("/srv/keep/sub/data"));
+}
+
+test "a pid file written by the service account cannot get another account's process signalled" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    try f.unit("spoof.service",
+        \\ExecStart=/bin/sleep 30
+        \\User=svc
+        \\ExecStopPost=/bin/true
+    );
+    // A process of root, which the unit's account must not be able to name.
+    var victim = try std.process.spawn(testing.io, .{
+        .argv = &.{ "/bin/sleep", "30" },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    defer victim.kill(testing.io);
+    const pid = victim.id.?;
+    try f.write("/run/fake-systemd/spoof.service.pid", try pidRecord(f.a(), pid));
+    try setOwner(&f, "/run/fake-systemd/spoof.service.pid", 4242, 4242);
+    const r = try f.exec("spoof.service", &.{ "--phase", "stop" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try expectContains(r.err, "not the recorded process of the service");
+    try testing.expect(try isAlive(&f, pid));
+
+    // The same file written by root names the process legitimately.
+    try f.write("/run/fake-systemd/spoof.service.pid", try pidRecord(f.a(), pid));
+    const ok = try f.exec("spoof.service", &.{ "--phase", "stop-main" });
+    try testing.expectEqual(@as(u8, 0), ok.code);
+    try testing.expect(!(try isAlive(&f, pid)));
+}
+
+test "pids 0 and 1 are never signalled" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("init.service", "ExecStart=/bin/sleep 30\nExecReload=/bin/echo main=${MAINPID}");
+    for ([_][]const u8{ "1\n", "0\n", "-1\n" }) |text| {
+        try f.write("/run/fake-systemd/init.service.pid", text);
+        const r = try f.exec("init.service", &.{ "--phase", "stop-main" });
+        try testing.expectEqual(@as(u8, 0), r.code);
+        try testing.expect(try isAlive(&f, 1));
+        const reload = try f.exec("init.service", &.{ "--phase", "reload" });
+        try testing.expectEqualStrings("main=\n", reload.out);
+    }
+}
+
+test "state files are written by root, replace files the service account owns and refuse symlinks" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    try f.unit("state.service",
+        \\Type=oneshot
+        \\User=svc
+        \\ExecStart=/bin/true
+    );
+    // State an earlier version handed to the account.
+    try f.write("/run/fake-systemd/state.service.exit", "ok 0\n");
+    try setOwner(&f, "/run/fake-systemd/state.service.exit", 4242, 4242);
+    try setMode(&f, "/run/fake-systemd/state.service.exit", 0o666);
+    try setOwner(&f, "/run/fake-systemd", 4242, 4242);
+    try setMode(&f, "/run/fake-systemd", 0o777);
+    const r = try f.exec("state.service", &.{"--record-exit"});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    const dir = try metaOf(&f, "/run/fake-systemd");
+    try testing.expectEqual(@as(u32, 0), dir.uid);
+    try testing.expectEqual(@as(u16, 0o755), dir.mode);
+    const exit_file = try metaOf(&f, "/run/fake-systemd/state.service.exit");
+    try testing.expectEqual(@as(u32, 0), exit_file.uid);
+    try testing.expectEqual(@as(u16, 0o644), exit_file.mode);
+    try testing.expectEqualStrings("ok 0\n", try f.read("/run/fake-systemd/state.service.exit"));
+
+    // A symlink in place of a state file is not followed, even out of the root.
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(testing.io, .{ .sub_path = "victim", .data = "untouched" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try outside.dir.realPath(testing.io, &buf);
+    const target = try std.fs.path.join(f.a(), &.{ buf[0..n], "victim" });
+    // The service replaces the exit file with a symlink while it runs; the executor does not follow it.
+    const body = try std.fmt.allocPrint(f.a(),
+        \\Type=oneshot
+        \\ExecStart=/bin/sh -c 'ln -s {s} {s}/run/fake-systemd/link.service.exit'
+    , .{ target, f.root });
+    try f.unit("link.service", body);
+    const link = try f.exec("link.service", &.{"--record-exit"});
+    try testing.expectEqual(@as(u8, 0), link.code);
+    try expectContains(link.err, "cannot write");
+    const content = try outside.dir.readFileAlloc(testing.io, "victim", f.a(), .limited(100));
+    try testing.expectEqualStrings("untouched", content);
+}
+
+test "a FIFO in place of the log file does not block the logger" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.fs.makePath("/var/log/fake-systemd/web.service");
+    const fifo = try realPath(&f, "/var/log/fake-systemd/web.service/current");
+    if (linux.errno(linux.mknodat(linux.AT.FDCWD, fifo.ptr, linux.S.IFIFO | 0o600, 0)) != .SUCCESS) return error.MknodFailed;
+    const r = try f.pipeLog("one\\ntwo\\n", &.{});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try expectContains(r.err, "log:");
+}
+
+test "a lock entry that is not a regular file does not stop logging" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.fs.makePath("/var/log/fake-systemd/web.service/.lock");
+    const input = "aaaaaaaaaaaaaaaaaaaa\\nbbbbbbbbbbbbbbbbbbbb\\ncccccccccccccccccccc\\ndddddddddddddddddddd\\n";
+    const r = try f.pipeLog(input, &.{ "--max-size", "60" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    const text = try f.read("/var/log/fake-systemd/web.service/current");
+    try testing.expectEqual(@as(usize, 4), std.mem.count(u8, text, "\n"));
+    try expectContains(r.err, "rotation is off");
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.err, "warning: log:"));
+}
+
+test "the log directory of a unit is 0750, its files 0640 and the directories above stay traversable" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const r = try f.pipeLog("one\\n", &.{});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqual(@as(u16, 0o755), (try metaOf(&f, "/var/log/fake-systemd")).mode);
+    try testing.expectEqual(@as(u16, 0o750), (try metaOf(&f, "/var/log/fake-systemd/web.service")).mode);
+    try testing.expectEqual(@as(u16, 0o640), (try metaOf(&f, "/var/log/fake-systemd/web.service/current")).mode);
+}
+
+test "specifiers name the manager's passwd entry, not USER or HOME" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.env.put("USER", "attacker");
+    try f.env.put("HOME", "/attacker");
+    const entry = try std.fmt.allocPrint(f.a(), "me:x:{d}:{d}::/home/me:/bin/sh\n", .{ linux.getuid(), linux.getgid() });
+    try f.write("/etc/passwd", entry);
+    try f.unit("spec.service",
+        \\Type=oneshot
+        \\ExecStart=/bin/echo %u %h
+    );
+    const r = try f.exec("spec.service", &.{});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqualStrings("me /home/me\n", r.out);
+}
+
+test "a numeric identity from the service manager is switched to without resolving the accounts" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("numeric.service",
+        \\Type=oneshot
+        \\User=ldapuser
+        \\Group=ldapgroup
+        \\StateDirectory=numsvc
+        \\ExecStart=/usr/bin/id -u
+        \\ExecStart=/usr/bin/id -g
+        \\ExecStart=/usr/bin/id -G
+    );
+    const r = try f.exec("numeric.service", &.{ "--uid", "1500", "--gid", "1501", "--groups", "1502", "--record-exit" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqualStrings("1500\n1501\n1501 1502\n", r.out);
+    const state = try metaOf(&f, "/var/lib/numsvc");
+    try testing.expectEqual(@as(u32, 1500), state.uid);
+    try testing.expectEqual(@as(u32, 1501), state.gid);
+    // The executor stayed root, so its own files are root's.
+    try testing.expectEqual(@as(u32, 0), (try metaOf(&f, "/run/fake-systemd/numeric.service.exit")).uid);
+}
+
+test "--identity-set runs the commands as the process already is and does not refuse the names" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("set.service",
+        \\Type=oneshot
+        \\User=ldapuser
+        \\ExecStart=/usr/bin/id -u
+    );
+    const r = try f.exec("set.service", &.{"--identity-set"});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqualStrings("0\n", r.out);
+}
+
+fn spawnVictim() !std.process.Child {
+    return std.process.spawn(testing.io, .{ .argv = &.{ "/bin/sleep", "30" }, .stdout = .ignore, .stderr = .ignore });
+}
+
+test "a numeric identity without the gid is refused instead of leaving gid 0 and the groups of root" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("partial.service",
+        \\Type=oneshot
+        \\User=ldapuser
+        \\ExecStart=/usr/bin/id -u
+    );
+    for ([_][]const []const u8{ &.{ "--uid", "1500" }, &.{ "--gid", "1501" }, &.{ "--groups", "1502" }, &.{ "--uid", "1500", "--groups", "1502" } }) |args| {
+        const r = try f.exec("partial.service", args);
+        try testing.expectEqual(@as(u8, 217), r.code);
+        try testing.expectEqualStrings("", r.out);
+        try expectContains(r.err, "needs both --uid and --gid");
+    }
+    // With both, the groups default to the gid alone.
+    try f.unit("full.service",
+        \\Type=oneshot
+        \\User=ldapuser
+        \\ExecStart=/usr/bin/id -G
+    );
+    const ok = try f.exec("full.service", &.{ "--uid", "1500", "--gid", "1501" });
+    try testing.expectEqual(@as(u8, 0), ok.code);
+    try testing.expectEqualStrings("1501\n", ok.out);
+}
+
+test "an account name that starts with a dash is refused as root" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "root:x:0:0::/root:/bin/sh\n");
+    try f.write("/etc/group", "root:x:0:\n");
+    for ([_][]const u8{ "User=-r", "User=--", "Group=-g", "SupplementaryGroups=-a" }) |setting| {
+        const body = try std.fmt.allocPrint(f.a(), "Type=oneshot\n{s}\nExecStart=/usr/bin/id -u", .{setting});
+        try f.unit("dash.service", body);
+        const r = try f.exec("dash.service", &.{});
+        try testing.expect(r.code == 217 or r.code == 216);
+        try testing.expectEqualStrings("", r.out);
+    }
+}
+
+test "the directory of fake-systemd cannot be taken over through the directory settings" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    try f.fs.makePath("/var/lib/fake-systemd/sysvinit");
+    try f.fs.makePath("/run/fake-systemd");
+    for ([_]struct { []const u8, u8 }{
+        .{ "StateDirectory=fake-systemd/sysvinit", 238 },
+        .{ "RuntimeDirectory=fake-systemd", 233 },
+        .{ "CacheDirectory=fake-systemd", 239 },
+        .{ "LogsDirectory=fake-systemd/x", 240 },
+        .{ "ConfigurationDirectory=fake-systemd", 241 },
+    }) |case| {
+        const body = try std.fmt.allocPrint(f.a(), "Type=oneshot\nUser=svc\n{s}\nExecStart=/bin/true", .{case[0]});
+        try f.unit("evil.service", body);
+        const r = try f.exec("evil.service", &.{});
+        try testing.expectEqual(case[1], r.code);
+        try expectContains(r.err, "reserved for fake-systemd");
+    }
+    try testing.expectEqual(@as(u32, 0), (try metaOf(&f, "/var/lib/fake-systemd/sysvinit")).uid);
+    try testing.expectEqual(@as(u32, 0), (try metaOf(&f, "/run/fake-systemd")).uid);
+    try testing.expect(!f.fs.exists("/var/cache/fake-systemd"));
+}
+
+test "an existing state directory of another package is handed to the service account as systemd does" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    try f.write("/var/lib/dpkg/info/foo.postinst", "x\n");
+    try f.unit("take.service",
+        \\Type=oneshot
+        \\User=svc
+        \\StateDirectory=dpkg
+        \\ExecStart=/bin/true
+    );
+    const r = try f.exec("take.service", &.{});
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqual(@as(u32, 4242), (try metaOf(&f, "/var/lib/dpkg")).uid);
+}
+
+test "a PIDFile= that names another daemon of root is not signalled by stop, stop-main or reload" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    var victim = try spawnVictim();
+    defer victim.kill(testing.io);
+    const pid = victim.id.?;
+    try f.write("/run/otherdaemon.pid", try std.fmt.allocPrint(f.a(), "{d}\n", .{pid}));
+    try f.unit("evil.service",
+        \\User=svc
+        \\Type=forking
+        \\PIDFile=/run/otherdaemon.pid
+        \\ExecStart=/bin/true
+        \\ExecReload=/bin/echo main=${MAINPID}
+    );
+    for ([_][]const u8{ "stop", "stop-main" }) |phase| {
+        const r = try f.exec("evil.service", &.{ "--phase", phase });
+        try testing.expectEqual(@as(u8, 0), r.code);
+        try testing.expect(try isAlive(&f, pid));
+    }
+    const reload = try f.exec("evil.service", &.{ "--phase", "reload" });
+    try testing.expectEqualStrings("main=\n", reload.out);
+}
+
+test "a pid file in the runtime directory of the service, a symlink and MAINPID do not name a process to stop" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "svc:x:4242:4242::/:/bin/sh\n");
+    try f.write("/etc/group", "svc:x:4242:\n");
+    try f.unit("d.service",
+        \\User=svc
+        \\Type=forking
+        \\PIDFile=/run/svc/d.pid
+        \\RuntimeDirectory=svc
+        \\ExecStart=/bin/sleep 1000
+    );
+    try f.fs.makePath("/run/svc");
+    try setOwner(&f, "/run/svc", 4242, 4242);
+    var victim = try spawnVictim();
+    defer victim.kill(testing.io);
+    const pid = victim.id.?;
+    // The account writes a pid file in its own directory.
+    try f.write("/run/svc/d.pid", try std.fmt.allocPrint(f.a(), "{d}\n", .{pid}));
+    try setOwner(&f, "/run/svc/d.pid", 4242, 4242);
+    var r = try f.exec("d.service", &.{ "--phase", "stop" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expect(try isAlive(&f, pid));
+    // A recorded start time that the file does not carry, and a file of the account in the state directory.
+    try f.write("/run/fake-systemd/d.service.pid", try std.fmt.allocPrint(f.a(), "{d}\n", .{pid}));
+    try setOwner(&f, "/run/fake-systemd/d.service.pid", 4242, 4242);
+    r = try f.exec("d.service", &.{ "--phase", "stop-main" });
+    try testing.expect(try isAlive(&f, pid));
+    // A symlink in place of the pid file.
+    try f.fs.makePath("/run/svc");
+    try f.fs.symLink("/proc/sys/kernel/ns_last_pid", "/run/svc/d.pid");
+    r = try f.exec("d.service", &.{ "--phase", "stop" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    // MAINPID from the caller naming a process of root.
+    try f.env.put("MAINPID", try std.fmt.allocPrint(f.a(), "{d}", .{pid}));
+    r = try f.exec("d.service", &.{ "--phase", "stop" });
+    _ = f.env.orderedRemove("MAINPID");
+    try expectContains(r.err, "ignoring MAINPID");
+    try testing.expect(try isAlive(&f, pid));
+}
+
+test "a forking daemon is only followed when it descends from the executor" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var victim = try spawnVictim();
+    defer victim.kill(testing.io);
+    const pid = victim.id.?;
+    try f.write("/run/other.pid", try std.fmt.allocPrint(f.a(), "{d}\n", .{pid}));
+    try f.unit("claim.service",
+        \\Type=forking
+        \\PIDFile=/run/other.pid
+        \\TimeoutStartSec=1
+        \\ExecStart=/bin/true
+    );
+    const r = try f.exec("claim.service", &.{});
+    try testing.expectEqual(@as(u8, 1), r.code);
+    try expectContains(r.err, "no live process in /run/other.pid");
+    try testing.expect(try isAlive(&f, pid));
+}
+
+test "a recorded pid that was reused by another process is not signalled" {
+    if (!isRoot()) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.unit("reuse.service", "ExecStart=/bin/sleep 30");
+    var victim = try spawnVictim();
+    defer victim.kill(testing.io);
+    const pid = victim.id.?;
+    const start = fs_sys.exec.procs.startTime(pid).?;
+    try f.write("/run/fake-systemd/reuse.service.pid", try std.fmt.allocPrint(f.a(), "{d} {d}\n", .{ pid, start + 1 }));
+    const wrong = try f.exec("reuse.service", &.{ "--phase", "stop-main" });
+    try testing.expectEqual(@as(u8, 0), wrong.code);
+    try testing.expect(try isAlive(&f, pid));
+    try f.write("/run/fake-systemd/reuse.service.pid", try pidRecord(f.a(), pid));
+    const right = try f.exec("reuse.service", &.{ "--phase", "stop-main" });
+    try testing.expectEqual(@as(u8, 0), right.code);
+    try testing.expect(!(try isAlive(&f, pid)));
+}
+
+test "a relative or empty --root is refused by the executor and the logger" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    for ([_][]const u8{ "relative/dir", "", "." }) |root| {
+        for ([_][]const u8{ "--exec", "--log" }) |mode| {
+            const r = try f.runArgv(&.{ f.exe, mode, "foo.service", "--root", root });
+            try testing.expectEqual(@as(u8, 1), r.code);
+            try expectContains(r.err, "--root must be an absolute path");
+        }
+    }
 }

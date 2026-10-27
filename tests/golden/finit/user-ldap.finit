@@ -3,6 +3,15 @@
 # Unit: user-ldap.service
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:41922547ff879d5c
+# Body-Hash: xxh3:2dc8364c0246de89
 # Generator: fake-systemd 0.1.0 finit/1
-service [2345] name:user-ldap restart:always restart_sec:2 /usr/bin/setpriv --reuid=svc-directory "--regid=$(id -g svc-directory)" --init-groups /usr/bin/fake-systemd --exec user-ldap.service --log -- Daemon that runs as a directory-service account
+service [2345] name:user-ldap restart:always restart_sec:2 /etc/finit.d/available/user-ldap.exec --exec user-ldap.service --log -- Daemon that runs as a directory-service account
+=== user-ldap.exec 0755
+#!/bin/sh
+# Generated automatically by fake-systemd. Remove this block to take ownership of the file.
+# Unit: user-ldap.service
+# Source: /usr/lib/systemd/system/user-ldap.service
+# Source-Hash: xxh3:0123456789abcdef
+# Body-Hash: xxh3:7ef6439dd865a951
+# Generator: fake-systemd 0.1.0 finit/1
+exec /usr/bin/fake-systemd "$@" --uid "$(id -u -- svc-directory)" --gid "$(id -g -- svc-directory)" --groups "$(id -G -- svc-directory | tr ' ' ,)"

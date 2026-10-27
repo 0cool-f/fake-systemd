@@ -18,7 +18,7 @@ pub fn parse(text: []const u8, now_ms: i64, tz: tz_mod.Tz) Error!i64 {
     if (std.mem.eql(u8, t, "now")) return now_ms;
     if (t[0] == '@') {
         const secs = std.fmt.parseInt(i64, t[1..], 10) catch return error.InvalidTime;
-        return secs * 1000;
+        return std.math.mul(i64, secs, 1000) catch error.InvalidTime;
     }
     const today = startOfDay(now_ms, tz);
     if (std.mem.eql(u8, t, "today")) return today;
@@ -27,13 +27,13 @@ pub fn parse(text: []const u8, now_ms: i64, tz: tz_mod.Tz) Error!i64 {
 
     if (t[0] == '-' or t[0] == '+') {
         const span = spanMs(std.mem.trim(u8, t[1..], " \t")) orelse return error.InvalidTime;
-        return if (t[0] == '-') now_ms - span else now_ms + span;
+        return shifted(now_ms, span, t[0] == '-');
     }
     if (std.mem.endsWith(u8, t, " ago")) {
-        return now_ms - (spanMs(std.mem.trim(u8, t[0 .. t.len - 4], " \t")) orelse return error.InvalidTime);
+        return shifted(now_ms, spanMs(std.mem.trim(u8, t[0 .. t.len - 4], " \t")) orelse return error.InvalidTime, true);
     }
     if (std.mem.endsWith(u8, t, " left")) {
-        return now_ms + (spanMs(std.mem.trim(u8, t[0 .. t.len - 5], " \t")) orelse return error.InvalidTime);
+        return shifted(now_ms, spanMs(std.mem.trim(u8, t[0 .. t.len - 5], " \t")) orelse return error.InvalidTime, false);
     }
 
     var utc = false;
@@ -50,7 +50,11 @@ pub fn parse(text: []const u8, now_ms: i64, tz: tz_mod.Tz) Error!i64 {
 fn spanMs(text: []const u8) ?i64 {
     const us = timespan.parse(text) catch return null;
     if (us == timespan.infinity) return null;
-    return @intCast(us / 1000);
+    return std.math.cast(i64, us / 1000);
+}
+
+fn shifted(now_ms: i64, span: i64, back: bool) Error!i64 {
+    return (if (back) std.math.sub(i64, now_ms, span) else std.math.add(i64, now_ms, span)) catch error.InvalidTime;
 }
 
 fn startOfDayShifted(now_ms: i64, tz: tz_mod.Tz, days: i64) i64 {
@@ -159,4 +163,11 @@ test "invalid forms" {
     for ([_][]const u8{ "", "garbage", "2026-13-01", "2026-10-24 25:00", "-xyz", "12:", "2026-10", "@abc", "1h 3 agoo" }) |bad| {
         try std.testing.expectError(error.InvalidTime, parse(bad, test_now, rome));
     }
+}
+
+test "huge values are rejected instead of overflowing" {
+    for ([_][]const u8{ "@9223372036854775807", "@-9223372036854775808", "@9223372036854776", "-18446744073709551615us", "+9223372036854775s", "9223372036854775s ago", "9223372036854775s left" }) |bad| {
+        try std.testing.expectError(error.InvalidTime, parse(bad, test_now, rome));
+    }
+    try std.testing.expectEqual(@as(i64, 9_223_372_036_854_775_000), try parse("@9223372036854775", test_now, rome));
 }

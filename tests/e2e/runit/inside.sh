@@ -286,7 +286,7 @@ echo "svc-directory:x:1500:" >>/etc/group
 echo "e2eextra:x:1501:svc-directory" >>/etc/group
 printf '#!/bin/sh\nid >/tmp/e2e-ldap-id\nexec sleep 1000\n' >/usr/bin/dirsync
 chmod 755 /usr/bin/dirsync
-check "the golden service for such an account uses setpriv" grep -q '^exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --init-groups ' /tmp/golden-split/user-ldap/run
+check "the golden service for such an account uses setpriv" grep -q '^exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g -- svc-directory)" --init-groups ' /tmp/golden-split/user-ldap/run
 mkdir -p /etc/sv/e2e-ldap
 cp /tmp/golden-split/user-ldap/run /etc/sv/e2e-ldap/run
 chmod 755 /etc/sv/e2e-ldap/run

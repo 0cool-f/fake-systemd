@@ -4,6 +4,7 @@
 const std = @import("std");
 const h = @import("harness.zig");
 const world = @import("sysvinit_world.zig");
+const dinit_world = @import("dinit_world.zig");
 
 const testing = std.testing;
 const marker = h.index.marker;
@@ -592,7 +593,7 @@ test "Restart= is noted as not honored" {
     try h.expectContains(body, "is dead and is not restarted: sysvinit does not supervise services");
 }
 
-test "an account only the system libc resolves runs the service through chuid or setpriv" {
+test "an account only the system libc resolves is given to the root executor as numeric ids" {
     var d: Fixture = .{};
     try d.init(.debian);
     defer d.deinit();
@@ -601,25 +602,52 @@ test "an account only the system libc resolves runs the service through chuid or
     try addSvc(t, "ldapg", "", "User=svc-directory\nSupplementaryGroups=audio");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap", "ldapg" }));
     const ldap = try d.script("ldap");
-    try h.expectContains(ldap, "--pidfile \"$daemon_pid\" --chuid svc-directory:dir-group --exec /usr/bin/fake-systemd -- --exec ldap.service --log --record-exit\n");
-    try h.expectContains(ldap, "\tfor _f in \"$log_dir\" \"$main_pid\" \"$exit_file\" \"$daemon_pid\"; do\n\t\t[ -d \"$_f\" ] || : >> \"$_f\"\n\t\tchown svc-directory \"$_f\"\n\tdone\n");
-    try h.expectContains(ldap, "\n\t/usr/bin/setpriv --reuid=svc-directory --regid=dir-group --init-groups /usr/bin/fake-systemd --exec ldap.service --phase reload\n");
+    const ids = " --uid \"$(id -u -- svc-directory)\" --gid \"$(getent group dir-group | cut -d: -f3)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"";
+    try h.expectContains(ldap, "--pidfile \"$daemon_pid\" --exec /usr/bin/fake-systemd -- --exec ldap.service --log --record-exit" ++ ids ++ "\n");
+    try h.expectContains(ldap, "\n\t/usr/bin/fake-systemd --exec ldap.service --phase reload" ++ ids ++ "\n");
+    // Nothing changes hands: the files stay root's, and nothing switches before the executor.
+    try h.expectNotContains(ldap, "chown");
+    try h.expectNotContains(ldap, "--chuid");
+    try h.expectNotContains(ldap, "setpriv");
+    try h.expectNotContains(ldap, "--identity-set");
     const groups = try d.script("ldapg");
-    try h.expectContains(groups, "--pidfile \"$daemon_pid\" --exec /usr/bin/fake-systemd --startas /usr/bin/setpriv -- --reuid=svc-directory --regid=\"$(id -g svc-directory)\" --groups \"$(id -G svc-directory | tr ' ' ,),audio\" -- /usr/bin/fake-systemd --exec ldapg.service --log --record-exit\n");
-    try h.expectNotContains(groups, "--chuid");
+    try h.expectContains(groups, "-- --exec ldapg.service --log --record-exit --uid \"$(id -u -- svc-directory)\" --gid \"$(id -g -- svc-directory)\" --groups \"$(id -G -- svc-directory | tr ' ' ,),$(getent group audio | cut -d: -f3)\"\n");
 
     var r: Fixture = .{};
     try r.init(.redhat);
     defer r.deinit();
     try addSvc(&r.t, "ldap", "", "User=svc-directory");
     try testing.expectEqual(@as(u8, 0), r.t.run(&.{ "enable", "ldap" }));
-    try h.expectContains(try r.script("ldap"), "\n\t/usr/bin/setpriv --reuid=svc-directory --regid=\"$(id -g svc-directory)\" --init-groups /usr/bin/fake-systemd --exec ldap.service --daemon --log --record-exit\n");
+    try h.expectContains(try r.script("ldap"), "\n\t/usr/bin/fake-systemd --exec ldap.service --daemon --log --record-exit --uid \"$(id -u -- svc-directory)\" --gid \"$(id -g -- svc-directory)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"\n");
+    try h.expectNotContains(try r.script("ldap"), "chown");
+}
 
-    try r.t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(&r.t, "ldapn", "", "User=svc-directory\nSupplementaryGroups=audio");
-    try testing.expectEqual(@as(u8, 0), r.t.run(&.{ "enable", "ldapn" }));
-    try h.expectContains(r.t.stderr(), "setpriv is not installed");
-    try h.expectContains(try r.script("ldapn"), "\n\tsu -s /bin/sh -c 'exec /usr/bin/fake-systemd --exec ldapn.service --daemon --log --record-exit' svc-directory\n");
+test "an account name that starts with a dash is refused instead of reaching id as an option" {
+    var d: Fixture = .{};
+    try d.init(.debian);
+    defer d.deinit();
+    const t = &d.t;
+    const bad = [_][]const u8{ "User=-r", "User=--", "User=svc-directory\nGroup=-g", "User=svc-directory\nSupplementaryGroups=-a" };
+    for (bad) |lines| {
+        try addSvc(t, "dash", "", lines);
+        try testing.expectEqual(@as(u8, 1), t.run(&.{ "enable", "dash" }));
+        try h.expectContains(t.stderr(), "must be plain names");
+        try testing.expect(!t.exists(init_d ++ "/dash"));
+    }
+}
+
+test "daemon-reload exits 1 when a unit is refused and still handles the others" {
+    var d: Fixture = .{};
+    try d.init(.debian);
+    defer d.deinit();
+    const t = &d.t;
+    try addSvc(t, "other", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo", "other" }));
+    try addSvc(t, "foo", "", "User=-r");
+    try addSvc(t, "other", "Description=handled-too", "");
+    try testing.expectEqual(@as(u8, 1), t.run(&.{"daemon-reload"}));
+    try h.expectContains(t.stderr(), "foo.service: cannot load unit");
+    try h.expectContains(try d.script("other"), "handled-too");
 }
 
 test "an account the executor resolves needs no switch in the script" {
@@ -736,7 +764,8 @@ test "the main pid is the one the executor recorded, or the pid file of a native
     defer f.deinit();
     const t = &f.t;
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
-    try t.write("/run/fake-systemd/foo.service.pid", "4300\n", 0o644);
+    try dinit_world.liveProcess(t, 4300);
+    try t.write("/run/fake-systemd/foo.service.pid", "4300 4300\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "status", "foo" }));
     try h.expectContains(t.stdout(), "Main PID: 4300");
     // Nothing is shown for a service that is not up.
@@ -753,7 +782,8 @@ test "kill signals the main process" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "foo" }));
     try h.expectContains(t.stderr(), "no process to signal");
-    try t.write("/run/fake-systemd/foo.service.pid", "4242\n", 0o644);
+    try dinit_world.liveProcess(t, 4242);
+    try t.write("/run/fake-systemd/foo.service.pid", "4242 4242\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "SIGHUP", "foo" }));
     try testing.expect(f.sc.called(&.{ "kill", "-s", "HUP", "4242" }));
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "USR1", "foo" }));
@@ -871,7 +901,8 @@ test "the timer runner is generated as a daemon, started by its script and signa
     try f.expectCalled(&.{ init_d ++ "/fake-systemd-timers", "start" });
 
     try f.link('2', "S01fake-systemd-timers", "fake-systemd-timers");
-    try t.write("/run/fake-systemd/fake-systemd-timers.service.pid", "7\n", 0o644);
+    try dinit_world.liveProcess(t, 7);
+    try t.write("/run/fake-systemd/fake-systemd-timers.service.pid", "7 7\n", 0o644);
     f.sc.rules = &.{.{ .prefix = &.{ init_d ++ "/fake-systemd-timers", "status" }, .code = 0 }};
     try t.write("/usr/lib/systemd/system/job2.timer", "[Timer]\nOnCalendar=*:*:0/7\n[Install]\nWantedBy=timers.target\n", 0o644);
     try t.write("/usr/lib/systemd/system/job2.service", "[Service]\nType=oneshot\nExecStart=/usr/bin/job\n", 0o644);
@@ -951,4 +982,92 @@ test "an account name with shell characters is refused for a switch through the 
     try h.expectContains(t.stderr(), "must be plain names");
     try testing.expect(!t.exists(init_d ++ "/evil"));
     try testing.expectEqual(@as(usize, 0), f.sc.calls.items.len);
+}
+
+test "two units that map to the same script name are not both generated" {
+    var f: Fixture = .{};
+    try f.init(.debian);
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo.bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo.bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(init_d ++ "/foo.bar"), "# Unit: foo.bar.service\n");
+}
+
+test "a pid file that names init, a dead process or a process of another account is not signalled" {
+    var f: Fixture = .{};
+    try f.init(.debian);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try dinit_world.liveProcess(t, 1);
+    try t.write("/run/fake-systemd/foo.service.pid", "1 1\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    try t.write("/run/fake-systemd/foo.service.pid", "31337 31337\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    try testing.expect(!f.sc.called(&.{"kill"}));
+    try dinit_world.liveProcess(t, 31337);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    // The script trusts the pid file only for a numeric pid above 1.
+    try h.expectContains(try f.script("foo"), "case $_pid in ''|*[!0-9]*) return 1 ;; esac\n\t[ \"$_pid\" -gt 1 ]");
+}
+
+test "a dependency name ending in a backslash is left out of the header, which would continue the line" {
+    var f: Fixture = .{};
+    try f.init(.debian);
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "needs", "Requires=bs\\.service", "");
+    try t.write(init_d ++ "/bs\\", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "needs" }));
+    const body = try f.script("needs");
+    try h.expectNotContains(body, "bs\\\n");
+    try h.expectNotContains(body, "bs\\ ");
+}
+
+test "the scripts enabled with a script come from its unit, not from the header line of the generated script" {
+    var f: Fixture = .{};
+    try f.init(.debian);
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "");
+    try addSvc(t, "b", "", "");
+    try addSvc(t, "c", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "c" }));
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    const text = try t.read(init_d ++ "/a");
+    try h.expectContains(text, "\n# Pulls-In: b\n");
+    try t.write(init_d ++ "/a", try std.mem.replaceOwned(u8, t.a(), text, "\n# Pulls-In: b\n", "\n# Pulls-In: c\n"), 0o755);
+    f.sc.calls.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    try f.expectCall(0, &.{ "env", env_skip_systemd, "update-rc.d", "b", "defaults" });
+    try f.expectCall(1, &.{ "env", env_skip_systemd, "update-rc.d", "a", "defaults" });
+    try testing.expectEqual(@as(usize, 2), f.sc.calls.items.len);
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    inline for (.{ .debian, .redhat }) |variant| {
+        var f: Fixture = .{};
+        try f.init(variant);
+        defer f.deinit();
+        try h.expectControlRefused(&f.t);
+    }
+}
+
+test "a script that cannot be read in full is an error, not a native script whose pid file is signalled" {
+    var f: Fixture = .{};
+    try f.init(.debian);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    const file = try t.fs.root.openFile(testing.io, "etc/init.d/foo", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, (64 << 20) + 1)));
+    try dinit_world.liveProcess(t, 4242);
+    try t.write("/run/foo.pid", "4242\n", 0o644);
+    try testing.expect(t.run(&.{ "kill", "foo" }) != 0);
+    try testing.expect(!f.sc.called(&.{"kill"}));
 }

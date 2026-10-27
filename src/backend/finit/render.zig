@@ -7,33 +7,10 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const model = @import("../../unit/model.zig");
 const timespan = @import("../../unit/timespan.zig");
+const shell = @import("../shell.zig");
 const native = @import("native.zig");
 
 pub const Kind = enum { service, task };
-
-/// `setpriv` switches to the account through the system libc, with its supplementary groups. Finit
-/// sets only the primary group of its own `@user:group` option, and only when a group is named.
-pub const Wrapper = struct {
-    path: []const u8,
-    /// A plain account name.
-    user: []const u8,
-    /// A plain group name; the primary group of `user` when null.
-    group: ?[]const u8 = null,
-};
-
-/// Flags of `setpriv` that switch the account; the primary group of an account without `Group=` is
-/// looked up when the command starts. `quote` selects the quoting of the word that does so: finit
-/// joins double-quoted words and expands them itself, a shell script quotes the substitution only.
-fn writeWrapperFlags(w: *Io.Writer, wrapper: Wrapper, quote: enum { finit, sh }) Io.Writer.Error!void {
-    try w.print(" --reuid={s} ", .{wrapper.user});
-    if (wrapper.group) |g| {
-        try w.print("--regid={s}", .{g});
-    } else switch (quote) {
-        .finit => try w.print("\"--regid=$(id -g {s})\"", .{wrapper.user}),
-        .sh => try w.print("--regid=\"$(id -g {s})\"", .{wrapper.user}),
-    }
-    try w.writeAll(" --init-groups");
-}
 
 pub const Input = struct {
     unit: *const model.Unit,
@@ -49,8 +26,9 @@ pub const Input = struct {
     record_exit: bool = false,
     /// Conditions, as `service/foo/running`, that gate the start.
     conditions: []const []const u8 = &.{},
-    /// `setpriv` in front of the executor, for an account the executor cannot resolve.
-    wrapper: ?Wrapper = null,
+    /// Script that runs the executor with the numeric ids of an account it cannot resolve; the
+    /// stanza runs it in place of the executor.
+    exec_script: ?[]const u8 = null,
     /// Script finit runs after the service stopped.
     post_script: ?[]const u8 = null,
     /// The oneshot is `inactive` after it succeeded.
@@ -140,11 +118,7 @@ fn writeStanza(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     if (in.plain_command) |command| {
         try w.print(" {s}", .{command});
     } else {
-        if (in.wrapper) |wrapper| {
-            try w.print(" {s}", .{wrapper.path});
-            try writeWrapperFlags(w, wrapper, .finit);
-        }
-        try w.print(" {s} --exec {s} --log", .{ in.executor_path, u.name.full });
+        try w.print(" {s} --exec {s} --log", .{ in.exec_script orelse in.executor_path, u.name.full });
         if (in.stop_on_signal) try w.writeAll(" --stop-on-signal");
         if (in.record_exit) try w.writeAll(" --record-exit");
     }
@@ -166,18 +140,27 @@ pub fn renderAlloc(gpa: Allocator, in: Input) (Allocator.Error || error{LineTooL
     return aw.toOwnedSlice();
 }
 
-/// Script that finit runs after the service stopped: it runs `ExecStopPost=` and removes the
-/// runtime directories through the executor.
-pub fn postScript(gpa: Allocator, unit_name: []const u8, executor_path: []const u8, wrapper: ?Wrapper) Allocator.Error![]u8 {
+/// Script that runs the executor with the numeric ids of its account, which a script looks up
+/// where finit's own expansion of a command line cannot.
+pub fn execScript(gpa: Allocator, executor_path: []const u8, identity: shell.Numeric) Allocator.Error![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     const w = &aw.writer;
-    w.writeAll("#!/bin/sh\nexec") catch return error.OutOfMemory;
-    if (wrapper) |wr| {
-        w.print(" {s}", .{wr.path}) catch return error.OutOfMemory;
-        writeWrapperFlags(w, wr, .sh) catch return error.OutOfMemory;
-    }
-    w.print(" {s} --exec '{s}' --phase stop-post\n", .{ executor_path, unit_name }) catch return error.OutOfMemory;
+    w.print("#!/bin/sh\nexec {s} \"$@\"", .{executor_path}) catch return error.OutOfMemory;
+    shell.writeNumericFlags(w, identity) catch return error.OutOfMemory;
+    w.writeByte('\n') catch return error.OutOfMemory;
+    return aw.toOwnedSlice();
+}
+
+/// Script that finit runs after the service stopped: it runs `ExecStopPost=` and removes the
+/// runtime directories through the executor.
+pub fn postScript(gpa: Allocator, unit_name: []const u8, executor_path: []const u8, identity: ?shell.Numeric) Allocator.Error![]u8 {
+    var aw: Io.Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+    const w = &aw.writer;
+    w.print("#!/bin/sh\nexec {s} --exec '{s}' --phase stop-post", .{ executor_path, unit_name }) catch return error.OutOfMemory;
+    if (identity) |n| shell.writeNumericFlags(w, n) catch return error.OutOfMemory;
+    w.writeByte('\n') catch return error.OutOfMemory;
     return aw.toOwnedSlice();
 }
 
@@ -214,13 +197,12 @@ test "restart, kill, signal, conditions and identity are stanza options" {
         .executor_path = "/usr/bin/fake-systemd",
         .stop_on_signal = true,
         .conditions = &.{ "service/db/running", "net/route/default" },
-        .wrapper = .{ .path = "/usr/bin/setpriv", .user = "app", .group = "svc" },
+        .exec_script = "/etc/finit.d/available/foo.exec",
         .post_script = "/etc/finit.d/available/foo.stop-post",
     });
     try testing.expectEqualStrings(
         "service [2345] <service/db/running,net/route/default> name:foo restart:always restart_sec:3 kill:20 halt:SIGUSR1 " ++
-            "post:/etc/finit.d/available/foo.stop-post /usr/bin/setpriv --reuid=app --regid=svc --init-groups " ++
-            "/usr/bin/fake-systemd --exec foo.service --log --stop-on-signal -- foo.service\n",
+            "post:/etc/finit.d/available/foo.stop-post /etc/finit.d/available/foo.exec --exec foo.service --log --stop-on-signal -- foo.service\n",
         text,
     );
 }
@@ -273,28 +255,30 @@ test "a line longer than finit reads is refused" {
     try testing.expectError(error.LineTooLong, renderAlloc(a, .{ .unit = &u, .kind = .service, .service = "foo", .executor_path = "/x", .conditions = &long }));
 }
 
-test "the stop-post script runs the executor phase, behind the wrapper when there is one" {
+test "the stop-post script runs the executor phase, with the numeric ids of the account when there is one" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const u = try testUnit(a);
     const plain = try postScript(a, u.name.full, "/usr/bin/fake-systemd", null);
     try testing.expectEqualStrings("#!/bin/sh\nexec /usr/bin/fake-systemd --exec 'foo.service' --phase stop-post\n", plain);
-    const wrapped = try postScript(a, u.name.full, "/usr/bin/fake-systemd", .{ .path = "/usr/bin/setpriv", .user = "ldapuser" });
+    const wrapped = try postScript(a, u.name.full, "/usr/bin/fake-systemd", .{ .user = "ldapuser" });
     try testing.expectEqualStrings(
-        "#!/bin/sh\nexec /usr/bin/setpriv --reuid=ldapuser --regid=\"$(id -g ldapuser)\" --init-groups /usr/bin/fake-systemd --exec 'foo.service' --phase stop-post\n",
+        "#!/bin/sh\nexec /usr/bin/fake-systemd --exec 'foo.service' --phase stop-post --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"\n",
         wrapped,
     );
 }
 
-test "an account without a group has its primary group looked up, quoted for finit" {
+test "an account the executor cannot resolve runs the executor through a script that looks its ids up" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const u = try testUnit(a);
-    const text = try renderAlloc(a, .{ .unit = &u, .kind = .service, .service = "foo", .executor_path = "/x", .wrapper = .{ .path = "/usr/bin/setpriv", .user = "ldapuser" } });
+    const text = try renderAlloc(a, .{ .unit = &u, .kind = .service, .service = "foo", .executor_path = "/x", .exec_script = "/e/foo.exec" });
+    try testing.expectEqualStrings("service [2345] name:foo norestart /e/foo.exec --exec foo.service --log -- foo.service\n", text);
+    const script = try execScript(a, "/x", .{ .user = "ldapuser" });
     try testing.expectEqualStrings(
-        "service [2345] name:foo norestart /usr/bin/setpriv --reuid=ldapuser \"--regid=$(id -g ldapuser)\" --init-groups /x --exec foo.service --log -- foo.service\n",
-        text,
+        "#!/bin/sh\nexec /x \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"\n",
+        script,
     );
 }

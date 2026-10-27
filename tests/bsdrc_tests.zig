@@ -4,6 +4,7 @@
 const std = @import("std");
 const h = @import("harness.zig");
 const world = @import("bsdrc_world.zig");
+const dinit_world = @import("dinit_world.zig");
 
 const testing = std.testing;
 const marker = h.index.marker;
@@ -164,7 +165,8 @@ test "the hooks keep what the administrator wrote and the stop hook goes with it
     try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     try testing.expect(!t.exists(rc_d ++ "/rc.foo"));
-    try testing.expect(!t.exists(rc_d ++ "/rc.local_shutdown"));
+    // The script is never deleted, as it may be the system's own.
+    try testing.expectEqualStrings("#!/bin/sh\n", try t.read(rc_d ++ "/rc.local_shutdown"));
     try testing.expectEqualStrings(world.slackware_rc_local, try t.read(rc_d ++ "/rc.local"));
 }
 
@@ -308,13 +310,13 @@ test "the state of a native script is its pid file, else a process named like it
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "status", "syslogd" }));
     try h.expectContains(t.stdout(), "Main PID: 812");
     // A pid file of a live process decides without asking for processes.
-    try t.write("/proc/1/stat", "1 (init) S\n", 0o644);
-    try t.write("/run/syslog.pid", "1\n", 0o644);
+    try dinit_world.liveProcess(t, 900);
+    try t.write("/run/syslog.pid", "900\n", 0o644);
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "is-active", "syslogd" }));
     try testing.expectEqual(@as(usize, 0), f.sc.calls.items.len);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "HUP", "syslogd" }));
-    try f.expectCalled(&.{ "kill", "-s", "HUP", "1" });
+    try f.expectCalled(&.{ "kill", "-s", "HUP", "900" });
 }
 
 // ---- dependencies -----------------------------------------------------------------------------
@@ -330,7 +332,7 @@ test "dependencies: required scripts fail the start, wanted ones do not, and the
     const body = try f.script("a");
     try h.expectContains(body, "\n# Requires: b\n# Wants: c\n# After: d\n# Before: e\n");
     try h.expectContains(body, "\nscript_dir=/etc/rc.d\n");
-    try h.expectContains(body, "\n\tstart_dep b || {\n\t\techo \"a.service: cannot start b\" >&2\n\t\treturn 1\n\t}\n\tstart_dep c || :\n");
+    try h.expectContains(body, "\n\tstart_dep b || {\n\t\techo \"a.service: cannot start\" b >&2\n\t\treturn 1\n\t}\n\tstart_dep c || :\n");
     // The dependencies the unit pulls in are generated, and started by the script, not enabled.
     for ([_][]const u8{ "b", "c" }) |dep| try testing.expect(t.exists(try std.fmt.allocPrint(t.a(), "{s}/rc.{s}", .{ rc_d, dep })));
     try testing.expect(!f.executable(rc_d ++ "/rc.c"));
@@ -410,7 +412,7 @@ test "a oneshot runs to the end in start, and one that remains keeps a state" {
     try h.expectContains(kept, "is active (exited)");
 }
 
-test "an account only the system libc resolves runs the service through setpriv, or su without it" {
+test "an account only the system libc resolves is given to the root executor as numeric ids" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -418,14 +420,12 @@ test "an account only the system libc resolves runs the service through setpriv,
     try addSvc(t, "ldap", "", "User=ldapuser\nGroup=ldapgrp\nSupplementaryGroups=audio");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap" }));
     const body = try f.script("ldap");
-    try h.expectContains(body, "\n\t/usr/bin/setpriv --reuid=ldapuser --regid=ldapgrp --groups \"$(id -G ldapuser | tr ' ' ,),audio\" /usr/bin/fake-systemd --exec ldap.service --daemon --log --record-exit\n");
-    try h.expectContains(body, "\tfor _f in \"$log_dir\" \"$main_pid\" \"$exit_file\" \"$daemon_pid\"; do\n");
-    try h.expectContains(body, "\t\tchown ldapuser \"$_f\"\n");
-
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "ldap2", "", "User=ldapuser");
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap2" }));
-    try h.expectContains(try f.script("ldap2"), "su -s /bin/sh -c 'exec /usr/bin/fake-systemd --exec ldap2.service --daemon --log --record-exit' ldapuser\n");
+    try h.expectContains(body, "\n\t/usr/bin/fake-systemd --exec ldap.service --daemon --log --record-exit --uid \"$(id -u -- ldapuser)\" --gid \"$(getent group ldapgrp | cut -d: -f3)\" --groups \"$(id -G -- ldapuser | tr ' ' ,),$(getent group audio | cut -d: -f3)\"\n");
+    // The files stay root's and nothing switches before the executor.
+    try h.expectNotContains(body, "chown");
+    try h.expectNotContains(body, "setpriv");
+    try h.expectNotContains(body, "su -s");
+    try h.expectNotContains(body, "--identity-set");
 }
 
 test "an account the executor resolves needs no switch in the script" {
@@ -524,7 +524,8 @@ test "the main pid is the one the executor recorded, and kill signals it" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "foo" }));
     try h.expectContains(t.stderr(), "no process to signal");
-    try t.write("/run/fake-systemd/foo.service.pid", "4242\n", 0o644);
+    try dinit_world.liveProcess(t, 4242);
+    try t.write("/run/fake-systemd/foo.service.pid", "4242 4242\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "status", "foo" }));
     try h.expectContains(t.stdout(), "Main PID: 4242");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "SIGHUP", "foo" }));
@@ -582,7 +583,8 @@ test "the timer runner is generated as a daemon, started by its script and signa
     try f.expectCalled(&.{ rc_d ++ "/rc.fake-systemd-timers", "start" });
     try testing.expect(f.executable(rc_d ++ "/rc.fake-systemd-timers"));
 
-    try t.write("/run/fake-systemd/fake-systemd-timers.service.pid", "7\n", 0o644);
+    try dinit_world.liveProcess(t, 7);
+    try t.write("/run/fake-systemd/fake-systemd-timers.service.pid", "7 7\n", 0o644);
     f.sc.rules = &.{.{ .prefix = &.{ rc_d ++ "/rc.fake-systemd-timers", "status" }, .code = 0 }};
     try t.write("/usr/lib/systemd/system/job2.timer", "[Timer]\nOnCalendar=*:*:0/7\n[Install]\nWantedBy=timers.target\n", 0o644);
     try t.write("/usr/lib/systemd/system/job2.service", "[Service]\nType=oneshot\nExecStart=/usr/bin/job\n", 0o644);
@@ -625,4 +627,144 @@ fn runEntry(e: world.Entry) !void {
 
 test "corpus translates to the golden BSD-style rc scripts" {
     for (world.entries("bsdrc", "bsdrc")) |e| try runEntry(e);
+}
+
+test "a hook script whose block is not closed is left untouched" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    const broken = world.slackware_rc_local ++ "\n" ++ block_start ++ "[ -x /etc/rc.d/rc.old ] && /etc/rc.d/rc.old start\n";
+    try t.write(rc_d ++ "/rc.local", broken, 0o755);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try testing.expectEqualStrings(broken, try t.read(rc_d ++ "/rc.local"));
+}
+
+test "two units that map to the same script name are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo.bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo.bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(rc_d ++ "/rc.foo.bar"), "# Unit: foo.bar.service\n");
+}
+
+test "a pid file that names init or a dead process is not signalled" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/syslogd.service", "[Service]\nExecStart=/usr/sbin/syslogd\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/sbin/syslogd", "#!/bin/sh\n", 0o755);
+    try dinit_world.liveProcess(t, 1);
+    try t.write("/run/syslog.pid", "1\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "HUP", "syslogd" }));
+    try t.write("/run/syslog.pid", "31337\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "HUP", "syslogd" }));
+    try testing.expect(!f.sc.called(&.{"kill"}));
+}
+
+test "enable and disable change the permission bits of the script in place" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write(rc_d ++ "/rc.keep", "#!/bin/sh\necho keep\n", 0o644);
+    const before = try t.fs.stat(rc_d ++ "/rc.keep");
+    try t.fs.symLink("rc.keep", rc_d ++ "/rc.link");
+    try t.write("/usr/lib/systemd/system/keep.service", "[Service]\nExecStart=/usr/bin/keep\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/keep", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "keep" }));
+    const after = try t.fs.stat(rc_d ++ "/rc.keep");
+    try testing.expect(f.executable(rc_d ++ "/rc.keep"));
+    // The same file, not a new one in its place.
+    try testing.expectEqual(before.inode, after.inode);
+    try testing.expectEqual(@as(u16, 0o755), after.mode);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "disable", "keep" }));
+    try testing.expectEqual(before.inode, (try t.fs.stat(rc_d ++ "/rc.keep")).inode);
+    try testing.expectEqual(@as(u16, 0o644), (try t.fs.stat(rc_d ++ "/rc.keep")).mode);
+}
+
+test "a hook script that holds nothing but the managed block is kept as a shebang, never deleted" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try testing.expect(t.exists(rc_d ++ "/rc.local_shutdown"));
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(t.exists(rc_d ++ "/rc.local_shutdown"));
+    try testing.expect(t.exists(rc_d ++ "/rc.local"));
+    try h.expectNotContains(try t.read(rc_d ++ "/rc.local_shutdown"), "fake-systemd");
+}
+
+test "the reload phase of an account only the system libc resolves carry its numeric ids" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "ldaph", "", "User=ldapuser\nExecReload=/usr/bin/reload-ldap");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldaph" }));
+    const body = try f.script("ldaph");
+    const ids = " --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+    try h.expectContains(body, "--exec ldaph.service --phase reload" ++ ids);
+}
+
+test "an rc.local above one MiB survives enable unchanged" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo", "", "");
+    const big = try testing.allocator.alloc(u8, (1 << 20) + 100);
+    defer testing.allocator.free(big);
+    @memset(big, '#');
+    big[big.len - 1] = '\n';
+    try t.write(rc_d ++ "/rc.local", big, 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    const after = try t.fs.readFileAlloc(t.a(), rc_d ++ "/rc.local", 1 << 22);
+    try testing.expectEqualStrings(big, after[0..big.len]);
+    try h.expectContains(after, "rc.foo start");
+}
+
+test "a hook script that cannot be read in full is an error and is never rewritten" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    const file = try t.fs.root.openFile(testing.io, "etc/rc.d/rc.local", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    const len: usize = (64 << 20) + 1;
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, len)));
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try testing.expectEqual(@as(u64, len), (try t.fs.stat(rc_d ++ "/rc.local")).size);
+    try testing.expect(!t.exists(rc_d ++ "/rc.local_shutdown"));
+}
+
+test "the boot order comes from the units, not from the header lines of the generated scripts" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "");
+    try addSvc(t, "b", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    const header = try t.read(rc_d ++ "/rc.a");
+    try h.expectContains(header, "\n# Requires: b\n");
+    try t.write(rc_d ++ "/rc.a", try std.mem.replaceOwned(u8, t.a(), header, "\n# Requires: b\n", "\n# Before: b\n"), 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "b" }));
+    const local = try t.read(rc_d ++ "/rc.local");
+    try testing.expect(std.mem.find(u8, local, "rc.b start").? < std.mem.find(u8, local, "rc.a start").?);
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
 }

@@ -316,6 +316,16 @@ fn longOption(name: []const u8) ?Entry {
     return null;
 }
 
+/// True for a proper, non-empty prefix of a long option: an abbreviation that must not be
+/// mistaken for an unrelated unknown option.
+fn isOptionPrefix(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (long_options) |o| {
+        if (o[0].len > name.len and std.mem.startsWith(u8, o[0], name)) return true;
+    }
+    return false;
+}
+
 fn shortOption(c: u8) ?Entry {
     return switch (c) {
         'q' => flag(.quiet),
@@ -447,6 +457,10 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8) error{OutOfMemory
             const name = if (eq) |e| body[0..e] else body;
             const shown = arg[0 .. 2 + name.len];
             const entry = longOption(name) orelse {
+                if (isOptionPrefix(name)) {
+                    try s.fail(.unknown_option, .{ .long = shown });
+                    break;
+                }
                 try s.warnUnknown(arg);
                 continue;
             };
@@ -1017,4 +1031,15 @@ test "image and capsule options are hard errors like host and machine" {
     }
     const missing = try parseErr(a, &.{ "status", "--image" });
     try testing.expectEqual(Failure.Kind.missing_value, missing.kind);
+}
+
+test "an abbreviation of a known long option is an error, not a warning" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "--dry-ru", "--dry", "--dry-ru=1", "--ro", "--no-relo" }) |opt| {
+        const f = try parseErr(arena.allocator(), &.{ "enable", opt, "foo" });
+        try testing.expectEqual(Failure.Kind.unknown_option, f.kind);
+    }
+    const unrelated = try parseOk(arena.allocator(), &.{ "enable", "--dry-runs", "foo" });
+    try testing.expectEqual(@as(usize, 1), unrelated.unknown_options.len);
 }

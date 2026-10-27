@@ -41,11 +41,18 @@ pub fn lockPath(l: Layout, gpa: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(gpa, &.{ l.state_dir, l.backend, "index.lock" });
 }
 
-/// `<state>/backup/<backend>/<original path>.fsnew|.fssave`; `original_abs` must be absolute.
+/// `<state>/backup/<backend>/<original path>.fsnew|.fssave`; `original_abs` must be absolute and
+/// normalized.
 pub fn backupPath(l: Layout, gpa: std.mem.Allocator, original_abs: []const u8, kind: BackupKind) ![]u8 {
-    std.debug.assert(std.fs.path.isAbsolute(original_abs));
+    return l.backupPathNumbered(gpa, original_abs, kind, 0);
+}
+
+/// Backup number `n`; 0 is the plain name.
+pub fn backupPathNumbered(l: Layout, gpa: std.mem.Allocator, original_abs: []const u8, kind: BackupKind, n: usize) ![]u8 {
+    if (!@import("Index.zig").pathIsNormalized(original_abs)) return error.InvalidPath;
     const rel = std.mem.trimStart(u8, original_abs, "/");
-    return std.fmt.allocPrint(gpa, "{s}/backup/{s}/{s}{s}", .{ l.state_dir, l.backend, rel, kind.suffix() });
+    if (n == 0) return std.fmt.allocPrint(gpa, "{s}/backup/{s}/{s}{s}", .{ l.state_dir, l.backend, rel, kind.suffix() });
+    return std.fmt.allocPrint(gpa, "{s}/backup/{s}/{s}{s}.{d}", .{ l.state_dir, l.backend, rel, kind.suffix(), n });
 }
 
 test "system layout" {
@@ -70,5 +77,18 @@ test "user layout" {
     try std.testing.expectEqualStrings(
         "/home/u/.local/state/fake-systemd/backup/dinit/home/u/.config/dinit.d/foo.fssave",
         try l.backupPath(a, "/home/u/.config/dinit.d/foo", .fssave),
+    );
+}
+
+test "a relative or non-normalized original has no backup path" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const l: Layout = try .init(a, .system, "/ignored", "dinit");
+    try std.testing.expectError(error.InvalidPath, l.backupPath(a, "etc/dinit.d/foo", .fsnew));
+    try std.testing.expectError(error.InvalidPath, l.backupPath(a, "/etc/../../x", .fssave));
+    try std.testing.expectEqualStrings(
+        "/var/lib/fake-systemd/backup/dinit/etc/dinit.d/foo.fsnew.2",
+        try l.backupPathNumbered(a, "/etc/dinit.d/foo", .fsnew, 2),
     );
 }

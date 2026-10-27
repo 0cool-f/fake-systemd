@@ -22,6 +22,7 @@ const apply = @import("../reconcile/apply.zig");
 const executor = @import("../exec/executor.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const runner = @import("runner.zig");
 const shell = @import("shell.zig");
 const render = @import("finit/render.zig");
@@ -141,23 +142,23 @@ fn mapDependency(self: *Finit, own: []const u8, dep: []const u8, resolutions: []
     return if (resolved.state == .found) svc else null;
 }
 
-fn readConf(self: *Finit, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn readConf(self: *Finit, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
 /// Identity `initctl` takes for `service`: the generated name, or what a native file declares.
-fn identityOf(self: *Finit, service: []const u8) []const u8 {
-    const content = self.readConf(service) orelse return service;
+fn identityOf(self: *Finit, service: []const u8) ![]const u8 {
+    const content = (try self.readConf(service)) orelse return service;
     if (marker.parse(content) != null) return service;
-    return (native.identityOf(self.ctx.gpa, content) catch null) orelse service;
+    return (try native.identityOf(self.ctx.gpa, content)) orelse service;
 }
 
 /// Start condition that waits for `service`: its end for a task, its running state otherwise.
 fn conditionFor(self: *Finit, service: []const u8) ![]const u8 {
     const gpa = self.ctx.gpa;
-    const ident = self.identityOf(service);
-    const kind = if (self.readConf(service)) |c| (try native.kindOf(gpa, c)) orelse "service" else "service";
+    const ident = try self.identityOf(service);
+    const kind = if (try self.readConf(service)) |c| (try native.kindOf(gpa, c)) orelse "service" else "service";
     if (std.mem.eql(u8, kind, "task") or std.mem.eql(u8, kind, "run")) return std.fmt.allocPrint(gpa, "{s}/{s}/success", .{ kind, ident });
     return std.fmt.allocPrint(gpa, "service/{s}/running", .{ident});
 }
@@ -182,7 +183,7 @@ fn conditions(self: *Finit, own: []const u8, u: *const model.Unit, resolutions: 
 }
 
 fn accountKnown(self: *Finit, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -202,35 +203,20 @@ fn executorResolves(self: *Finit, u: *const model.Unit) bool {
     return true;
 }
 
-const command_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
-
-fn findProgram(self: *Finit, name: []const u8) !?[]const u8 {
-    for (command_dirs) |dir| {
-        const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, name });
-        if (self.ctx.fs.exists(path)) return path;
-    }
-    return null;
-}
-
-/// An account the executor cannot resolve (LDAP, sssd) is switched through the system libc by
-/// `setpriv` in front of the executor: finit's own `@user` leaves the group of root in place
-/// unless a group is named, and sets no supplementary groups. Null when the executor switches
-/// by itself or the unit names no user.
-fn wrapperFor(self: *Finit, u: *const model.Unit) !?render.Wrapper {
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that finit
+/// looks up when it starts the service; the executor stays root and switches to them itself.
+/// Null when the executor resolves the account or the unit names no user.
+fn identityFor(self: *Finit, u: *const model.Unit) !?shell.Numeric {
     const user = u.user orelse return null;
     if (self.executorResolves(u)) return null;
-    if (!shell.plainAccount(user) or (u.group != null and !shell.plainAccount(u.group.?))) {
-        self.ctx.diag.err("{s}: User= and Group= must be plain names to be switched by the system libc", .{u.name.full});
+    var plain = shell.plainAccount(user);
+    if (u.group) |g| plain = plain and shell.plainAccount(g);
+    for (u.supplementary_groups) |g| plain = plain and shell.plainAccount(g);
+    if (!plain) {
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
         return error.Unsupported;
     }
-    const path = (try self.findProgram("setpriv")) orelse {
-        self.ctx.diag.err("{s}: setpriv is needed to switch to {s}, which the executor cannot resolve", .{ u.name.full, user });
-        return error.Unsupported;
-    };
-    if (u.supplementary_groups.len > 0) {
-        self.ctx.diag.warn("{s}: SupplementaryGroups= is not applied for {s}, whose groups come from the system libc", .{ u.name.full, user });
-    }
-    return .{ .path = path, .user = user, .group = u.group };
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
 }
 
 /// Oneshots, `Type=forking` without a pid file, which finit cannot follow, and units without a
@@ -272,10 +258,11 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
     const kind = kindFor(u);
     const post = kind == .service and (u.exec_stop_post.len > 0 or hasDirectories(u));
     const available = try layout.availableDir(gpa, self.dirs);
-    const wrapper = try self.wrapperFor(u);
+    const identity = try self.identityFor(u);
 
     const in: render.Input = .{
         .unit = u,
@@ -286,7 +273,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         .stop_on_signal = kind == .service and policy.needsStopHook(u.*),
         .record_exit = kind == .task and u.exec_start.len > 0,
         .conditions = try self.conditions(svc, u, input.deps),
-        .wrapper = wrapper,
+        .exec_script = if (identity != null) try layout.execScriptPath(gpa, self.dirs, svc) else null,
         .post_script = if (post) try layout.postScriptPath(gpa, self.dirs, svc) else null,
         .transient = kind == .task and !u.remain_after_exit and u.service_type != .forking,
         .notes = try notesFor(gpa, u, kind),
@@ -301,17 +288,27 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const conf = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
 
-    const files = try gpa.alloc(apply.GeneratedFile, if (post) 2 else 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ available, try layout.confName(gpa, svc) }), .content = conf };
+    const conf_path = try std.fs.path.join(gpa, &.{ available, try layout.confName(gpa, svc) });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, conf_path, u.name.full), u.name.full, conf_path);
+    var files: std.ArrayList(apply.GeneratedFile) = .empty;
+    try files.append(gpa, .{ .path = conf_path, .content = conf });
     if (post) {
-        const script = try render.postScript(gpa, u.name.full, policy.executor_path, wrapper);
-        files[1] = .{
+        const script = try render.postScript(gpa, u.name.full, policy.executor_path, identity);
+        try files.append(gpa, .{
             .path = in.post_script.?,
             .content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, script),
             .mode = 0o755,
-        };
+        });
     }
-    return .{ .service_name = svc, .files = files };
+    if (identity) |ids| {
+        const script = try render.execScript(gpa, policy.executor_path, ids);
+        try files.append(gpa, .{
+            .path = in.exec_script.?,
+            .content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, script),
+            .mode = 0o755,
+        });
+    }
+    return .{ .service_name = svc, .files = files.items };
 }
 
 // ---- enablement -------------------------------------------------------------------------
@@ -334,7 +331,7 @@ fn relativeTarget(gpa: Allocator, service: []const u8) ![]const u8 {
 /// Services named by the conditions of `service` that have a file of their own, depth first.
 fn pulledIn(self: *Finit, service: []const u8, depth: usize, out: *std.ArrayList([]const u8)) !void {
     if (depth >= max_pull_depth) return;
-    const content = self.readConf(service) orelse return;
+    const content = (try self.readConf(service)) orelse return;
     for (try native.conditionsOf(self.ctx.gpa, content)) |cond| {
         var parts = std.mem.splitScalar(u8, cond, '/');
         const kind = parts.next() orelse continue;
@@ -351,6 +348,7 @@ fn pulledIn(self: *Finit, service: []const u8, depth: usize, out: *std.ArrayList
 /// identity; a native one is found by its file name.
 fn serviceOfIdentity(self: *Finit, ident: []const u8) ?[]const u8 {
     const plain = if (std.mem.findScalar(u8, ident, ':')) |i| ident[0..i] else ident;
+    if (!guard.serviceNameOk(plain)) return null;
     return if (self.serviceExists(plain) catch false) plain else null;
 }
 
@@ -438,14 +436,13 @@ fn sleepMs(env: Env, ms: u64) void {
 }
 
 /// Unit recorded in the marker of the service file, null for native services.
-fn generatedUnit(self: *Finit, service: []const u8) ?[]const u8 {
-    const content = self.readConf(service) orelse return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *Finit, service: []const u8) !?[]const u8 {
+    const content = (try self.readConf(service)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
-fn flagsOf(self: *Finit, service: []const u8) native.Flags {
-    const content = self.readConf(service) orelse return .{};
+fn flagsOf(self: *Finit, service: []const u8) !native.Flags {
+    const content = (try self.readConf(service)) orelse return .{};
     const parsed = marker.parse(content) orelse return .{};
     return native.parseFlags(parsed.rest);
 }
@@ -457,11 +454,11 @@ fn isLoaded(env: Env, ident: []const u8) !bool {
 }
 
 fn probe(self: *Finit, env: Env, service: []const u8) !interface.Status {
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     const res = try runStatus(env, ident, .capture);
     if (res.code != 0) return .{ .state = .inactive };
     const parsed = native.parseStatusText(res.stdout);
-    return .{ .state = native.stateOf(parsed, self.flagsOf(service)), .pid = parsed.pid, .text = res.stdout };
+    return .{ .state = native.stateOf(parsed, try self.flagsOf(service)), .pid = parsed.pid, .text = res.stdout };
 }
 
 fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Status {
@@ -487,7 +484,7 @@ fn linkRuntime(self: *Finit, env: Env, service: []const u8) !bool {
             return error.Unsupported;
         };
         if (try self.loadsAtBoot(svc)) continue;
-        if (!env.ctx.dry_run and try isLoaded(env, self.identityOf(svc))) continue;
+        if (!env.ctx.dry_run and try isLoaded(env, try self.identityOf(svc))) continue;
         const link = try layout.runtimePath(env.ctx.gpa, svc);
         if (self.linked(link)) continue;
         if (!env.ctx.dry_run) {
@@ -502,7 +499,7 @@ fn linkRuntime(self: *Finit, env: Env, service: []const u8) !bool {
 /// Loads `service` when finit does not know it; true when a reload did so. The reload is
 /// asynchronous: the service is followed until finit lists it.
 fn ensureLoaded(self: *Finit, env: Env, service: []const u8) !bool {
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     if (!env.ctx.dry_run and try isLoaded(env, ident)) return false;
     _ = try self.linkRuntime(env, service);
     try mustRun(env, &.{"reload"});
@@ -518,9 +515,9 @@ fn ensureLoaded(self: *Finit, env: Env, service: []const u8) !bool {
     return true;
 }
 
-fn isTask(self: *Finit, service: []const u8) bool {
-    const content = self.readConf(service) orelse return false;
-    const kind = (native.kindOf(self.ctx.gpa, content) catch null) orelse return false;
+fn isTask(self: *Finit, service: []const u8) !bool {
+    const content = (try self.readConf(service)) orelse return false;
+    const kind = (try native.kindOf(self.ctx.gpa, content)) orelse return false;
     return std.mem.eql(u8, kind, "task") or std.mem.eql(u8, kind, "run");
 }
 
@@ -538,30 +535,33 @@ fn isStopping(s: output.ActiveState) bool {
     return s == .deactivating or s == .active;
 }
 
-fn exitOf(self: *Finit, service: []const u8) ?native.Exit {
-    const unit = self.generatedUnit(service) orelse return null;
+fn exitOf(self: *Finit, service: []const u8) !?native.Exit {
+    const unit = (try self.generatedUnit(service)) orelse return null;
     const path = executor.execExitPath(self.ctx, unit) catch return null;
     const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return null;
     return native.parseExit(text);
 }
 
-fn clearExit(self: *Finit, service: []const u8) void {
-    const unit = self.generatedUnit(service) orelse return;
-    const path = executor.execExitPath(self.ctx, unit) catch return;
-    self.ctx.fs.deleteFile(path) catch return;
+fn clearExit(self: *Finit, service: []const u8) !void {
+    const unit = (try self.generatedUnit(service)) orelse return;
+    const path = try executor.execExitPath(self.ctx, unit);
+    self.ctx.fs.deleteFile(path) catch |e| switch (e) {
+        error.FileNotFound => {},
+        else => return e,
+    };
 }
 
 /// Runs a task again and waits for the executor to record how it ended; a task that is not
 /// generated has no record and is not waited for.
 fn runTask(self: *Finit, env: Env, service: []const u8) anyerror!void {
-    const ident = self.identityOf(service);
-    if (!env.ctx.dry_run) self.clearExit(service);
+    const ident = try self.identityOf(service);
+    if (!env.ctx.dry_run) try self.clearExit(service);
     const loaded = try self.ensureLoaded(env, service);
     if (!loaded) try mustRun(env, &.{ "reload", ident });
-    if (env.ctx.dry_run or self.generatedUnit(service) == null) return;
+    if (env.ctx.dry_run or (try self.generatedUnit(service)) == null) return;
     var waited: u64 = 0;
     while (waited < self.oneshot_wait_ms) : (waited += poll_ms) {
-        if (self.exitOf(service)) |e| {
+        if (try self.exitOf(service)) |e| {
             if (e == .ok) return;
             env.ctx.diag.err("{s}: the command failed", .{service});
             return error.CommandFailed;
@@ -580,7 +580,7 @@ const starting_words = [_][]const u8{ "starting", "setup", "waiting", "busy" };
 /// start, as for a systemd simple service; one whose command or environment file is missing,
 /// and one that keeps waiting for a condition, are.
 fn waitStarted(self: *Finit, env: Env, service: []const u8) anyerror!void {
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     var waited: u64 = 0;
     while (true) {
         const res = try runStatus(env, ident, .capture);
@@ -605,15 +605,15 @@ fn waitStarted(self: *Finit, env: Env, service: []const u8) anyerror!void {
 
 fn start(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    if (self.isTask(service)) return self.runTask(env, service);
+    if (try self.isTask(service)) return self.runTask(env, service);
     _ = try self.ensureLoaded(env, service);
-    try mustRun(env, &.{ "start", self.identityOf(service) });
+    try mustRun(env, &.{ "start", try self.identityOf(service) });
     if (!env.ctx.dry_run) try self.waitStarted(env, service);
 }
 
 fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     if (env.ctx.dry_run or try isLoaded(env, ident)) {
         try mustRun(env, &.{ "stop", ident });
         if (!env.ctx.dry_run) _ = try self.waitFor(env, service, isStopping, self.stop_wait_ms);
@@ -627,33 +627,20 @@ fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 
 fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    if (self.isTask(service)) return self.runTask(env, service);
+    if (try self.isTask(service)) return self.runTask(env, service);
     if (!try self.ensureLoaded(env, service)) {
-        try mustRun(env, &.{ "restart", self.identityOf(service) });
+        try mustRun(env, &.{ "restart", try self.identityOf(service) });
         if (!env.ctx.dry_run) try self.waitStarted(env, service);
     }
 }
 
-const regid_lookup = "--regid=$(id -g ";
-
-/// Words of the stanza that precede the executor, with the group lookup of `setpriv` done: the
-/// reload runs the executor with the identity the service has.
-fn wrapperWords(self: *Finit, env: Env, service: []const u8) ![]const []const u8 {
-    const content = self.readConf(service) orelse return &.{};
-    const words = (try native.extractCommand(env.ctx.gpa, content)) orelse return &.{};
-    var out: std.ArrayList([]const u8) = .empty;
-    for (words) |word| {
-        if (std.mem.eql(u8, word, policy.executor_path)) break;
-        if (std.mem.startsWith(u8, word, regid_lookup) and std.mem.endsWith(u8, word, ")")) {
-            const user = word[regid_lookup.len .. word.len - 1];
-            const res = try run2(env, &.{ "id", "-g", user });
-            if (res.code != 0) return error.CommandFailed;
-            try out.append(env.ctx.gpa, try std.fmt.allocPrint(env.ctx.gpa, "--regid={s}", .{std.mem.trim(u8, res.stdout, " \t\r\n")}));
-            continue;
-        }
-        try out.append(env.ctx.gpa, word);
-    } else return &.{};
-    return out.items;
+/// Script of the stanza that runs the executor with the numeric ids of its account, when it has
+/// one: the reload runs the executor with the identity the service has.
+fn execScriptOf(self: *Finit, env: Env, service: []const u8) !?[]const u8 {
+    const content = (try self.readConf(service)) orelse return null;
+    const words = (try native.extractCommand(env.ctx.gpa, content)) orelse return null;
+    if (words.len == 0 or !std.mem.endsWith(u8, words[0], layout.exec_suffix)) return null;
+    return words[0];
 }
 
 fn run2(env: Env, argv: []const []const u8) !runner.Result {
@@ -664,17 +651,17 @@ fn run2(env: Env, argv: []const []const u8) !runner.Result {
 /// keeps the reload of finit.
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const unit_name = self.generatedUnit(service) orelse return mustRun(env, &.{ "reload", self.identityOf(service) });
+    const unit_name = (try self.generatedUnit(service)) orelse return mustRun(env, &.{ "reload", try self.identityOf(service) });
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(env.ctx.gpa, try self.wrapperWords(env, service));
-    try argv.appendSlice(env.ctx.gpa, &.{ policy.executor_path, "--exec", unit_name, "--phase", "reload" });
+    try argv.append(env.ctx.gpa, (try self.execScriptOf(env, service)) orelse policy.executor_path);
+    try argv.appendSlice(env.ctx.gpa, &.{ "--exec", unit_name, "--phase", "reload" });
     const res = try env.runner.run(env.ctx.gpa, argv.items, .inherit);
     if (res.code != 0) return error.CommandFailed;
 }
 
 fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
     const name = std.mem.cutPrefix(u8, signal, "SIG") orelse signal;
-    try mustRun(env, &.{ "signal", me(ptr).identityOf(service), name });
+    try mustRun(env, &.{ "signal", try me(ptr).identityOf(service), name });
 }
 
 /// Finit reads changed files at a reload: new services start, changed ones restart and the

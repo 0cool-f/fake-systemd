@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/oneshot-remain.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:d643ab3622c36bff
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 # fake-systemd flags: exec-stop remain
 exec 2>&1
 /usr/bin/fake-systemd --exec oneshot-remain.service || exit $?
@@ -17,7 +17,7 @@ exec /usr/bin/sleep 2147483647
 # Source: /usr/lib/systemd/system/oneshot-remain.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -33,7 +33,7 @@ s6-svc -O .
 # Source: /usr/lib/systemd/system/oneshot-remain.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:82be1c5c09d81ca6
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 exec /usr/bin/fake-systemd --log oneshot-remain.service
 === timeout-kill 0644
 90000
@@ -42,5 +42,5 @@ exec /usr/bin/fake-systemd --log oneshot-remain.service
 Unit: oneshot-remain.service
 Source: /usr/lib/systemd/system/oneshot-remain.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6/1
+Generator: fake-systemd 0.1.0 s6/2
 Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6

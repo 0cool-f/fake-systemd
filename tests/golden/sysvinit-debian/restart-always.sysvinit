@@ -3,7 +3,7 @@
 # Unit: restart-always.service
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:8c5c6c9d0dd5bf0e
+# Body-Hash: xxh3:facbed1d4c1bbff3
 # Generator: fake-systemd 0.1.0 sysvinit/1
 ### BEGIN INIT INFO
 # Provides:          restart-always
@@ -25,7 +25,8 @@ stop_wait=12
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
-	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+	case $_pid in ''|*[!0-9]*) return 1 ;; esac
+	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
 }
 
 do_start() {

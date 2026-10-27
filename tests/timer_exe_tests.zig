@@ -195,3 +195,60 @@ test "the runner fires a calendar timer repeatedly and stops on SIGTERM" {
     try testing.expect(std.mem.count(u8, log, " tick-ran\n") >= 2);
     try expectContains(try f.index(), "\tsuccess\n");
 }
+
+test "run-job runs the service of an account that only the system libc resolves as that account" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // `nobody` is in the passwd of the machine that runs the tests, not in the passwd of the tmp root.
+    const known = try std.process.run(f.a(), testing.io, .{ .argv = &.{ "/usr/bin/id", "-u", "--", "nobody" }, .environ_map = &f.env });
+    if (known.term != .exited or known.term.exited != 0) return error.SkipZigTest;
+    const want = std.mem.trim(u8, known.stdout, " \n");
+    try f.write("/etc/passwd", "root:x:0:0::/root:/bin/sh\n");
+    try f.write("/etc/group", "root:x:0:\n");
+    try f.job("nss", "Type=oneshot\nUser=nobody\nExecStart=/usr/bin/id -u\nExecStart=/usr/bin/id -g", "OnCalendar=daily", "builtin");
+    const r = try f.run(&.{ "--run-job", "nss.service", "--timer", "nss.timer" });
+    try testing.expectEqual(@as(u8, 0), r.code);
+    const log = try f.log("nss.service");
+    try expectContains(log, try std.fmt.allocPrint(f.a(), " {s}\n", .{want}));
+    try testing.expect(std.mem.find(u8, log, " 0\n") == null);
+    try expectContains(try f.index(), "\tsuccess\n");
+}
+
+test "run-job refuses an account that neither the tmp root nor the system libc knows instead of running as root" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.write("/etc/passwd", "root:x:0:0::/root:/bin/sh\n");
+    try f.write("/etc/group", "root:x:0:\n");
+    for ([_][]const u8{ "no-such-account-zz", "-r" }) |name| {
+        const body = try std.fmt.allocPrint(f.a(), "Type=oneshot\nUser={s}\nExecStart=/usr/bin/id -u", .{name});
+        try f.job("ghost", body, "OnCalendar=daily", "builtin");
+        const r = try f.run(&.{ "--run-job", "ghost.service", "--timer", "ghost.timer" });
+        try testing.expectEqual(@as(u8, 217), r.code);
+        const log = f.log("ghost.service") catch "";
+        try testing.expect(std.mem.find(u8, log, " 0\n") == null);
+    }
+}
+
+test "a relative or empty --root is refused by the job and the runner" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    for ([_][]const u8{ "relative/dir", "", "." }) |root| {
+        for ([_][]const []const u8{ &.{ "--run-job", "hello.service", "--timer", "hello.timer" }, &.{"--timers"} }) |mode| {
+            var args: std.ArrayList([]const u8) = .empty;
+            try args.append(f.a(), f.exe);
+            try args.appendSlice(f.a(), mode);
+            try args.appendSlice(f.a(), &.{ "--root", root });
+            const res = try std.process.run(f.a(), testing.io, .{ .argv = args.items, .environ_map = &f.env });
+            try testing.expectEqual(@as(u8, 1), switch (res.term) {
+                .exited => |c| c,
+                else => 255,
+            });
+            try expectContains(res.stderr, "--root must be an absolute path");
+        }
+    }
+}

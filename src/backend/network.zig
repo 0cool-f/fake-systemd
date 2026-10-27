@@ -21,11 +21,11 @@ pub fn mentions(u: *const model.Unit) bool {
 
 pub const Enabled = struct {
     ptr: *anyopaque,
-    is_enabled: *const fn (ptr: *anyopaque, service: []const u8) bool,
+    is_enabled: *const fn (ptr: *anyopaque, service: []const u8) anyerror!bool,
     /// Replaces the lookup with a fixed set of enabled services, for tests.
     injected: ?[]const []const u8 = null,
 
-    fn has(e: Enabled, service: []const u8) bool {
+    fn has(e: Enabled, service: []const u8) !bool {
         if (e.injected) |set| {
             for (set) |s| if (std.mem.eql(u8, s, service)) return true;
             return false;
@@ -35,18 +35,18 @@ pub const Enabled = struct {
 };
 
 /// The providers of `providers` that are enabled, in the order of the list, without `own`.
-pub fn enabledProviders(gpa: Allocator, providers: []const []const u8, own: []const u8, enabled: Enabled) Allocator.Error![]const []const u8 {
+pub fn enabledProviders(gpa: Allocator, providers: []const []const u8, own: []const u8, enabled: Enabled) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (providers) |p| {
         if (std.mem.eql(u8, p, own)) continue;
-        if (enabled.has(p)) try out.append(gpa, p);
+        if (try enabled.has(p)) try out.append(gpa, p);
     }
     return out.toOwnedSlice(gpa);
 }
 
 const testing = std.testing;
 
-fn never(_: *anyopaque, _: []const u8) bool {
+fn never(_: *anyopaque, _: []const u8) anyerror!bool {
     return false;
 }
 

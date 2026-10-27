@@ -626,3 +626,89 @@ test "network targets become waits-for on the enabled network providers" {
     try h.expectContains(content, "\nwaits-for = dhcpcd\nwaits-for = NetworkManager\nafter = network\n");
     try h.expectNotContains(content, "sshd");
 }
+
+test "Environment= of a unit with an account stays native: dinit applies it through env after run-as" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/envuser.service", "[Service]\nExecStart=/usr/bin/foo --run\nUser=app\nEnvironment=A=1\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "envuser" }));
+    const text = try t.read("/usr/lib/dinit.d/envuser");
+    try h.expectContains(text, "\ncommand = /usr/bin/env A=1 /usr/bin/foo --run\n");
+    try h.expectContains(text, "\nrun-as = app\n");
+}
+
+test "an Environment= value with a line break goes to the executor and adds no dinit directive" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/inject.service", "[Service]\nExecStart=/usr/bin/foo --run\nEnvironment=\"A=1\\nlogfile=/tmp/pwned.log\\ncommand=/usr/bin/touch\"\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "inject" }));
+    const text = try t.read("/usr/lib/dinit.d/inject");
+    try h.expectNotContains(text, "pwned");
+    try h.expectContains(text, "\ncommand = /usr/bin/fake-systemd --exec inject.service\n");
+}
+
+test "a unit name that maps to the service name of another unit is refused" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo-bar", "", wanted);
+    try addSvc(t, "foo@", "", wanted);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo-bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read("/usr/lib/dinit.d/foo-bar"), "# Unit: foo-bar.service\n");
+}
+
+test "an account the executor cannot resolve is given to it as numeric ids that a shell looks up, not switched to by dinit" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldapd.service", "[Service]\nExecStartPre=/usr/bin/foo --prep\nExecStart=/usr/bin/foo --run\nUser=svc-directory\nSupplementaryGroups=audio\nExecStop=/usr/bin/foo --stop\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapd" }));
+    const text = try t.read("/usr/lib/dinit.d/ldapd");
+    try h.expectContains(text, "\ncommand = /bin/sh -c \"exec \\\"$$0\\\" \\\"$$@\\\" --uid \\\"$$(id -u -- svc-directory)\\\" --gid \\\"$$(id -g -- svc-directory)\\\" --groups \\\"$$(id -G -- svc-directory | tr ' ' ,),$$(getent group audio | cut -d: -f3)\\\"\" /usr/bin/fake-systemd --exec ldapd.service\n");
+    try h.expectContains(text, "\nstop-command = /bin/sh -c ");
+    try h.expectNotContains(text, "run-as");
+    try h.expectNotContains(text, "--identity-set");
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload gives the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "start", "ldap" });
+    t.rec.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try testing.expect(t.rec.callIs(0, &.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" }));
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "a native service file that cannot be read is an error, not a service that is not there" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/etc/dinit.d/foo-daemon", "type = process\ncommand = /usr/bin/foo --run\n", 0o644);
+    const file = try t.fs.root.openFile(testing.io, "etc/dinit.d/foo-daemon", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, (16 << 20) + 1)));
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try testing.expect(!t.exists("/usr/lib/dinit.d/foo"));
+}

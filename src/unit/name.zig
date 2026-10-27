@@ -71,9 +71,10 @@ pub fn isValidChar(c: u8) bool {
 }
 
 /// Parses a unit name as typed on the command line. A name without a known type suffix is a
-/// `.service`.
+/// `.service`. A leading `-` is refused: native tools would read the name as an option.
 pub fn parse(gpa: Allocator, input: []const u8) Error!Name {
     if (input.len == 0 or input.len > max_len) return error.InvalidName;
+    if (input[0] == '-') return error.InvalidName;
     if (std.mem.eql(u8, input, ".") or std.mem.eql(u8, input, "..")) return error.InvalidName;
     for (input) |c| if (!isValidChar(c)) return error.InvalidName;
 
@@ -258,6 +259,13 @@ test "invalid names are rejected" {
         "foo\n",         "..service",
     };
     for (bad) |b| try testing.expectError(error.InvalidName, parse(a, b));
+}
+
+test "a leading dash is rejected" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "-x", "-x.service", "--help", "-.slice" }) |b| try testing.expectError(error.InvalidName, parse(arena.allocator(), b));
+    _ = try parse(arena.allocator(), "x-y.service");
 }
 
 test "length limit applies to the normalized name" {

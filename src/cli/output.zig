@@ -8,6 +8,59 @@ const Io = std.Io;
 
 pub const Error = Io.Writer.Error;
 
+/// Length of the control sequence at `text[i..]`: one byte for a C0 control (a tab is kept when
+/// `keep_tab`) or DEL, two for a UTF-8 encoded C1 control, zero for anything else.
+fn controlLen(text: []const u8, i: usize, keep_tab: bool) usize {
+    const c = text[i];
+    if (c < 0x20) return if (c == '\t' and keep_tab) 0 else 1;
+    if (c == 0x7f) return 1;
+    if (c == 0xc2 and i + 1 < text.len and text[i + 1] >= 0x80 and text[i + 1] <= 0x9f) return 2;
+    return 0;
+}
+
+/// Writes `text` with every control byte shown as `\xNN`, so text taken from unit files, file
+/// names and logs cannot drive a terminal.
+pub fn writeSafe(w: *Io.Writer, text: []const u8, keep_tab: bool) Error!void {
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const n = controlLen(text, i, keep_tab);
+        if (n == 0) {
+            i += 1;
+            continue;
+        }
+        try w.writeAll(text[start..i]);
+        for (text[i .. i + n]) |b| try w.print("\\x{x:0>2}", .{b});
+        i += n;
+        start = i;
+    }
+    try w.writeAll(text[start..]);
+}
+
+/// `text` without control bytes (see `writeSafe`); the argument itself when it has none.
+pub fn sanitize(gpa: std.mem.Allocator, text: []const u8, keep_tab: bool) std.mem.Allocator.Error![]const u8 {
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (controlLen(text, i, keep_tab) > 0) break;
+    } else return text;
+    var aw: Io.Writer.Allocating = .init(gpa);
+    writeSafe(&aw.writer, text, keep_tab) catch return error.OutOfMemory;
+    return aw.toOwnedSlice();
+}
+
+/// Formats as `writeSafe` does, for `{f}`.
+pub const Safe = struct {
+    text: []const u8,
+
+    pub fn format(s: Safe, w: *Io.Writer) Io.Writer.Error!void {
+        try writeSafe(w, s.text, false);
+    }
+};
+
+pub fn safe(text: []const u8) Safe {
+    return .{ .text = text };
+}
+
 /// Exit codes of systemctl(1) EXIT STATUS.
 pub const Exit = struct {
     pub const success: u8 = 0;
@@ -234,9 +287,9 @@ pub fn writeShow(w: *Io.Writer, properties: []const Property, opts: ShowOptions)
     for (properties) |p| {
         if (opts.filter.len > 0 and !contains(opts.filter, p.key)) continue;
         if (opts.value_only) {
-            try w.print("{s}\n", .{p.value});
+            try w.print("{f}\n", .{safe(p.value)});
         } else {
-            try w.print("{s}={s}\n", .{ p.key, p.value });
+            try w.print("{f}={f}\n", .{ safe(p.key), safe(p.value) });
         }
     }
 }
@@ -373,45 +426,45 @@ pub fn writeStatus(w: *Io.Writer, style: Style, info: StatusInfo) Error!void {
         .inactive => style.circle(),
         else => style.bullet(),
     });
-    try w.print(" {s}", .{info.name});
-    if (info.description) |d| try w.print(" - {s}", .{d});
+    try w.print(" {f}", .{safe(info.name)});
+    if (info.description) |d| try w.print(" - {f}", .{safe(d)});
     try w.writeByte('\n');
 
-    try w.print("{s:>12} {s}", .{ "Loaded:", info.load_state });
+    try w.print("{s:>12} {f}", .{ "Loaded:", safe(info.load_state) });
     if (info.fragment_path != null or info.unit_file_state != null) {
         try w.writeAll(" (");
         var first = true;
         if (info.fragment_path) |p| {
-            try w.writeAll(p);
+            try writeSafe(w, p, false);
             first = false;
         }
         if (info.unit_file_state) |s| {
             if (!first) try w.writeAll("; ");
-            try w.writeAll(s);
+            try writeSafe(w, s, false);
             first = false;
         }
         if (info.preset) |p| {
             if (!first) try w.writeAll("; ");
-            try w.print("preset: {s}", .{p});
+            try w.print("preset: {f}", .{safe(p)});
         }
         try w.writeByte(')');
     }
     try w.writeByte('\n');
 
-    try w.print("{s:>12} {s} ({s})", .{ "Active:", info.active_state.text(), info.sub_state });
-    if (info.since) |s| try w.print(" since {s}", .{s});
+    try w.print("{s:>12} {s} ({f})", .{ "Active:", info.active_state.text(), safe(info.sub_state) });
+    if (info.since) |s| try w.print(" since {f}", .{safe(s)});
     try w.writeByte('\n');
 
     if (info.main_pid) |pid| {
         try w.print("{s:>12} {d}", .{ "Main PID:", pid });
-        if (info.main_comm) |c| try w.print(" ({s})", .{c});
+        if (info.main_comm) |c| try w.print(" ({f})", .{safe(c)});
         try w.writeByte('\n');
     }
 
-    if (info.trigger) |t| try w.print("{s:>12} {s}\n", .{ "Trigger:", t });
-    if (info.triggers) |t| try w.print("{s:>12} {s} {s}\n", .{ "Triggers:", style.bullet(), t });
-    if (info.scheduler) |t| try w.print("{s:>12} {s}\n", .{ "Scheduler:", t });
-    if (info.last_run) |t| try w.print("{s:>12} {s}\n", .{ "Last run:", t });
+    if (info.trigger) |t| try w.print("{s:>12} {f}\n", .{ "Trigger:", safe(t) });
+    if (info.triggers) |t| try w.print("{s:>12} {s} {f}\n", .{ "Triggers:", style.bullet(), safe(t) });
+    if (info.scheduler) |t| try w.print("{s:>12} {f}\n", .{ "Scheduler:", safe(t) });
+    if (info.last_run) |t| try w.print("{s:>12} {f}\n", .{ "Last run:", safe(t) });
 }
 
 const testing = std.testing;
@@ -725,4 +778,30 @@ test "is-active exit code over several units" {
     try testing.expectEqual(@as(u8, 0), isActiveExitAll(&.{ A.active, A.failed }));
     try testing.expectEqual(@as(u8, 3), isActiveExitAll(&.{ A.inactive, A.failed }));
     try testing.expectEqual(@as(u8, 3), isActiveExitAll(&.{}));
+}
+
+test "control bytes in unit-controlled text are escaped" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("a\\x1b[31mred\\x07\\x00\\x7fz", try sanitize(a, "a\x1b[31mred\x07\x00\x7fz", false));
+    try testing.expectEqualStrings("tab\there", try sanitize(a, "tab\there", true));
+    try testing.expectEqualStrings("tab\\x09here", try sanitize(a, "tab\there", false));
+    try testing.expectEqualStrings("\\xc2\\x9b2J", try sanitize(a, "\xc2\x9b2J", false));
+    try testing.expectEqualStrings("plain ö", try sanitize(a, "plain ö", false));
+    const status = try render(writeStatus, .{ Style{}, StatusInfo{
+        .name = "x.service",
+        .description = "evil\x1b]0;pwned\x07",
+        .load_state = "loaded",
+        .active_state = .inactive,
+        .sub_state = "dead",
+    } });
+    defer testing.allocator.free(status);
+    try testing.expect(std.mem.indexOfScalar(u8, status, 0x1b) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, status, 0x07) == null);
+    try testing.expect(std.mem.indexOf(u8, status, "evil\\x1b]0;pwned\\x07") != null);
+    const props = [_]Property{.{ .key = "Description", .value = "a\x1bb" }};
+    const shown = try render(writeShow, .{ props[0..], ShowOptions{} });
+    defer testing.allocator.free(shown);
+    try testing.expectEqualStrings("Description=a\\x1bb\n", shown);
 }

@@ -61,19 +61,6 @@ pub fn extractCommand(gpa: Allocator, content: []const u8) Allocator.Error!?[]co
     return last;
 }
 
-/// Name after `sv start ` in a line of a generated `run`, with an optional `SVDIR=...`
-/// assignment in front and `|| exit 1` behind.
-pub fn startedService(gpa: Allocator, line: []const u8) Allocator.Error!?[]const u8 {
-    const words = execline.splitWords(gpa, line) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
-    var i: usize = 0;
-    if (i < words.len and std.mem.startsWith(u8, words[i], "SVDIR=")) i += 1;
-    if (i + 2 < words.len and std.mem.eql(u8, words[i], "sv") and std.mem.eql(u8, words[i + 1], "start")) return words[i + 2];
-    return null;
-}
-
 /// How the last run of a service ended, as recorded by its `finish` script.
 pub const Verdict = enum { ok, failed };
 
@@ -179,16 +166,6 @@ test "the last exec of a run script gives the command" {
     try testing.expect(try extractCommand(a, "#!/bin/sh\nexec 2>&1\nsleep 1\n") == null);
     try testing.expect(try extractCommand(a, "#!/bin/sh\n# exec /usr/bin/commented\n") == null);
     try testing.expect(try extractCommand(a, "") == null);
-}
-
-test "started services come from sv start lines" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("b", (try startedService(a, "sv start b || exit 1")).?);
-    try testing.expectEqualStrings("wg@x", (try startedService(a, "SVDIR=/home/u/.config/service sv start wg@x")).?);
-    try testing.expect(try startedService(a, "exec /usr/bin/foo") == null);
-    try testing.expect(try startedService(a, "sv stop b") == null);
 }
 
 fn expectStatus(state: output.ActiveState, pid: ?u32, verdict: ?Verdict, text: []const u8) !void {

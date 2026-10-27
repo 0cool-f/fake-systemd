@@ -26,6 +26,8 @@ pub const Env = struct {
     dry_run: bool = false,
     /// Receives the dry-run report (stdout).
     out: *Io.Writer,
+    /// Upper bound of the backups kept for one file.
+    max_backups: usize = default_max_backups,
 
     /// Saves the index unless this is a dry run.
     pub fn saveIndex(env: *Env, index: Index) !void {
@@ -81,9 +83,38 @@ fn bodyHashOf(style: Style, content: []const u8) u64 {
     return hash.bodyHash(content);
 }
 
-fn readCurrent(env: *Env, t: Target) !struct { state: plan.Current, content: ?[]u8 } {
+/// True when the body of `content` is still the one whose hash the file records: the file was
+/// written by fake-systemd and nobody edited it since.
+fn bodyMatchesRecord(env: *Env, t: Target, content: []const u8) !bool {
+    switch (t.style) {
+        .comment => {
+            const parsed = marker.parse(content) orelse return false;
+            return parsed.bodyIntact();
+        },
+        .raw => return false,
+        .meta => {
+            const dir = std.fs.path.dirname(t.path) orelse "/";
+            const meta_path = try std.fs.path.join(env.gpa, &.{ dir, marker.meta_name });
+            defer env.gpa.free(meta_path);
+            const meta_text = env.fs.readFileAlloc(env.gpa, meta_path, max_size) catch |e| switch (e) {
+                error.FileNotFound => return false,
+                else => return e,
+            };
+            defer env.gpa.free(meta_text);
+            const meta = (try marker.parseMeta(env.gpa, meta_text)) orelse return false;
+            defer env.gpa.free(meta.bodies);
+            const leaf = std.fs.path.basename(t.path);
+            for (meta.bodies) |b| {
+                if (std.mem.eql(u8, b.path, leaf)) return b.hash == hash.bodyHash(content);
+            }
+            return false;
+        },
+    }
+}
+
+fn readCurrent(env: *Env, t: Target) !struct { state: plan.Current, content: ?[]u8, intact: bool } {
     const content = env.fs.readFileAlloc(env.gpa, t.path, max_size) catch |e| switch (e) {
-        error.FileNotFound => return .{ .state = .absent, .content = null },
+        error.FileNotFound => return .{ .state = .absent, .content = null, .intact = false },
         else => return e,
     };
     errdefer env.gpa.free(content);
@@ -100,30 +131,36 @@ fn readCurrent(env: *Env, t: Target) !struct { state: plan.Current, content: ?[]
     return .{
         .state = .{ .present = .{ .body_hash = bodyHashOf(t.style, content), .has_marker = has_marker } },
         .content = content,
+        .intact = has_marker and try bodyMatchesRecord(env, t, content),
     };
 }
 
-/// Decides and performs (or reports) the action for one generated file.
+/// Decides and performs (or reports) the action for one generated file. A file whose body
+/// still matches the hash it records was never edited, whatever the index says about it: it
+/// counts as unmodified, so a run that died between writing the file and saving the index
+/// leaves nothing to reconcile by hand.
 pub fn reconcileFile(env: *Env, t: Target) !Outcome {
     const current = try readCurrent(env, t);
     defer if (current.content) |c| env.gpa.free(c);
     const new_hash: ?u64 = if (t.new) |n| bodyHashOf(t.style, n.content) else null;
+    const original: ?u64 = if (current.intact) current.state.present.body_hash else t.original;
 
     const decision = plan.decide(.{
-        .original = t.original,
+        .original = original,
         .current = current.state,
         .new = new_hash,
         .verb = env.verb,
         .already_missing = t.already_missing,
     });
 
-    try perform(env, t, decision.action, current.content);
-    if (decision.notice) |n| try emitNotice(env, t, n);
+    const backup = try perform(env, t, decision.action, current.content);
+    defer if (backup) |b| env.gpa.free(b);
+    if (decision.notice) |n| try emitNotice(env, t, n, backup orelse "");
 
     const out_hash: ?u64 = switch (decision.action) {
         .write => new_hash.?,
-        .none => t.original orelse new_hash.?,
-        .keep_local_save_fsnew, .mark_missing => t.original orelse unknown_hash,
+        .none => original orelse new_hash.?,
+        .keep_local_save_fsnew, .mark_missing => original orelse unknown_hash,
         .remove, .move_fssave, .adopt_native => null,
     };
     const stat: u64 = switch (decision.action) {
@@ -133,31 +170,69 @@ pub fn reconcileFile(env: *Env, t: Target) !Outcome {
     return .{ .action = decision.action, .out_hash = out_hash, .stat = stat };
 }
 
-fn backupFor(env: *Env, t: Target, kind: Layout.BackupKind) ![]u8 {
-    return env.layout.backupPath(env.gpa, t.path, kind);
+const default_max_backups = 1000;
+
+const Backup = struct {
+    path: []u8,
+    /// A backup with this very content exists already.
+    present: bool,
+};
+
+/// The path to save `content` to: the plain backup name, or the first numbered one when the
+/// name is taken by a different content. An existing backup is never overwritten.
+fn backupFor(env: *Env, t: Target, kind: Layout.BackupKind, content: []const u8) !Backup {
+    var n: usize = 0;
+    while (n < env.max_backups) : (n += 1) {
+        const path = try env.layout.backupPathNumbered(env.gpa, t.path, kind, n);
+        const old = env.fs.readFileAlloc(env.gpa, path, max_size) catch |e| switch (e) {
+            error.FileNotFound => return .{ .path = path, .present = false },
+            error.StreamTooLong => {
+                env.gpa.free(path);
+                continue;
+            },
+            else => {
+                env.gpa.free(path);
+                return e;
+            },
+        };
+        defer env.gpa.free(old);
+        if (std.mem.eql(u8, old, content)) return .{ .path = path, .present = true };
+        env.gpa.free(path);
+    }
+    return error.TooManyBackups;
 }
 
-fn perform(env: *Env, t: Target, action: plan.Action, current: ?[]const u8) !void {
+/// Carries the action out; returns the backup path an action saved to, owned by the caller.
+fn perform(env: *Env, t: Target, action: plan.Action, current: ?[]const u8) !?[]u8 {
     switch (action) {
         .none, .mark_missing, .adopt_native => {},
         .write => {
             const n = t.new.?;
-            if (env.dry_run) return diff.unified(env.gpa, env.out, t.path, current orelse "", n.content);
+            if (env.dry_run) {
+                try diff.unified(env.gpa, env.out, t.path, current orelse "", n.content);
+                return null;
+            }
             try env.fs.makePath(std.fs.path.dirname(t.path) orelse "/");
             try env.fs.writeFileAtomic(t.path, n.content, n.mode);
         },
         .keep_local_save_fsnew => {
             const n = t.new.?;
-            const backup = try backupFor(env, t, .fsnew);
-            defer env.gpa.free(backup);
-            if (env.dry_run) return env.out.print("save {s} (new version; {s} kept)\n", .{ backup, t.path });
-            try env.fs.makePath(std.fs.path.dirname(backup) orelse "/");
-            try env.fs.writeFileAtomic(backup, n.content, n.mode);
+            const backup = try backupFor(env, t, .fsnew, n.content);
+            errdefer env.gpa.free(backup.path);
+            if (env.dry_run) {
+                try env.out.print("save {s} (new version; {s} kept)\n", .{ backup.path, t.path });
+                return backup.path;
+            }
+            if (!backup.present) {
+                try env.fs.makePath(std.fs.path.dirname(backup.path) orelse "/");
+                try env.fs.writeFileAtomic(backup.path, n.content, n.mode);
+            }
+            return backup.path;
         },
         .remove => {
             if (env.dry_run) {
                 if (current != null) try env.out.print("remove {s}\n", .{t.path});
-                return;
+                return null;
             }
             env.fs.deleteFile(t.path) catch |e| switch (e) {
                 error.FileNotFound => {},
@@ -165,30 +240,29 @@ fn perform(env: *Env, t: Target, action: plan.Action, current: ?[]const u8) !voi
             };
         },
         .move_fssave => {
-            const backup = try backupFor(env, t, .fssave);
-            defer env.gpa.free(backup);
-            if (env.dry_run) return env.out.print("move {s} -> {s}\n", .{ t.path, backup });
-            // Copy then delete: the state directory may be on another filesystem.
-            const mode = (try env.fs.stat(t.path)).mode;
-            try env.fs.makePath(std.fs.path.dirname(backup) orelse "/");
-            try env.fs.writeFileAtomic(backup, current.?, mode);
+            const backup = try backupFor(env, t, .fssave, current.?);
+            errdefer env.gpa.free(backup.path);
+            if (env.dry_run) {
+                try env.out.print("move {s} -> {s}\n", .{ t.path, backup.path });
+                return backup.path;
+            }
+            if (!backup.present) {
+                // Copy then delete: the state directory may be on another filesystem.
+                const mode = (try env.fs.stat(t.path)).mode;
+                try env.fs.makePath(std.fs.path.dirname(backup.path) orelse "/");
+                try env.fs.writeFileAtomic(backup.path, current.?, mode);
+            }
             try env.fs.deleteFile(t.path);
+            return backup.path;
         },
     }
+    return null;
 }
 
-fn emitNotice(env: *Env, t: Target, n: plan.Notice) !void {
+fn emitNotice(env: *Env, t: Target, n: plan.Notice, backup: []const u8) !void {
     switch (n) {
-        .local_changes_kept => {
-            const backup = try backupFor(env, t, .fsnew);
-            defer env.gpa.free(backup);
-            env.diag.notice("{s}: local changes kept, new version saved to {s}", .{ t.unit, backup });
-        },
-        .source_removed_modified_saved => {
-            const backup = try backupFor(env, t, .fssave);
-            defer env.gpa.free(backup);
-            env.diag.notice("{s}: source unit removed, modified file saved to {s}", .{ t.unit, backup });
-        },
+        .local_changes_kept => env.diag.notice("{s}: local changes kept, new version saved to {s}", .{ t.unit, backup }),
+        .source_removed_modified_saved => env.diag.notice("{s}: source unit removed, modified file saved to {s}", .{ t.unit, backup }),
         .file_missing => env.diag.notice("{s}: generated file {s} is missing and is not regenerated until an explicit command", .{ t.unit, t.path }),
         .marker_removed => env.diag.info("{s}: marker removed from {s}, treating it as a native service", .{ t.unit, t.path }),
     }
@@ -639,4 +713,78 @@ test "removing a unit removes comment files and meta files that share a director
     try testing.expect(!f.fs.exists("/etc/s6/adminsv/foo-srv/type"));
     try testing.expect(!f.fs.exists("/etc/s6/adminsv/foo-srv/fake-systemd.meta"));
     try testing.expectEqualStrings("", f.diag_w.buffered());
+}
+
+test "a second .fsnew never overwrites the first, and an identical one is reused" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var env = f.env(.explicit, false);
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v1\n"));
+    const edited = try std.mem.concat(f.arena.allocator(), u8, &.{ try f.content("v1\n"), "mine\n" });
+    try f.fs.writeFileAtomic("/etc/dinit.d/foo", edited, 0o644);
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v2\n"));
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v3\n"));
+    try testing.expectEqualStrings(try f.content("v2\n"), try f.read(backup_new));
+    try testing.expectEqualStrings(try f.content("v3\n"), try f.read(backup_new ++ ".1"));
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v3\n"));
+    try testing.expect(!f.fs.exists(backup_new ++ ".2"));
+    try testing.expect(std.mem.find(u8, f.diag_w.buffered(), "new version saved to " ++ backup_new ++ ".1\n") != null);
+    try testing.expectEqualStrings(edited, try f.read("/etc/dinit.d/foo"));
+}
+
+test "a second .fssave never overwrites the first" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var explicit = f.env(.explicit, false);
+    var env = f.env(.daemon_reload, false);
+    for ([_][]const u8{ "first\n", "second\n" }) |mine| {
+        _ = try syncUnit(&explicit, &f.index, f.arena.allocator(), try f.spec("v1\n"));
+        const edited = try std.mem.concat(f.arena.allocator(), u8, &.{ try f.content("v1\n"), mine });
+        try f.fs.writeFileAtomic("/etc/dinit.d/foo", edited, 0o644);
+        _ = try dropUnit(&env, &f.index, f.arena.allocator(), "foo.service");
+    }
+    try testing.expectEqualStrings(try std.mem.concat(f.arena.allocator(), u8, &.{ try f.content("v1\n"), "first\n" }), try f.read(backup_save));
+    try testing.expectEqualStrings(try std.mem.concat(f.arena.allocator(), u8, &.{ try f.content("v1\n"), "second\n" }), try f.read(backup_save ++ ".1"));
+    try testing.expect(std.mem.find(u8, f.diag_w.buffered(), "modified file saved to " ++ backup_save ++ ".1\n") != null);
+}
+
+test "an intact file left by a run that died before saving the index is overwritten, not backed up" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var env = f.env(.explicit, false);
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v1\n"));
+    try f.fs.writeFileAtomic("/etc/dinit.d/foo", try f.content("v2\n"), 0o644);
+    const o = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v3\n"));
+    try testing.expectEqual(plan.Action.write, o.actions[0]);
+    try testing.expectEqualStrings(try f.content("v3\n"), try f.read("/etc/dinit.d/foo"));
+    try testing.expect(!f.fs.exists(backup_new));
+    try testing.expectEqual(hash.bodyHash("v3\n"), f.index.findUnit("foo.service").?.files[0].out_hash);
+
+    var fresh = f.env(.daemon_reload, false);
+    _ = try dropUnit(&fresh, &f.index, f.arena.allocator(), "foo.service");
+    try f.fs.writeFileAtomic("/etc/dinit.d/foo", try f.content("v4\n"), 0o644);
+    const orphan = try syncUnit(&fresh, &f.index, f.arena.allocator(), try f.spec("v5\n"));
+    try testing.expectEqual(plan.Action.write, orphan.actions[0]);
+    try testing.expect(!f.fs.exists(backup_new));
+}
+
+test "the number of backups kept for one file is capped, and nothing is overwritten at the cap" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var env = f.env(.explicit, false);
+    env.max_backups = 2;
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v1\n"));
+    const edited = try std.mem.concat(f.arena.allocator(), u8, &.{ try f.content("v1\n"), "mine\n" });
+    try f.fs.writeFileAtomic("/etc/dinit.d/foo", edited, 0o644);
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v2\n"));
+    _ = try syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v3\n"));
+    try testing.expectError(error.TooManyBackups, syncUnit(&env, &f.index, f.arena.allocator(), try f.spec("v4\n")));
+    try testing.expect(!f.fs.exists(backup_new ++ ".2"));
+    try testing.expectEqualStrings(try f.content("v2\n"), try f.read(backup_new));
+    try testing.expectEqualStrings(try f.content("v3\n"), try f.read(backup_new ++ ".1"));
+    try testing.expectEqualStrings(edited, try f.read("/etc/dinit.d/foo"));
 }

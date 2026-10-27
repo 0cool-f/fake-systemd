@@ -87,16 +87,48 @@ pub const LoadStatus = enum {
     ok,
     /// Entries are valid but were written by another generator version.
     generator_changed,
-    /// Header missing, unknown version, other backend or unreadable file: the index is empty.
-    rebuild_needed,
+    /// There is no index file: the index is empty and the entries come from the markers.
+    missing,
+    /// The file is not an index of this backend (header missing or malformed, other backend, a
+    /// format older than the oldest read): the index is empty and the file must be set aside
+    /// before the entries are rebuilt from the markers.
+    corrupt,
+    /// The file was written by a newer format version: the index is empty, and the file must
+    /// neither be read nor replaced.
+    newer,
+
+    /// True when the index holds nothing of the file and has to be rebuilt.
+    pub fn needsRebuild(s: LoadStatus) bool {
+        return switch (s) {
+            .ok, .generator_changed => false,
+            .missing, .corrupt, .newer => true,
+        };
+    }
 };
 
 pub const Loaded = struct {
     index: Index,
     status: LoadStatus,
-    /// Number of malformed lines dropped.
+    /// Number of malformed lines kept aside; `render` writes them back unchanged.
     dropped: usize = 0,
 };
+
+pub const LoadError = error{
+    /// The index file exists but cannot be read.
+    IndexUnreadable,
+};
+
+/// True when `path` is absolute and has no empty, `.` or `..` component, no trailing slash and
+/// no NUL byte.
+pub fn pathIsNormalized(path: []const u8) bool {
+    if (path.len == 0 or path[0] != '/' or std.mem.findScalar(u8, path, 0) != null) return false;
+    if (path.len == 1) return true;
+    var it = std.mem.splitScalar(u8, path[1..], '/');
+    while (it.next()) |comp| {
+        if (comp.len == 0 or std.mem.eql(u8, comp, ".") or std.mem.eql(u8, comp, "..")) return false;
+    }
+    return true;
+}
 
 backend: []const u8,
 generator: u32,
@@ -106,6 +138,9 @@ units: std.ArrayList(Unit) = .empty,
 natives: std.ArrayList(Native) = .empty,
 native_dirs: std.ArrayList(NativeDir) = .empty,
 timers: std.ArrayList(Timer) = .empty,
+/// Lines of the file that did not parse, or that name a path outside the managed directories,
+/// kept as they were so that a save does not lose them.
+kept_lines: std.ArrayList([]const u8) = .empty,
 
 pub fn init(backend: []const u8, generator: u32) Index {
     return .{ .backend = backend, .generator = generator };
@@ -218,33 +253,35 @@ fn writeOptInt(w: *Io.Writer, v: ?i64) Io.Writer.Error!void {
     if (v) |n| try w.print("{d}", .{n}) else try w.writeByte('-');
 }
 
+fn renderUnit(w: *Io.Writer, u: Unit) Io.Writer.Error!void {
+    try w.writeAll("unit\t");
+    try writeText(w, u.name);
+    try w.print("\t{t}\t{t}\t{t}\t{f}\t{f}\t", .{ u.scope, u.tier, u.state, hash.str(u.src_hash), hash.str(u.src_stat) });
+    for (u.files, 0..) |f, i| {
+        if (i != 0) try w.writeByte(',');
+        try writeEscaped(w, f.path, true);
+        try w.print("={f}:{f}", .{ hash.str(f.out_hash), hash.str(f.stat) });
+    }
+    try w.writeByte('\t');
+    for (u.executables, 0..) |e, i| {
+        if (i != 0) try w.writeByte(',');
+        try writeEscaped(w, e.name, true);
+        try w.print("={f}", .{hash.str(e.stat)});
+    }
+    try w.writeByte('\t');
+    try w.print("{t}\t", .{u.origin});
+    for (u.deps, 0..) |d, i| {
+        if (i != 0) try w.writeByte(',');
+        try writeEscaped(w, d, true);
+    }
+    try w.writeByte('\t');
+    try writeText(w, u.generator_version);
+    try w.writeByte('\n');
+}
+
 pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
     try w.print("# fake-systemd index v{d} backend={s} generator={d} config={f}\n", .{ format_version, index.backend, index.generator, hash.str(index.config_hash) });
-    for (index.units.items) |u| {
-        try w.writeAll("unit\t");
-        try writeText(w, u.name);
-        try w.print("\t{t}\t{t}\t{t}\t{f}\t{f}\t", .{ u.scope, u.tier, u.state, hash.str(u.src_hash), hash.str(u.src_stat) });
-        for (u.files, 0..) |f, i| {
-            if (i != 0) try w.writeByte(',');
-            try writeEscaped(w, f.path, true);
-            try w.print("={f}:{f}", .{ hash.str(f.out_hash), hash.str(f.stat) });
-        }
-        try w.writeByte('\t');
-        for (u.executables, 0..) |e, i| {
-            if (i != 0) try w.writeByte(',');
-            try writeEscaped(w, e.name, true);
-            try w.print("={f}", .{hash.str(e.stat)});
-        }
-        try w.writeByte('\t');
-        try w.print("{t}\t", .{u.origin});
-        for (u.deps, 0..) |d, i| {
-            if (i != 0) try w.writeByte(',');
-            try writeEscaped(w, d, true);
-        }
-        try w.writeByte('\t');
-        try writeText(w, u.generator_version);
-        try w.writeByte('\n');
-    }
+    for (index.units.items) |u| try renderUnit(w, u);
     for (index.natives.items) |n| {
         try w.writeAll("native\t");
         try writeText(w, n.name);
@@ -274,6 +311,20 @@ pub fn render(index: Index, w: *Io.Writer) Io.Writer.Error!void {
         }
         try w.writeByte('\n');
     }
+    for (index.kept_lines.items) |line| {
+        try w.writeAll(line);
+        try w.writeByte('\n');
+    }
+}
+
+/// Takes the entry of a unit out of the index and keeps its line as it is rendered, so that
+/// the unit is not acted on but a save does not lose it.
+pub fn quarantineUnit(index: *Index, arena: std.mem.Allocator, name: []const u8) !void {
+    const i = indexOfName(Unit, index.units.items, name) orelse return;
+    var aw: Io.Writer.Allocating = .init(arena);
+    try renderUnit(&aw.writer, index.units.items[i]);
+    try index.kept_lines.append(arena, std.mem.trimEnd(u8, aw.written(), "\n"));
+    _ = index.units.orderedRemove(i);
 }
 
 /// Atomically writes the index to `path`, creating parent directories.
@@ -295,6 +346,7 @@ const LineError = error{
     BadEscape,
     BadValue,
     BadFileList,
+    BadPath,
     OutOfMemory,
 };
 
@@ -322,6 +374,11 @@ fn textField(arena: std.mem.Allocator, s: []const u8) LineError![]const u8 {
     };
 }
 
+fn pathField(arena: std.mem.Allocator, s: []const u8) LineError![]const u8 {
+    const path = try textField(arena, s);
+    return if (pathIsNormalized(path)) path else error.BadPath;
+}
+
 fn enumField(comptime E: type, s: []const u8) LineError!E {
     return std.meta.stringToEnum(E, s) orelse error.BadValue;
 }
@@ -340,7 +397,7 @@ fn parseFileList(arena: std.mem.Allocator, s: []const u8) LineError![]const File
         const value = item[eq + 1 ..];
         if (value.len != hash.string_len * 2 + 1 or value[hash.string_len] != ':') return error.BadFileList;
         try list.append(arena, .{
-            .path = try textField(arena, item[0..eq]),
+            .path = try pathField(arena, item[0..eq]),
             .out_hash = try hashField(value[0..hash.string_len]),
             .stat = try hashField(value[hash.string_len + 1 ..]),
         });
@@ -395,14 +452,14 @@ fn parseLine(index: *Index, arena: std.mem.Allocator, line: []const u8, version:
         if (f.len != 6) return error.WrongFieldCount;
         try index.putNative(arena, .{
             .name = try textField(arena, f[1]),
-            .path = try textField(arena, f[2]),
+            .path = try pathField(arena, f[2]),
             .file_hash = try hashField(f[3]),
             .file_stat = try hashField(f[4]),
             .exec = try textField(arena, f[5]),
         });
     } else if (std.mem.eql(u8, f[0], "nativedir")) {
         if (f.len != 3) return error.WrongFieldCount;
-        const path = try textField(arena, f[1]);
+        const path = try pathField(arena, f[1]);
         const mtime_ns = std.fmt.parseInt(i96, f[2], 10) catch return error.BadNumber;
         if (index.findNativeDir(path)) |d| {
             d.mtime_ns = mtime_ns;
@@ -445,22 +502,36 @@ fn parseHeader(line: []const u8) ?Header {
     return .{ .version = version, .backend = backend_kv["backend=".len..], .generator = generator, .config_hash = config_hash };
 }
 
-/// Parses index text. Malformed lines are dropped with an info diagnostic; entries are
-/// then recovered from markers by the caller (see `rebuild`).
+/// Version of the format a header line announces, whatever else it holds.
+fn headerVersion(line: []const u8) ?u32 {
+    const lead = "# fake-systemd index v";
+    if (!std.mem.startsWith(u8, line, lead)) return null;
+    var it = std.mem.tokenizeScalar(u8, line[lead.len..], ' ');
+    return std.fmt.parseUnsigned(u32, it.next() orelse return null, 10) catch null;
+}
+
+/// Parses index text. A line that does not parse is kept as it is, with an info diagnostic,
+/// and written back by `render`; the status says whether the entries have to be rebuilt from
+/// the markers.
 pub fn parse(arena: std.mem.Allocator, diag: *Diag, text: []const u8, backend: []const u8, generator: u32) !Loaded {
     var index = init(backend, generator);
     var lines = std.mem.splitScalar(u8, text, '\n');
-    const header = parseHeader(lines.first()) orelse {
-        diag.info("index header missing or malformed, rebuilding from markers", .{});
-        return .{ .index = index, .status = .rebuild_needed };
+    const first = lines.first();
+    if (headerVersion(first)) |v| if (v > format_version) {
+        diag.info("index format version {d} is newer than the {d} this version reads", .{ v, format_version });
+        return .{ .index = index, .status = .newer };
     };
-    if (header.version < min_format_version or header.version > format_version) {
-        diag.info("index format version {d} is not supported, rebuilding from markers", .{header.version});
-        return .{ .index = index, .status = .rebuild_needed };
+    const header = parseHeader(first) orelse {
+        diag.info("index header missing or malformed", .{});
+        return .{ .index = index, .status = .corrupt };
+    };
+    if (header.version < min_format_version) {
+        diag.info("index format version {d} is not supported", .{header.version});
+        return .{ .index = index, .status = .corrupt };
     }
     if (!std.mem.eql(u8, header.backend, backend)) {
-        diag.info("index belongs to backend {s}, rebuilding from markers", .{header.backend});
-        return .{ .index = index, .status = .rebuild_needed };
+        diag.info("index belongs to backend {s}", .{header.backend});
+        return .{ .index = index, .status = .corrupt };
     }
     index.config_hash = header.config_hash;
     var dropped: usize = 0;
@@ -472,7 +543,8 @@ pub fn parse(arena: std.mem.Allocator, diag: *Diag, text: []const u8, backend: [
             error.OutOfMemory => return e,
             else => {
                 dropped += 1;
-                diag.info("index line {d} dropped: {t}", .{ line_no, e });
+                diag.info("index line {d} not understood ({t}), kept as it is", .{ line_no, e });
+                try index.kept_lines.append(arena, try arena.dupe(u8, line));
             },
         };
     }
@@ -483,13 +555,15 @@ pub fn parse(arena: std.mem.Allocator, diag: *Diag, text: []const u8, backend: [
     };
 }
 
-/// Reads and parses the index at `path`; a missing or unreadable file reports `rebuild_needed`.
+/// Reads and parses the index at `path`; a missing file reports `missing`, and any other read
+/// failure is `error.IndexUnreadable`.
 pub fn load(arena: std.mem.Allocator, fs: Fs, diag: *Diag, path: []const u8, backend: []const u8, generator: u32) !Loaded {
     const text = fs.readFileAlloc(arena, path, 64 << 20) catch |e| switch (e) {
         error.OutOfMemory => return e,
+        error.FileNotFound => return .{ .index = init(backend, generator), .status = .missing },
         else => {
-            diag.info("index {s} unreadable ({t}), rebuilding from markers", .{ path, e });
-            return .{ .index = init(backend, generator), .status = .rebuild_needed };
+            diag.err("cannot read the index {s}: {t}", .{ path, e });
+            return error.IndexUnreadable;
         },
     };
     return parse(arena, diag, text, backend, generator);
@@ -596,7 +670,7 @@ test "round trip including hostile paths" {
     try testing.expectEqual(@as(?i64, null), t.next_trigger);
 }
 
-test "malformed lines are dropped with an info diagnostic" {
+test "malformed lines are reported and kept" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const text =
@@ -615,11 +689,11 @@ test "malformed lines are dropped with an info diagnostic" {
     try testing.expectEqual(@as(usize, 6), loaded.dropped);
     try testing.expectEqual(@as(usize, 1), loaded.index.natives.items.len);
     try testing.expectEqualStrings("good", loaded.index.natives.items[0].name);
-    try testing.expect(std.mem.find(u8, dw.buffered(), "fake-systemd: info: index line 2 dropped: UnknownType\n") != null);
-    try testing.expect(std.mem.find(u8, dw.buffered(), "index line 3 dropped: WrongFieldCount") != null);
+    try testing.expect(std.mem.find(u8, dw.buffered(), "fake-systemd: info: index line 2 not understood (UnknownType), kept as it is\n") != null);
+    try testing.expect(std.mem.find(u8, dw.buffered(), "index line 3 not understood (WrongFieldCount)") != null);
 }
 
-test "header problems request a rebuild" {
+test "header problems report a corrupt index" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -629,7 +703,6 @@ test "header problems request a rebuild" {
     for ([_][]const u8{
         "",
         "garbage\n",
-        "# fake-systemd index v5 backend=dinit generator=1 config=xxh3:0000000000000000\n",
         "# fake-systemd index v1 backend=dinit generator=1\n",
         "# fake-systemd index v3 backend=dinit generator=1\n",
         "# fake-systemd index v3 backend=dinit generator=1 config=bad\n",
@@ -637,7 +710,7 @@ test "header problems request a rebuild" {
         "# fake-systemd index v2 backend=dinit\n",
     }) |text| {
         const l = try parse(a, &diag, text, "dinit", 1);
-        try testing.expectEqual(LoadStatus.rebuild_needed, l.status);
+        try testing.expectEqual(LoadStatus.corrupt, l.status);
         try testing.expectEqual(@as(usize, 0), l.index.units.items.len);
     }
 }
@@ -667,7 +740,7 @@ test "save is atomic and load reads it back; missing file asks for rebuild" {
     const path = "/var/lib/fake-systemd/dinit/index";
 
     const missing = try load(a, fs, &diag, path, "dinit", 1);
-    try testing.expectEqual(LoadStatus.rebuild_needed, missing.status);
+    try testing.expectEqual(LoadStatus.missing, missing.status);
 
     const idx = try sampleIndex(a);
     try idx.save(testing.allocator, fs, path);
@@ -719,7 +792,7 @@ test "a v2 index loads with empty executables, no directory mtimes and no config
     try testing.expectEqual(@as(?i64, 5), idx.findTimer("t").?.last_trigger);
 }
 
-test "malformed nativedir lines are dropped" {
+test "malformed nativedir lines are kept aside" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var out: [512]u8 = undefined;
@@ -775,4 +848,63 @@ test "a timer line with the last result is rendered and parsed, one without stay
     try testing.expectEqual(@as(usize, 0), loaded.dropped);
     try testing.expectEqualStrings("exit-code:3", loaded.index.timers.items[0].last_result.?);
     try testing.expect(loaded.index.timers.items[1].last_result == null);
+}
+
+test "a newer format version is reported, whatever else the header holds" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: [256]u8 = undefined;
+    var dw: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&dw, .info);
+    for ([_][]const u8{
+        "# fake-systemd index v5 backend=dinit generator=1 config=xxh3:0000000000000000\n",
+        "# fake-systemd index v9 anything else\nunit\tx\n",
+    }) |text| {
+        const l = try parse(arena.allocator(), &diag, text, "dinit", 1);
+        try testing.expectEqual(LoadStatus.newer, l.status);
+        try testing.expect(l.status.needsRebuild());
+    }
+}
+
+test "lines that do not parse survive a save" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: [1024]u8 = undefined;
+    var dw: Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&dw, .info);
+    const hex = "xxh3:0000000000000001";
+    const text = "# fake-systemd index v4 backend=dinit generator=1 config=" ++ hex ++ "\n" ++
+        "future\tfield\n" ++
+        "unit\trel.service\tsystem\tvendor\tmanaged\t" ++ hex ++ "\t" ++ hex ++ "\tetc/dinit.d/rel=" ++ hex ++ ":" ++ hex ++ "\t\texplicit\t\t0.1.0\n" ++
+        "native\tn\t/etc/../p\t" ++ hex ++ "\t" ++ hex ++ "\t/x\n";
+    const l = try parse(a, &diag, text, "dinit", 1);
+    try testing.expectEqual(LoadStatus.ok, l.status);
+    try testing.expectEqual(@as(usize, 3), l.dropped);
+    try testing.expectEqual(@as(usize, 0), l.index.units.items.len);
+    var aw: Io.Writer.Allocating = .init(a);
+    try l.index.render(&aw.writer);
+    try testing.expectEqualStrings(text, aw.written());
+}
+
+test "paths of the index are absolute and normalized" {
+    try testing.expect(pathIsNormalized("/"));
+    try testing.expect(pathIsNormalized("/etc/dinit.d/foo"));
+    for ([_][]const u8{ "", "etc/foo", "/etc/../foo", "/etc/./foo", "/etc//foo", "/etc/foo/", "/etc/f\x00o" }) |p| {
+        try testing.expect(!pathIsNormalized(p));
+    }
+}
+
+test "a quarantined unit is kept as a line" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var idx = try sampleIndex(a);
+    var before: Io.Writer.Allocating = .init(a);
+    try renderUnit(&before.writer, idx.findUnit("foo.service").?.*);
+    try idx.quarantineUnit(a, "foo.service");
+    try testing.expect(idx.findUnit("foo.service") == null);
+    var aw: Io.Writer.Allocating = .init(a);
+    try idx.render(&aw.writer);
+    try testing.expect(std.mem.find(u8, aw.written(), before.written()) != null);
 }

@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const linux = std.os.linux;
 const core = @import("../core/root.zig");
 const sys = @import("sys.zig");
+const executor = @import("executor.zig");
 
 /// File that holds the pid of the detached executor, next to the other files of the unit in
 /// the runtime directory.
@@ -19,12 +20,8 @@ pub fn daemonPidPath(ctx: *const core.Context, unit_name: []const u8) Allocator.
 const ready_byte = 'k';
 
 fn writePidFile(ctx: *core.Context, path: []const u8) bool {
-    if (std.fs.path.dirname(path)) |dir| ctx.fs.makePath(dir) catch |e| {
-        ctx.diag.err("cannot create {s}: {t}", .{ dir, e });
-        return false;
-    };
     const text = std.fmt.allocPrint(ctx.gpa, "{d}\n", .{linux.getpid()}) catch return false;
-    ctx.fs.writeFileInPlace(path, text) catch |e| {
+    executor.writeStateFile(ctx, path, text) catch |e| {
         ctx.diag.err("cannot write {s}: {t}", .{ path, e });
         return false;
     };

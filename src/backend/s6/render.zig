@@ -37,8 +37,12 @@ pub const Identity = union(enum) {
 pub const Input = struct {
     unit: *const model.Unit,
     command: Command,
-    /// How the script switches identity; null when the unit has no user or the executor does it.
+    /// How the script switches identity for a native command; null when the unit has no user or the
+    /// executor does it.
     identity: ?Identity = null,
+    /// An account the executor cannot resolve: the executor stays root and takes the numeric ids
+    /// that the scripts look up, wherever they run it.
+    numeric: ?shell.Numeric = null,
     /// Scan-directory paths of the services started before the command (plain s6); a failed
     /// hard one aborts the script.
     hard: []const []const u8 = &.{},
@@ -89,12 +93,15 @@ fn limitFlag(key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn writeExecutor(w: *Io.Writer, in: Input, phase: ?[]const u8) Io.Writer.Error!void {
+/// The executor for `phase`; the numeric ids of its account follow the other options.
+fn writeExecutor(w: *Io.Writer, in: Input, phase: ?[]const u8, stop_on_signal: bool) Io.Writer.Error!void {
     try writeWord(w, in.executor_path, false);
     try w.writeAll(" --exec ");
     try writeWord(w, in.unit.name.full, false);
     if (in.unit.scope == .user) try w.writeAll(" --user");
     if (phase) |p| try w.print(" --phase {s}", .{p});
+    if (stop_on_signal) try w.writeAll(" --stop-on-signal");
+    if (in.numeric) |n| try shell.writeNumericFlags(w, n);
 }
 
 /// True when the executor stays resident as the supervisor of the service and runs `ExecStop=` when
@@ -112,9 +119,9 @@ fn writeSetprivIdentity(w: *Io.Writer, user: []const u8, group: ?[]const u8, sup
     try w.print(" --reuid={s} ", .{user});
     if (group) |g| {
         try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{user});
+    } else try w.print("--regid=\"$(id -g -- {s})\"", .{user});
     if (supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{user});
+    try w.print(" --groups \"$(id -G -- {s} | tr ' ' ,)", .{user});
     for (supplementary) |g| try w.print(",{s}", .{g});
     try w.writeByte('"');
 }
@@ -188,10 +195,7 @@ fn writeShCommand(w: *Io.Writer, in: Input, words: ?[]const []const u8) Io.Write
             try writeWord(w, word, true);
         }
     } else switch (in.command) {
-        .executor => {
-            try writeExecutor(w, in, null);
-            if (stopsOnSignal(in.unit)) try w.writeAll(" --stop-on-signal");
-        },
+        .executor => try writeExecutor(w, in, null, stopsOnSignal(in.unit)),
         .native => |ws| for (ws, 0..) |word, i| {
             if (i > 0) try w.writeByte(' ');
             try writeWord(w, word, true);
@@ -333,7 +337,7 @@ fn writeFinish(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll("if [ -n \"$clean\" ]; then verdict=ok; else verdict=failed; fi\n");
     try w.print("printf '%s %s %s\\n' \"$verdict\" \"$1\" \"$2\" > ./supervise/{s}\n", .{exit_status_file});
     if (u.exec_stop_post.len > 0) {
-        try writeExecutor(w, in, "stop-post");
+        try writeExecutor(w, in, "stop-post", false);
         try w.writeByte('\n');
     }
     const restart: model.Restart = if (u.service_type == .oneshot) .no else u.restart;
@@ -493,7 +497,19 @@ fn writeElChain(w: *Io.Writer, gpa: Allocator, in: Input, words: ?[]const []cons
     if (words) |ws| {
         try writeElWords(w, ws, true);
     } else switch (in.command) {
-        .executor => try writeElExecutor(w, in, phase),
+        .executor => {
+            if (in.numeric) |n| {
+                // Execline has no command substitution: a shell adds the ids to the command line.
+                var script: Io.Writer.Allocating = .init(gpa);
+                defer script.deinit();
+                try script.writer.writeAll("exec \"$@\"");
+                try shell.writeNumericFlags(&script.writer, n);
+                try w.writeAll("sh -c ");
+                try writeElWord(w, script.written(), false);
+                try w.writeAll(" ids ");
+            }
+            try writeElExecutor(w, in, phase);
+        },
         .native => |ws| try writeElWords(w, ws, true),
     }
     try w.writeByte('\n');
@@ -539,6 +555,7 @@ fn writeDown(w: *Io.Writer, gpa: Allocator, in: Input, stop: Stop, plain_words: 
         .executor => try writeElChain(w, gpa, .{
             .unit = in.unit,
             .command = .executor,
+            .numeric = in.numeric,
             .executor_path = in.executor_path,
         }, null, "stop"),
     }

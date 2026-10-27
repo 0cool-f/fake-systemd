@@ -61,7 +61,8 @@ fn findByExec(natives: []const NativeService, u: model.Unit, unit_exec: ?[]const
     return null;
 }
 
-/// Applies the decision table of §6.3. `service_name` is the name the backend would generate.
+/// Applies the decision table of §6.3. A native service named by `[Aliases]` is used without
+/// comparing executables. `service_name` is the name the backend would generate.
 pub fn decide(
     gpa: Allocator,
     config: Config,
@@ -70,6 +71,10 @@ pub fn decide(
     unit_exec: ?[]const u8,
     service_name: []const u8,
 ) Allocator.Error!Decision {
+    if (config.aliases.get(u.name.full)) |a| {
+        const pinned = [_][]const u8{a};
+        if (findByName(natives, &pinned, false) orelse findByName(natives, &pinned, true)) |n| return .{ .native = n };
+    }
     const names = try candidates(gpa, config, u);
     const by_name = findByName(natives, names, false) orelse findByName(natives, names, true);
     if (by_name) |cand| {
@@ -138,4 +143,18 @@ test "case-insensitive candidates are tried last" {
 test "instance units need the instance in the native name" {
     const exe_hit = try run("foo@x.service", "/usr/bin/bar", "foo@x");
     try testing.expect(exe_hit != .native);
+}
+
+test "an [Aliases] entry names a native service whatever it runs" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var config: Config = .{};
+    try config.aliases.put(a, "foo.service", "foo");
+    const u = try testUnit("foo.service", &.{});
+    defer testing.allocator.free(u.name.full);
+    const d = try decide(a, config, &natives_fixture, u, "/usr/bin/none", "foo");
+    try testing.expectEqualStrings("foo", d.native.name);
+    const plain = try decide(a, .{}, &natives_fixture, u, "/usr/bin/none", "foo");
+    try testing.expectEqualStrings("foo", plain.conflict.name);
 }

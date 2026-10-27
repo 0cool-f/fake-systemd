@@ -21,6 +21,7 @@ pub const Finit = @import("finit.zig");
 pub const Shepherd = @import("shepherd.zig");
 pub const Nosh = @import("nosh.zig");
 pub const policy = @import("policy.zig");
+pub const guard = @import("guard.zig");
 pub const network = @import("network.zig");
 pub const registry = @import("registry.zig");
 
@@ -49,6 +50,7 @@ test {
     _ = Shepherd;
     _ = Nosh;
     _ = policy;
+    _ = guard;
     _ = network;
     _ = registry;
 }

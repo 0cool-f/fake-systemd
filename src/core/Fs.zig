@@ -20,6 +20,8 @@ pub const Stat = struct {
     mtime_ns: i96,
     /// Permission bits only (`& 0o7777`).
     mode: u16,
+    uid: u32 = 0,
+    gid: u32 = 0,
 };
 
 pub const Entry = struct {
@@ -67,13 +69,49 @@ fn rel(abs: []const u8) []const u8 {
     return if (trimmed.len == 0) "." else trimmed;
 }
 
-fn toStat(raw: File.Stat) Stat {
+fn kindOfMode(mode: u16) Kind {
+    return switch (mode & linux.S.IFMT) {
+        linux.S.IFREG => .file,
+        linux.S.IFDIR => .directory,
+        linux.S.IFLNK => .sym_link,
+        linux.S.IFIFO => .named_pipe,
+        linux.S.IFSOCK => .unix_domain_socket,
+        linux.S.IFCHR => .character_device,
+        linux.S.IFBLK => .block_device,
+        else => .unknown,
+    };
+}
+
+/// Status of the in-root path `abs`; a symlink at the last component is followed with `follow_link`.
+fn statRaw(fs: Fs, abs: []const u8, follow_link: bool) !Stat {
+    const sub = rel(abs);
+    var z: [path_cap:0]u8 = undefined;
+    if (sub.len >= path_cap) return error.NameTooLong;
+    @memcpy(z[0..sub.len], sub);
+    z[sub.len] = 0;
+    var stx: linux.Statx = undefined;
+    const flags: u32 = if (follow_link) 0 else linux.AT.SYMLINK_NOFOLLOW;
+    const rc = linux.statx(fs.root.handle, z[0..sub.len :0], flags, .{
+        .TYPE = true,
+        .MODE = true,
+        .UID = true,
+        .GID = true,
+        .INO = true,
+        .SIZE = true,
+        .MTIME = true,
+    }, &stx);
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        else => |e| return errnoError(e),
+    }
     return .{
-        .kind = raw.kind,
-        .size = raw.size,
-        .inode = raw.inode,
-        .mtime_ns = raw.mtime.toNanoseconds(),
-        .mode = @intCast(raw.permissions.toMode() & 0o7777),
+        .kind = kindOfMode(stx.mode),
+        .size = stx.size,
+        .inode = stx.ino,
+        .mtime_ns = @as(i96, stx.mtime.sec) * std.time.ns_per_s + stx.mtime.nsec,
+        .mode = stx.mode & 0o7777,
+        .uid = stx.uid,
+        .gid = stx.gid,
     };
 }
 
@@ -84,7 +122,7 @@ pub fn readFileAlloc(fs: Fs, gpa: std.mem.Allocator, abs: []const u8, max_size: 
 
 pub fn stat(fs: Fs, abs: []const u8) !Stat {
     var buf: [path_cap]u8 = undefined;
-    return toStat(try fs.root.statFile(fs.io, rel(try fs.follow(&buf, abs)), .{}));
+    return fs.statRaw(try fs.follow(&buf, abs), true);
 }
 
 pub fn lstat(fs: Fs, abs: []const u8) !Stat {
@@ -93,7 +131,7 @@ pub fn lstat(fs: Fs, abs: []const u8) !Stat {
 }
 
 fn lstatRaw(fs: Fs, abs: []const u8) !Stat {
-    return toStat(try fs.root.statFile(fs.io, rel(abs), .{ .follow_symlinks = false }));
+    return fs.statRaw(abs, false);
 }
 
 /// True when the path resolves inside the root; any other failure reads as absent.
@@ -147,15 +185,22 @@ pub fn freeEntries(gpa: std.mem.Allocator, entries: []Entry) void {
     gpa.free(entries);
 }
 
-/// Creates `abs` and its missing parents. Existing components that are symlinks are resolved
-/// inside the root.
+/// Creates `abs` and its missing parents with mode 0755. Existing components that are symlinks
+/// are resolved inside the root.
 pub fn makePath(fs: Fs, abs: []const u8) !void {
+    return fs.makePathMode(abs, 0o755);
+}
+
+/// `makePath` with `mode` (before the umask) for every directory it creates.
+pub fn makePathMode(fs: Fs, abs: []const u8, mode: u16) !void {
+    const permissions: Io.File.Permissions = .fromMode(mode);
     if (fs.host_root) {
         // `/etc/init.d` is a link to `rc.d/init.d` on Red Hat; the creation refuses a link.
         if (fs.root.statFile(fs.io, rel(abs), .{})) |st| {
             if (st.kind == .directory) return;
         } else |_| {}
-        return fs.root.createDirPath(fs.io, rel(abs));
+        _ = try fs.root.createDirPathStatus(fs.io, rel(abs), permissions);
+        return;
     }
     var cur: [path_cap]u8 = undefined;
     var cur_len: usize = 0;
@@ -170,8 +215,12 @@ pub fn makePath(fs: Fs, abs: []const u8) !void {
         const cand = try std.fmt.bufPrint(&cand_buf, "{s}/{s}", .{ cur[0..cur_len], comp });
         const kind: Kind = if (fs.lstatRaw(cand)) |st| st.kind else |e| switch (e) {
             error.FileNotFound => blk: {
-                try fs.root.createDir(fs.io, rel(cand), .default_dir);
-                break :blk .directory;
+                // A concurrent creator of the same path wins the race; its directory is used.
+                fs.root.createDir(fs.io, rel(cand), permissions) catch |ce| switch (ce) {
+                    error.PathAlreadyExists => {},
+                    else => return ce,
+                };
+                break :blk (try fs.lstatRaw(cand)).kind;
             },
             else => return e,
         };
@@ -229,11 +278,14 @@ pub fn symLink(fs: Fs, target: []const u8, abs: []const u8) !void {
 }
 
 /// Writes `content` to a sibling temporary file, syncs it, renames it over `abs` and syncs
-/// the directory. Fails with `DestinationIsSymlink` when `abs` is a symlink.
+/// the directory. Fails with `DestinationIsSymlink` when `abs` is a symlink. As root the new file
+/// gets the owner of the one it replaces. Temporary files
+/// that an earlier interrupted write left for the same target are removed first.
 pub fn writeFileAtomic(fs: Fs, abs: []const u8, content: []const u8, mode: u16) !void {
     var real_buf: [path_cap]u8 = undefined;
     const real = try fs.followParent(&real_buf, abs);
-    try fs.refuseSymlinkDestination(real);
+    const existing = try fs.destinationStat(real);
+    fs.removeStaleTemps(real);
     var tmp_buf: [Dir.max_path_bytes]u8 = undefined;
     const tmp_abs = try fs.tempSibling(&tmp_buf, real);
     {
@@ -243,6 +295,11 @@ pub fn writeFileAtomic(fs: Fs, abs: []const u8, content: []const u8, mode: u16) 
         });
         defer file.close(fs.io);
         errdefer fs.deleteFile(tmp_abs) catch {};
+        // Root keeps the owner of the file it replaces; the owner is set before the mode, which
+        // a change of owner can reset.
+        if (existing) |st| {
+            if (linux.geteuid() == 0 and (st.uid != 0 or st.gid != 0)) try file.setOwner(fs.io, st.uid, st.gid);
+        }
         try file.setPermissions(fs.io, .fromMode(mode));
         try file.writeStreamingAll(fs.io, content);
         try file.sync(fs.io);
@@ -252,19 +309,164 @@ pub fn writeFileAtomic(fs: Fs, abs: []const u8, content: []const u8, mode: u16) 
     try fs.syncDir(std.fs.path.dirname(real) orelse "/");
 }
 
-/// Truncates and writes `abs` in place, creating it when it is missing. Unlike `writeFileAtomic`
-/// it needs no write permission on the directory when the file exists and is writable.
-pub fn writeFileInPlace(fs: Fs, abs: []const u8, content: []const u8) !void {
+pub const Access = enum { read, write, read_write };
+
+pub const OpenOptions = struct {
+    access: Access = .read,
+    /// Mode of the file when it is created; null opens an existing file only.
+    create: ?u16 = null,
+    /// With `create`: fail with `PathAlreadyExists` when the file exists.
+    exclusive: bool = false,
+};
+
+/// Opens `abs` without following a symlink at the last component (`SymLinkLoop`), without
+/// blocking on a FIFO, and inside the root: the parent directories are resolved like every
+/// other operation.
+pub fn openNoFollow(fs: Fs, abs: []const u8, opts: OpenOptions) !File {
     var real_buf: [path_cap]u8 = undefined;
     const real = try fs.followParent(&real_buf, abs);
-    try fs.root.writeFile(fs.io, .{ .sub_path = rel(real), .data = content });
+    const sub = rel(real);
+    var z: [path_cap:0]u8 = undefined;
+    if (sub.len >= path_cap) return error.NameTooLong;
+    @memcpy(z[0..sub.len], sub);
+    z[sub.len] = 0;
+    const rc = linux.openat(fs.root.handle, z[0..sub.len :0], .{
+        .ACCMODE = switch (opts.access) {
+            .read => .RDONLY,
+            .write => .WRONLY,
+            .read_write => .RDWR,
+        },
+        .CREAT = opts.create != null,
+        .EXCL = opts.exclusive,
+        .NOFOLLOW = true,
+        .NONBLOCK = true,
+        .CLOEXEC = true,
+    }, opts.create orelse 0);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => .{ .handle = @intCast(rc), .flags = .{ .nonblocking = false } },
+        else => |e| errnoError(e),
+    };
 }
-fn refuseSymlinkDestination(fs: Fs, abs: []const u8) !void {
+
+pub const FileInfo = struct {
+    uid: u32,
+    gid: u32,
+    /// Permission bits only (`& 0o7777`).
+    mode: u16,
+    nlink: u32,
+    kind: Kind,
+};
+
+/// Owner, mode, link count and type of an open file.
+pub fn fileInfo(file: File) !FileInfo {
+    var stx: linux.Statx = undefined;
+    const rc = linux.statx(file.handle, "", linux.AT.EMPTY_PATH, .{ .TYPE = true, .MODE = true, .NLINK = true, .UID = true, .GID = true }, &stx);
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        else => |e| return errnoError(e),
+    }
+    return .{
+        .uid = stx.uid,
+        .gid = stx.gid,
+        .mode = stx.mode & 0o7777,
+        .nlink = stx.nlink,
+        .kind = kindOfMode(stx.mode),
+    };
+}
+
+/// Owner, mode and type of the directory `abs`, resolved inside the root.
+pub fn dirInfo(fs: Fs, abs: []const u8) !FileInfo {
+    var buf: [path_cap]u8 = undefined;
+    var dir = try fs.root.openDir(fs.io, rel(try fs.follow(&buf, abs)), .{});
+    defer dir.close(fs.io);
+    return fileInfo(.{ .handle = dir.handle, .flags = .{ .nonblocking = false } });
+}
+
+fn errnoError(e: linux.E) anyerror {
+    return switch (e) {
+        .ACCES, .PERM => error.AccessDenied,
+        .NOENT => error.FileNotFound,
+        .EXIST => error.PathAlreadyExists,
+        .LOOP => error.SymLinkLoop,
+        .NOTDIR => error.NotDir,
+        .ISDIR => error.IsDir,
+        .ROFS => error.ReadOnlyFileSystem,
+        .NOSPC => error.NoSpaceLeft,
+        .NAMETOOLONG => error.NameTooLong,
+        .DQUOT => error.DiskQuota,
+        .IO => error.InputOutput,
+        .NXIO => error.NoDevice,
+        else => error.Unexpected,
+    };
+}
+
+/// Truncates and writes the regular file `abs` in place, creating it with `mode` when it is
+/// missing. A symlink or a non-regular file at `abs` is refused. A file the running user does
+/// not own, or that has other links, is replaced by a new file when running as root, so that
+/// content and permissions are always the writer's. Unlike `writeFileAtomic` it needs no write
+/// permission on the directory when the file exists and is writable.
+pub fn writeFileInPlace(fs: Fs, abs: []const u8, content: []const u8, mode: u16) !void {
+    const euid = linux.geteuid();
+    var attempt: usize = 0;
+    while (attempt < 3) : (attempt += 1) {
+        const file = fs.openNoFollow(abs, .{ .access = .write }) catch |e| switch (e) {
+            error.FileNotFound => {
+                if (try fs.createInPlace(abs, content, mode)) return;
+                continue;
+            },
+            error.SymLinkLoop => return error.DestinationIsSymlink,
+            else => return e,
+        };
+        defer file.close(fs.io);
+        const info = try fileInfo(file);
+        if (info.kind != .file) return error.NotRegularFile;
+        if (euid == 0 and (info.uid != 0 or info.nlink > 1)) {
+            try fs.deleteFile(abs);
+            continue;
+        }
+        switch (linux.errno(linux.ftruncate(file.handle, 0))) {
+            .SUCCESS => {},
+            else => |e| return errnoError(e),
+        }
+        try file.writeStreamingAll(fs.io, content);
+        if (info.uid == euid and info.mode != mode) try file.setPermissions(fs.io, .fromMode(mode));
+        return;
+    }
+    return error.Unexpected;
+}
+
+/// Creates and fills `abs`; false when the file appeared in the meantime.
+fn createInPlace(fs: Fs, abs: []const u8, content: []const u8, mode: u16) !bool {
+    const file = fs.openNoFollow(abs, .{ .access = .write, .create = mode, .exclusive = true }) catch |e| switch (e) {
+        error.PathAlreadyExists => return false,
+        else => return e,
+    };
+    defer file.close(fs.io);
+    try file.setPermissions(fs.io, .fromMode(mode));
+    try file.writeStreamingAll(fs.io, content);
+    return true;
+}
+
+/// Status of the file an atomic write replaces; null when there is none.
+fn destinationStat(fs: Fs, abs: []const u8) !?Stat {
     const st = fs.lstat(abs) catch |e| switch (e) {
-        error.FileNotFound => return,
+        error.FileNotFound => return null,
         else => return e,
     };
     if (st.kind == .sym_link) return error.DestinationIsSymlink;
+    return st;
+}
+
+const max_name_bytes = 255;
+const temp_marker = ".tmp";
+/// Temporary files older than this are leftovers of an interrupted write.
+const stale_temp_ns = 60 * std.time.ns_per_s;
+
+/// `.<name>.tmp` with `name` shortened so that the temporary name, with up to eight hex
+/// digits after it, fits in one path component.
+fn tempPrefix(buf: *[max_name_bytes]u8, base: []const u8) []const u8 {
+    const keep = @min(base.len, max_name_bytes - 1 - temp_marker.len - 8);
+    return std.fmt.bufPrint(buf, ".{s}{s}", .{ base[0..keep], temp_marker }) catch unreachable;
 }
 
 fn tempSibling(fs: Fs, buf: []u8, abs: []const u8) ![]u8 {
@@ -272,9 +474,38 @@ fn tempSibling(fs: Fs, buf: []u8, abs: []const u8) ![]u8 {
     fs.io.random(&random);
     const dir = std.fs.path.dirname(abs) orelse "/";
     const sep = if (std.mem.eql(u8, dir, "/")) "" else "/";
-    return std.fmt.bufPrint(buf, "{s}{s}.{s}.tmp{x}", .{
-        dir, sep, std.fs.path.basename(abs), std.mem.readInt(u32, &random, .little),
+    var prefix_buf: [max_name_bytes]u8 = undefined;
+    return std.fmt.bufPrint(buf, "{s}{s}{s}{x}", .{
+        dir, sep, tempPrefix(&prefix_buf, std.fs.path.basename(abs)), std.mem.readInt(u32, &random, .little),
     });
+}
+
+/// Removes regular files named like temporary siblings of `abs` that are older than
+/// `stale_temp_ns`; a younger one may belong to a concurrent writer. Failures are ignored:
+/// the write that follows reports a directory that cannot be used.
+fn removeStaleTemps(fs: Fs, abs: []const u8) void {
+    var prefix_buf: [max_name_bytes]u8 = undefined;
+    const prefix = tempPrefix(&prefix_buf, std.fs.path.basename(abs));
+    var buf: [path_cap]u8 = undefined;
+    const dir_abs = std.fs.path.dirname(abs) orelse "/";
+    const target = fs.follow(&buf, dir_abs) catch return;
+    var dir = fs.root.openDir(fs.io, rel(target), .{ .iterate = true }) catch return;
+    defer dir.close(fs.io);
+    const now = Io.Timestamp.now(fs.io, .real).toNanoseconds();
+    var it = dir.iterate();
+    while (it.next(fs.io) catch return) |e| {
+        if (!std.mem.startsWith(u8, e.name, prefix)) continue;
+        const suffix = e.name[prefix.len..];
+        if (suffix.len == 0 or suffix.len > 8 or !isHex(suffix)) continue;
+        const st = dir.statFile(fs.io, e.name, .{ .follow_symlinks = false }) catch continue;
+        if (st.kind != .file or now - st.mtime.toNanoseconds() < stale_temp_ns) continue;
+        dir.deleteFile(fs.io, e.name) catch continue;
+    }
+}
+
+fn isHex(s: []const u8) bool {
+    for (s) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
 }
 
 fn syncDir(fs: Fs, abs: []const u8) !void {
@@ -660,4 +891,180 @@ test "rename moves a link inside a symlinked directory" {
     try fs.rename("/d/a", "/d/b");
     try testing.expect((try fs.lstat("/real/b")).kind == .sym_link);
     try testing.expectError(error.FileNotFound, fs.lstat("/real/a"));
+}
+
+fn expectContent(fs: Fs, path: []const u8, want: []const u8) !void {
+    const data = try fs.readFileAlloc(testing.allocator, path, 1 << 16);
+    defer testing.allocator.free(data);
+    try testing.expectEqualStrings(want, data);
+}
+
+test "writeFileInPlace creates with the mode, truncates and refuses a symlink" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/run");
+    try fs.writeFileInPlace("/run/p", "12345\n", 0o644);
+    try fs.writeFileInPlace("/run/p", "7\n", 0o644);
+    try expectContent(fs, "/run/p", "7\n");
+    try testing.expectEqual(@as(u16, 0o644), (try fs.stat("/run/p")).mode);
+    try fs.symLink("p", "/run/l");
+    try testing.expectError(error.DestinationIsSymlink, fs.writeFileInPlace("/run/l", "x", 0o644));
+    try expectContent(fs, "/run/p", "7\n");
+}
+
+test "writeFileInPlace never follows a symlink out of the root" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var outside = testing.tmpDir(.{ .iterate = true });
+    defer outside.cleanup();
+    try outside.dir.writeFile(testing.io, .{ .sub_path = "victim", .data = "untouched" });
+    const real = try outside.dir.realPathFileAlloc(testing.io, "victim", testing.allocator);
+    defer testing.allocator.free(real);
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/run");
+    try fs.symLink(real, "/run/escape");
+    try testing.expectError(error.DestinationIsSymlink, fs.writeFileInPlace("/run/escape", "owned", 0o644));
+    const data = try outside.dir.readFileAlloc(testing.io, "victim", testing.allocator, .limited(100));
+    defer testing.allocator.free(data);
+    try testing.expectEqualStrings("untouched", data);
+}
+
+test "writeFileInPlace refuses a FIFO without blocking" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/run");
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.mknodat(tmp.dir.handle, "run/fifo", linux.S.IFIFO | 0o600, 0)));
+    // Without a reader the open fails (`NoDevice`); with one the file type is refused.
+    fs.writeFileInPlace("/run/fifo", "x", 0o644) catch |e| switch (e) {
+        error.NoDevice, error.NotRegularFile => return,
+        else => return e,
+    };
+    return error.TestUnexpectedResult;
+}
+
+test "as root writeFileInPlace replaces a file that another account owns" {
+    if (linux.geteuid() != 0) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/run");
+    try fs.writeFileInPlace("/run/p", "old", 0o666);
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.fchownat(tmp.dir.handle, "run/p", 4242, 4242, 0)));
+    try fs.writeFileInPlace("/run/p", "new", 0o644);
+    var file = try fs.openNoFollow("/run/p", .{});
+    defer file.close(testing.io);
+    const info = try fileInfo(file);
+    try testing.expectEqual(@as(u32, 0), info.uid);
+    try testing.expectEqual(@as(u16, 0o644), info.mode);
+    try expectContent(fs, "/run/p", "new");
+}
+
+const RaceCtx = struct {
+    fs: Fs,
+    failed: std.atomic.Value(bool) = .init(false),
+
+    fn run(c: *RaceCtx) void {
+        var i: usize = 0;
+        var buf: [64]u8 = undefined;
+        while (i < 150) : (i += 1) {
+            const path = std.fmt.bufPrint(&buf, "/race/{d}/x/y", .{i}) catch unreachable;
+            c.fs.makePath(path) catch c.failed.store(true, .seq_cst);
+        }
+    }
+};
+
+test "makePath survives concurrent creators of the same path" {
+    inline for (.{ false, true }) |host| {
+        var tmp = testing.tmpDir(.{ .iterate = true });
+        defer tmp.cleanup();
+        var c: RaceCtx = .{ .fs = tmpFs(&tmp) };
+        c.fs.host_root = host;
+        var threads: [8]std.Thread = undefined;
+        for (&threads) |*t| t.* = try std.Thread.spawn(.{}, RaceCtx.run, .{&c});
+        for (threads) |t| t.join();
+        try testing.expect(!c.failed.load(.seq_cst));
+        try testing.expect(c.fs.exists("/race/149/x/y"));
+    }
+}
+
+test "makePathMode applies the mode to new directories only" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/var");
+    try fs.makePathMode("/var/log/unit", 0o750);
+    try testing.expectEqual(@as(u16, 0o750), (try fs.stat("/var/log")).mode);
+    try testing.expectEqual(@as(u16, 0o750), (try fs.stat("/var/log/unit")).mode);
+    try testing.expectEqual(@as(u16, 0o755), (try fs.stat("/var")).mode & 0o755);
+}
+
+test "atomic write copes with the longest file names and leaves no temporary file" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/d");
+    for ([_]usize{ 240, 250, 255 }) |len| {
+        const name = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(name);
+        @memset(name, 'n');
+        const path = try std.fmt.allocPrint(testing.allocator, "/d/{s}", .{name});
+        defer testing.allocator.free(path);
+        try fs.writeFileAtomic(path, "a", 0o644);
+        try fs.writeFileAtomic(path, "b", 0o644);
+        try expectContent(fs, path, "b");
+        try fs.deleteFile(path);
+    }
+    const entries = try fs.iterateDir(testing.allocator, "/d");
+    defer freeEntries(testing.allocator, entries);
+    try testing.expectEqual(@as(usize, 0), entries.len);
+}
+
+test "an atomic write removes stale temporary siblings of its target only" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/d");
+    const old: Io.Timestamp = .zero;
+    for ([_][]const u8{ ".target.tmpdeadbeef", ".other.tmpdeadbeef", ".target.tmpnothex!" }) |name| {
+        const path = try std.fmt.allocPrint(testing.allocator, "/d/{s}", .{name});
+        defer testing.allocator.free(path);
+        try fs.writeFileAtomic(path, "x", 0o644);
+        var file = try tmp.dir.openFile(testing.io, path[1..], .{ .mode = .read_write });
+        defer file.close(testing.io);
+        try file.setTimestamps(testing.io, .{ .modify_timestamp = .{ .new = old } });
+    }
+    try fs.writeFileAtomic("/d/.target.tmp1234", "young", 0o644);
+    try fs.symLink("elsewhere", "/d/.target.tmpbeef");
+    try fs.writeFileAtomic("/d/target", "data", 0o644);
+    try testing.expect(!fs.exists("/d/.target.tmpdeadbeef"));
+    try testing.expect(fs.exists("/d/.other.tmpdeadbeef"));
+    try testing.expect(fs.exists("/d/.target.tmpnothex!"));
+    try testing.expect(fs.exists("/d/.target.tmp1234"));
+    try testing.expectEqual(Kind.sym_link, (try fs.lstat("/d/.target.tmpbeef")).kind);
+    try expectContent(fs, "/d/target", "data");
+}
+
+test "stat reports the owner and a root-run atomic write keeps the owner of the file it replaces" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs = tmpFs(&tmp);
+    try fs.makePath("/etc");
+    try fs.writeFileAtomic("/etc/crontab", "one", 0o600);
+    const first = try fs.stat("/etc/crontab");
+    try testing.expectEqual(linux.geteuid(), first.uid);
+    try testing.expectEqual(linux.getegid(), first.gid);
+    try testing.expectEqual(first.uid, (try fs.lstat("/etc/crontab")).uid);
+    if (linux.geteuid() != 0) return;
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.fchownat(tmp.dir.handle, "etc/crontab", 4242, 4343, 0)));
+    try fs.writeFileAtomic("/etc/crontab", "two", 0o640);
+    const after = try fs.stat("/etc/crontab");
+    try testing.expectEqual(@as(u32, 4242), after.uid);
+    try testing.expectEqual(@as(u32, 4343), after.gid);
+    try testing.expectEqual(@as(u16, 0o640), after.mode);
+    try expectContent(fs, "/etc/crontab", "two");
+    // A new file belongs to root.
+    try fs.writeFileAtomic("/etc/new", "x", 0o644);
+    try testing.expectEqual(@as(u32, 0), (try fs.stat("/etc/new")).uid);
 }

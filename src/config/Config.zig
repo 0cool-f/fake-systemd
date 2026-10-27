@@ -20,6 +20,9 @@ deny: []const []const u8 = &.{},
 dry_run: bool = false,
 /// Set by `FAKE_SYSTEMD_LOG_LEVEL`; null keeps the caller's default.
 log_level: ?Diag.Level = null,
+/// First problem that makes the configuration untrustworthy (unreadable or oversized file,
+/// malformed `Deny=`); verbs that change anything refuse to run while it is set.
+load_error: ?[]const u8 = null,
 
 test "defaults" {
     const config: Config = .{};

@@ -19,6 +19,7 @@ const marker = @import("../index/marker.zig");
 const rebuild = @import("../index/rebuild.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const network = @import("network.zig");
 const runner = @import("runner.zig");
 const render = @import("s6/render.zig");
@@ -32,7 +33,7 @@ const Env = interface.Env;
 const S6 = @This();
 
 pub const backend_name = "s6";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.2. s6 has no user service manager, and no oneshot service type: a
 /// oneshot is a service that stops itself after its command.
@@ -141,6 +142,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
 
     const have_setpriv = (try b.findProgram("setpriv")) != null;
     const reason = policy.executorReason(u.*, capabilities, common.nativeSupport());
@@ -154,7 +156,8 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const in: render.Input = .{
         .unit = u,
         .command = command,
-        .identity = try b.identityFor(u, have_setpriv),
+        .identity = try b.identityFor(u, have_setpriv, use_executor),
+        .numeric = try b.numericFor(u, use_executor),
         .hard = try scanPaths(gpa, self.scanDir(), deps.hard),
         .soft = try scanPaths(gpa, self.scanDir(), deps.soft),
         .executor_path = policy.executor_path,
@@ -164,7 +167,9 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     };
 
     const dir = try std.fs.path.join(gpa, &.{ layout.generationDir(self.dirs, .plain), svc });
+    try guard.requireNotOther(self.ctx, guard.claimDir(self.ctx, dir, u.name.full, &.{"run"}), u.name.full, dir);
     var set: files.Set = .init(gpa, input, try interface.generatorLine(gpa, backend_name, generator_number), dir);
+    set.starts = try std.mem.concat(gpa, []const u8, &.{ deps.hard, deps.soft });
     try set.script("run", try render.run(gpa, in), 0o755);
     if (render.needsFinish(u)) try set.script("finish", try render.finish(gpa, in), 0o755);
     try set.script("log/run", try render.log(gpa, u.name.full, u.scope, policy.executor_path), 0o755);
@@ -228,18 +233,10 @@ fn linkIdle(self: *S6, service: []const u8) !bool {
     return try self.makeLink(service, dir);
 }
 
-/// Services the generated `run` of `service` starts, in order.
+/// Services the generated service of `service` starts, in order.
 fn dependencyNames(self: *S6, service: []const u8) ![]const []const u8 {
-    const gpa = self.ctx.gpa;
     const dir = (try self.serviceDir(service)) orelse return &.{};
-    const content = self.ctx.fs.readFileAlloc(gpa, try std.fs.path.join(gpa, &.{ dir, "run" }), 1 << 20) catch return &.{};
-    const parsed = marker.parse(content) orelse return &.{};
-    var out: std.ArrayList([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, parsed.rest, '\n');
-    while (lines.next()) |line| {
-        if (try native.startedService(gpa, line)) |dep| try out.append(gpa, dep);
-    }
-    return out.items;
+    return guard.startedServices(self.ctx, dir);
 }
 
 /// Links the services `service` starts, and those they start in turn, idle. Services that
@@ -313,7 +310,7 @@ fn isEnabled(ptr: *anyopaque, _: Env, service: []const u8) anyerror!output.Enabl
     return if (self.hasDown(service)) .disabled else .enabled;
 }
 
-fn serviceEnabled(ptr: *anyopaque, service: []const u8) bool {
+fn serviceEnabled(ptr: *anyopaque, service: []const u8) anyerror!bool {
     const self = me(ptr);
     const link = self.linkPath(service) catch return false;
     return self.linked(link) and !self.hasDown(service);
@@ -370,9 +367,9 @@ fn forgetExit(self: *S6, env: Env, service: []const u8) void {
 
 /// Records a stop that fake-systemd asked for as a clean end, so a service that had to be
 /// killed does not read as failed.
-fn markStopped(self: *S6, env: Env, service: []const u8) void {
-    if (env.ctx.dry_run or self.generatedUnit(service) == null) return;
-    const path = (self.exitStatusPath(service) catch return) orelse return;
+fn markStopped(self: *S6, env: Env, service: []const u8) !void {
+    if (env.ctx.dry_run or (try self.generatedUnit(service)) == null) return;
+    const path = (try self.exitStatusPath(service)) orelse return;
     self.ctx.fs.writeFileAtomic(path, "ok 0 0\n", 0o644) catch |e| env.ctx.diag.warn("{s}: cannot write {s}: {t}", .{ service, path, e });
 }
 
@@ -433,7 +430,7 @@ fn begin(self: *S6, env: Env, service: []const u8) !void {
 /// Waits until a oneshot that ends by itself has run its command and its `finish`, as `s6-svc -wu`
 /// returns as soon as the process is up.
 fn awaitOneshot(self: *S6, env: Env, service: []const u8) !void {
-    const flags = self.runFlags(service);
+    const flags = try self.runFlags(service);
     if (!flags.oneshot) return;
     const limit = flags.start_timeout_ms orelse render.default_timeout_ms;
     const wait = try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{limit});
@@ -484,7 +481,7 @@ fn downWaitMs(self: *S6, service: []const u8) ?u64 {
 fn stopService(self: *S6, env: Env, service: []const u8) !void {
     const link = try self.linkPath(service);
     if (!self.supervised(env, link)) return;
-    if (self.runFlags(service).exec_stop) try self.runStopHook(env, service, link);
+    if ((try self.runFlags(service)).exec_stop) try self.runStopHook(env, service, link);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(env.ctx.gpa, &.{ "s6-svc", "-wd" });
     if (self.downWaitMs(service)) |ms| try argv.appendSlice(env.ctx.gpa, &.{ "-T", try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{ms}) });
@@ -497,17 +494,18 @@ fn stopService(self: *S6, env: Env, service: []const u8) !void {
             return error.CommandFailed;
         }
     }
-    self.markStopped(env, service);
+    try self.markStopped(env, service);
 }
 
 fn runStopHook(self: *S6, env: Env, service: []const u8, link: []const u8) !void {
     const gpa = env.ctx.gpa;
-    const unit_name = self.generatedUnit(service) orelse return;
+    const unit_name = (try self.generatedUnit(service)) orelse return;
     _ = try runTool(env, &.{ "s6-svc", "-O", link }, .quiet);
     var argv: std.ArrayList([]const u8) = .empty;
     if ((try self.statusOf(env, service)).pid) |pid| {
         try argv.appendSlice(gpa, &.{ "env", try std.fmt.allocPrint(gpa, "MAINPID={d}", .{pid}) });
     }
+    try argv.appendSlice(gpa, guard.executorPrefix(env.ctx, unit_name));
     try argv.appendSlice(gpa, &.{ policy.executor_path, "--exec", unit_name, "--phase", "stop-main" });
     const res = try runTool(env, argv.items, .inherit);
     if (res.code != 0) env.ctx.diag.warn("{s}: ExecStop= failed", .{service});
@@ -517,22 +515,22 @@ fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     try me(ptr).stopService(env, service);
 }
 
-fn runScript(self: *S6, service: []const u8) ?[]const u8 {
-    const dir = (self.serviceDir(service) catch return null) orelse return null;
-    const path = std.fs.path.join(self.ctx.gpa, &.{ dir, "run" }) catch return null;
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn runScript(self: *S6, service: []const u8) !?[]const u8 {
+    const dir = (try self.serviceDir(service)) orelse return null;
+    const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, "run" });
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
 /// Settings recorded in a generated `run`; none for native services.
-fn runFlags(self: *S6, service: []const u8) native.Flags {
-    const content = self.runScript(service) orelse return .{};
+fn runFlags(self: *S6, service: []const u8) !native.Flags {
+    const content = (try self.runScript(service)) orelse return .{};
     const parsed = marker.parse(content) orelse return .{};
     return native.parseFlags(parsed.rest);
 }
 
 /// Unit recorded in the marker of the `run` script, null for native services.
-fn generatedUnit(self: *S6, service: []const u8) ?[]const u8 {
-    return common.unitOf(self.runScript(service) orelse return null);
+fn generatedUnit(self: *S6, service: []const u8) !?[]const u8 {
+    return common.unitOf((try self.runScript(service)) orelse return null);
 }
 
 /// `ExecReload=` runs through the executor, which gets the pid `s6-supervise` supervises as
@@ -540,11 +538,12 @@ fn generatedUnit(self: *S6, service: []const u8) ?[]const u8 {
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     const gpa = env.ctx.gpa;
-    if (self.generatedUnit(service)) |unit_name| {
+    if (try self.generatedUnit(service)) |unit_name| {
         var argv: std.ArrayList([]const u8) = .empty;
         if ((try self.statusOf(env, service)).pid) |pid| {
             try argv.appendSlice(gpa, &.{ "env", try std.fmt.allocPrint(gpa, "MAINPID={d}", .{pid}) });
         }
+        try argv.appendSlice(gpa, guard.executorPrefix(env.ctx, unit_name));
         try argv.appendSlice(gpa, &.{ policy.executor_path, "--exec", unit_name, "--phase", "reload" });
         const res = try runTool(env, argv.items, .inherit);
         if (res.code != 0) return error.CommandFailed;
@@ -572,15 +571,25 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
     return me(ptr).statusOf(env, service);
 }
 
+/// True when `target` is a service directory of the generation directory that has nothing left
+/// but what s6 and the generation leave behind, which is what a removed unit looks like.
+fn generatedLeftover(self: *S6, target: []const u8) bool {
+    const gen = layout.generationDir(self.dirs, .plain);
+    const parent = std.fs.path.dirname(target) orelse return false;
+    if (!std.mem.eql(u8, parent, gen)) return false;
+    return guard.abandonedServiceDir(self.ctx, target);
+}
+
 /// `s6-svscan` scans its directory by itself and `s6-supervise` reads `run` at each start, so
-/// there is nothing to reload; links to a service directory of ours that has no `run` any more
-/// are removed, as generated dependencies are collected without a call to `disable`, and
-/// the scan that follows stops the supervisors of removed links.
+/// there is nothing to reload; links to a service directory of the generation directory that
+/// holds nothing but leftovers of a removed unit are removed, as generated dependencies are
+/// collected without a call to `disable`, and the scan that follows stops the supervisors of
+/// removed links.
 fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
     if (env.ctx.dry_run) return;
     const dir = self.scanDir();
-    const entries = self.ctx.fs.iterateDir(env.ctx.gpa, dir) catch return;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     var removed = false;
     for (entries) |entry| {
         if (entry.kind != .sym_link) continue;
@@ -588,10 +597,7 @@ fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
         if (self.ctx.fs.exists(try std.fs.path.join(env.ctx.gpa, &.{ link, "run" }))) continue;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const target = self.ctx.fs.readLink(link, &buf) catch continue;
-        const ours = for (try layout.lookupDirs(self.ctx, self.dirs, .plain)) |d| {
-            if (std.mem.startsWith(u8, target, d) and target.len > d.len and target[d.len] == '/') break true;
-        } else false;
-        if (!ours) continue;
+        if (!self.generatedLeftover(target)) continue;
         self.ctx.fs.deleteFile(link) catch |e| {
             env.ctx.diag.warn("cannot remove {s}: {t}", .{ link, e });
             continue;

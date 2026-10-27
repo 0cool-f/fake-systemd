@@ -48,13 +48,13 @@ test "enable --now starts the service through the runner" {
     try testing.expect(t.fake.serviceState("foo").state == .active);
 }
 
-test "enable of a lifecycle hook is refused with the classifier reason" {
+test "enable of a lifecycle hook succeeds with the classifier reason as a notice" {
     var t: h.Harness = undefined;
     try setup(&t);
     defer t.deinit();
     try t.write("/usr/lib/systemd/system/hook.service", "[Service]\nExecStart=/usr/bin/foo\n[Install]\nWantedBy=shutdown.target\n", 0o644);
-    try testing.expectEqual(@as(u8, 1), t.run(&.{ "enable", "hook" }));
-    try h.expectContains(t.stderr(), "hook.service: not translated: system lifecycle hook");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "hook" }));
+    try h.expectContains(t.stderr(), "hook.service: not translated (system lifecycle hook");
     try testing.expect(!t.exists("/usr/lib/fake.d/hook"));
     try testing.expect(!t.exists("/var/lib/fake-systemd/fake/index"));
 }
@@ -235,4 +235,20 @@ test "backend failure becomes exit 1" {
     t.rec.code = 1;
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "foo" }));
     try h.expectContains(t.stderr(), "Failed to start foo.service");
+}
+
+test "%u and %h come from the accounts of the root, not from USER and HOME" {
+    var t: h.Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    try t.environ.put("USER", "mallory");
+    t.ctx.home = "/evil";
+    try t.write("/etc/passwd", "root:x:0:0:root:/root:/bin/sh\n", 0o644);
+    try t.write("/usr/lib/systemd/system/who.service", "[Service]\nExecStart=/usr/bin/%u-tool\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/root-tool", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/home.service", "[Service]\nExecStart=%h/tool\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/root/tool", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "who", "home" }));
+    try h.expectContains(try t.read("/usr/lib/fake.d/who"), "exec = /usr/bin/root-tool\n");
+    try h.expectContains(try t.read("/usr/lib/fake.d/home"), "exec = /root/tool\n");
 }

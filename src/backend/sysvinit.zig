@@ -23,6 +23,7 @@ const executor = @import("../exec/executor.zig");
 const daemon = @import("../exec/daemon.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const runner = @import("runner.zig");
 const shell = @import("shell.zig");
 const render = @import("sysvinit/render.zig");
@@ -54,7 +55,6 @@ const skip_systemd_native = "_SKIP_SYSTEMD_NATIVE=1";
 const skip_redirect = "SYSTEMCTL_SKIP_REDIRECT=1";
 
 const tool_dirs = [_][]const u8{ "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin" };
-const command_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
 /// Number of scripts a script requires that `enable` follows.
 const max_dependency_depth = 8;
 /// Priorities of the links `enable` writes when no tool does.
@@ -169,6 +169,8 @@ fn mapDependency(self: *Sysvinit, own: []const u8, dep: []const u8, resolutions:
 fn mapList(self: *Sysvinit, own: []const u8, resolutions: []const interface.Dep, deps: []const []const u8, exclude: []const []const []const u8, out: *std.ArrayList([]const u8)) !void {
     outer: for (deps) |dep| {
         const mapped = (try self.mapDependency(own, dep, resolutions)) orelse continue;
+        // A trailing backslash would continue the header line in the parsers of the init tools.
+        if (std.mem.endsWith(u8, mapped, "\\")) continue;
         for (exclude) |ex| if (contains(ex, mapped)) continue :outer;
         if (!contains(out.items, mapped)) try out.append(self.ctx.gpa, mapped);
     }
@@ -207,7 +209,7 @@ fn mapDependencies(self: *Sysvinit, own: []const u8, u: *const model.Unit, resol
 }
 
 fn accountKnown(self: *Sysvinit, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -227,24 +229,9 @@ fn executorResolves(self: *Sysvinit, u: *const model.Unit) bool {
     return true;
 }
 
-fn findProgram(self: *Sysvinit, name: []const u8) !?[]const u8 {
-    if (self.tools_override) |tools| return if (contains(tools, name)) name else null;
-    for (command_dirs) |dir| {
-        const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, name });
-        if (self.ctx.fs.exists(path)) return path;
-    }
-    return null;
-}
-
 fn hasTool(self: *Sysvinit, name: []const u8) bool {
     if (self.tools_override) |tools| return contains(tools, name);
     return toolInstalled(self.ctx, name);
-}
-
-/// `user[:group]` for `--chuid`.
-fn accountSpec(gpa: Allocator, u: *const model.Unit) Allocator.Error![]const u8 {
-    const user = u.user.?;
-    return if (u.group) |g| std.fmt.allocPrint(gpa, "{s}:{s}", .{ user, g }) else gpa.dupe(u8, user);
 }
 
 fn plainGroups(u: *const model.Unit) bool {
@@ -253,35 +240,17 @@ fn plainGroups(u: *const model.Unit) bool {
     return true;
 }
 
-/// An account the executor cannot resolve (LDAP, sssd) is switched through the system libc, by
-/// `--chuid` on Debian or by `setpriv` or `su` in front of the executor. Executor calls that run
-/// to the end always need the wrapper.
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+/// script looks up with `id` and `getent`; the executor stays root and switches to them itself.
 fn identityFor(self: *Sysvinit, u: *const model.Unit) !render.Identity {
     if (u.scope == .user) return .{};
     const user = u.user orelse return .{};
     if (self.executorResolves(u)) return .{};
     if (!shell.plainAccount(user) or !plainGroups(u)) {
-        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be switched by the system libc", .{u.name.full});
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
         return error.Unsupported;
     }
-    const setpriv_path = try self.findProgram("setpriv");
-    const wrapper: render.Wrapper = if (setpriv_path) |path|
-        .{ .setpriv = .{ .path = path, .user = user, .group = u.group, .supplementary = u.supplementary_groups } }
-    else
-        .{ .su = user };
-    if (setpriv_path == null and (u.group != null or u.supplementary_groups.len > 0)) {
-        self.ctx.diag.warn("{s}: setpriv is not installed, the groups of {s} come from the group database only", .{ u.name.full, user });
-    }
-    var ids: render.Identity = .{ .call = wrapper, .owner = user };
-    switch (self.variant) {
-        .debian => if (setpriv_path != null and u.supplementary_groups.len > 0) {
-            ids.daemon = wrapper;
-        } else {
-            ids.chuid = try accountSpec(self.ctx.gpa, u);
-        },
-        .redhat => ids.daemon = wrapper,
-    }
-    return ids;
+    return .{ .numeric = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } };
 }
 
 fn modeFor(u: *const model.Unit) render.Mode {
@@ -323,6 +292,12 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
+    // A trailing backslash would continue the header line in the parsers of the init tools.
+    if (std.mem.endsWith(u8, svc, "\\")) {
+        self.ctx.diag.err("{s}: '{s}' is not a script name the init tools can read", .{ u.name.full, svc });
+        return error.Unsupported;
+    }
     const mode = modeFor(u);
     const exit_file = try executor.execExitPath(self.ctx, u.name.full);
     const in: render.Input = .{
@@ -344,8 +319,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const body = try render.script(gpa, in);
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
+    const path = try std.fs.path.join(gpa, &.{ layout.generationDir(self.dirs), svc });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ layout.generationDir(self.dirs), svc }), .content = content, .mode = 0o755 };
+    files[0] = .{ .path = path, .content = content, .mode = 0o755 };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -374,20 +351,27 @@ fn linkState(self: *Sysvinit, service: []const u8) !LinkState {
     return if (any) .disabled else .none;
 }
 
-fn contentOf(self: *Sysvinit, path: []const u8) ?[]const u8 {
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+/// Content of the file at `path`, null when it does not exist; any other failure is an error, so a
+/// script that cannot be read is never taken for an absent or native one.
+fn contentOf(self: *Sysvinit, path: []const u8) !?[]const u8 {
+    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, max_script_bytes) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => e,
+    };
 }
 
+const max_script_bytes = 64 << 20;
+
 /// True when the script was generated by fake-systemd.
-fn isGenerated(self: *Sysvinit, path: []const u8) bool {
-    const content = self.contentOf(path) orelse return false;
+fn isGenerated(self: *Sysvinit, path: []const u8) !bool {
+    const content = (try self.contentOf(path)) orelse return false;
     return marker.parse(content) != null;
 }
 
 /// Unit recorded in the marker of the script, null for native scripts.
-fn generatedUnit(self: *Sysvinit, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const content = self.contentOf(path) orelse return null;
+fn generatedUnit(self: *Sysvinit, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const content = (try self.contentOf(path)) orelse return null;
     const parsed = marker.parse(content) orelse return null;
     return parsed.marker.unit;
 }
@@ -437,7 +421,7 @@ fn hasLinkAt(links: []const layout.Found, level: u8) bool {
 /// numbers are those of `chkconfig:`, or late start and early stop ones that the tool sorts at its next run.
 fn linkDirect(self: *Sysvinit, service: []const u8, script: []const u8) !void {
     const gpa = self.ctx.gpa;
-    const header = try native.parseHeader(gpa, self.contentOf(script) orelse "");
+    const header = try native.parseHeader(gpa, (try self.contentOf(script)) orelse "");
     const start_levels = if (header.default_start.len > 0) header.default_start else "2345";
     const stop_levels = if (header.default_stop.len > 0) header.default_stop else "016";
     const start_number = header.start_priority orelse direct_start;
@@ -495,15 +479,27 @@ fn diffLinks(gpa: Allocator, before: []const layout.Found, after: []const layout
     }
 }
 
-/// Scripts the header of `script` pulls in that fake-systemd generated and that are not enabled.
+/// Relations of the generated script `content` of `service`, derived from its unit rather than
+/// read back from the script; null for a script of someone else, or when the unit cannot be
+/// loaded any more.
+pub fn generatedDeps(self: *Sysvinit, service: []const u8, content: []const u8) !?render.Deps {
+    const parsed = marker.parse(content) orelse return null;
+    var u = executor.loadUnit(self.ctx, parsed.marker.unit) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return null,
+    };
+    return try self.mapDependencies(service, &u, &.{});
+}
+
+/// Scripts that fake-systemd generated and that are not enabled, which the generated script `script` requires.
 fn dependenciesToEnable(self: *Sysvinit, service: []const u8, script: []const u8) ![]const []const u8 {
     const gpa = self.ctx.gpa;
-    const header = try native.parseHeader(gpa, self.contentOf(script) orelse "");
+    const deps = (try self.generatedDeps(service, (try self.contentOf(script)) orelse return &.{})) orelse return &.{};
     var out: std.ArrayList([]const u8) = .empty;
-    for (header.pulls_in) |dep| {
+    for (deps.pulls_in) |dep| {
         if (dep.len == 0 or std.mem.eql(u8, dep, service)) continue;
         const path = (try layout.locate(self.ctx, self.dirs, dep)) orelse continue;
-        if (!self.isGenerated(path)) continue;
+        if (!(try self.isGenerated(path))) continue;
         if ((try self.linkState(dep)) == .enabled) continue;
         try out.append(gpa, dep);
     }
@@ -559,12 +555,16 @@ fn enable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOpt
 /// `insserv` refuses the header of a script whose requirement is not enabled in its runlevels.
 fn requiredByEnabled(self: *Sysvinit, service: []const u8) !?[]const u8 {
     const dir = layout.generationDir(self.dirs);
-    const entries = self.ctx.fs.iterateDir(self.ctx.gpa, dir) catch return null;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     for (entries) |e| {
         if (std.mem.eql(u8, e.name, service)) continue;
         const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, e.name });
-        const header = try native.parseHeader(self.ctx.gpa, self.contentOf(path) orelse continue);
-        if (!contains(header.required_start, service)) continue;
+        const content = (try self.contentOf(path)) orelse continue;
+        const required = if (try self.generatedDeps(e.name, content)) |deps|
+            deps.required
+        else
+            (try native.parseHeader(self.ctx.gpa, content)).required_start;
+        if (!contains(required, service)) continue;
         if ((try self.linkState(e.name)) == .enabled) return e.name;
     }
     return null;
@@ -652,18 +652,17 @@ fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 }
 
 /// Main process of a generated service from the file its executor writes, else the pid file a
-/// native script commonly keeps.
-fn pidOf(self: *Sysvinit, service: []const u8) ?u32 {
+/// native script commonly keeps. A pid is only taken when `guard.acceptPid` allows signaling it.
+fn pidOf(self: *Sysvinit, service: []const u8) !?u32 {
     const gpa = self.ctx.gpa;
-    if (self.generatedUnit(service)) |unit| {
+    if (!guard.serviceNameOk(service)) return null;
+    if (try self.generatedUnit(service)) |unit| {
         const path = executor.execPidPath(self.ctx, unit) catch return null;
-        const text = self.ctx.fs.readFileAlloc(gpa, path, 64) catch return null;
-        return native.parsePid(text);
+        return guard.recordedPid(self.ctx, path);
     }
     for ([_][]const u8{ "/run", "/var/run" }) |dir| {
         const path = std.fmt.allocPrint(gpa, "{s}/{s}.pid", .{ dir, service }) catch return null;
-        const text = self.ctx.fs.readFileAlloc(gpa, path, 64) catch continue;
-        if (native.parsePid(text)) |pid| return pid;
+        if (guard.pidFromFile(self.ctx, path)) |pid| return pid;
     }
     return null;
 }
@@ -671,7 +670,7 @@ fn pidOf(self: *Sysvinit, service: []const u8) ?u32 {
 fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
     const self = me(ptr);
     const name = std.mem.cutPrefix(u8, signal, "SIG") orelse signal;
-    const pid = self.pidOf(service) orelse {
+    const pid = (try self.pidOf(service)) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -685,7 +684,7 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
     const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return .{ .state = .inactive };
     const res = try env.runner.run(env.ctx.gpa, &.{ path, "status" }, .capture);
     const state = native.stateOfStatus(res.code, native.looksLikeUsage(res.stdout));
-    return .{ .state = state, .pid = if (state == .active) self.pidOf(service) else null, .text = res.stdout };
+    return .{ .state = state, .pid = if (state == .active) try self.pidOf(service) else null, .text = res.stdout };
 }
 
 // ---- manager ----------------------------------------------------------------------------
@@ -695,10 +694,10 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
 fn pullIn(self: *Sysvinit, env: Env) !void {
     var scratch: std.ArrayList(interface.Change) = .empty;
     const dir = layout.generationDir(self.dirs);
-    const entries = self.ctx.fs.iterateDir(env.ctx.gpa, dir) catch return;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     for (entries) |e| {
         const path = try std.fs.path.join(env.ctx.gpa, &.{ dir, e.name });
-        if (!self.isGenerated(path) or (try self.linkState(e.name)) != .enabled) continue;
+        if (!(try self.isGenerated(path)) or (try self.linkState(e.name)) != .enabled) continue;
         for (try self.dependenciesToEnable(e.name, path)) |dep| {
             self.enableOne(env, dep, &scratch, 1) catch |err| env.ctx.diag.warn("{s}: cannot enable {s}, which {s} requires: {t}", .{ dep, dep, e.name, err });
         }
@@ -722,10 +721,10 @@ fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
         .redhat => {
             if (!self.hasTool(chkconfig)) return;
             const dir = layout.generationDir(self.dirs);
-            const entries = self.ctx.fs.iterateDir(env.ctx.gpa, dir) catch return;
+            const entries = try guard.iterateOrEmpty(self.ctx, dir);
             for (entries) |e| {
                 const path = try std.fs.path.join(env.ctx.gpa, &.{ dir, e.name });
-                if (!self.isGenerated(path) or (try self.linkState(e.name)) == .none) continue;
+                if (!(try self.isGenerated(path)) or (try self.linkState(e.name)) == .none) continue;
                 const res = try env.runner.run(env.ctx.gpa, try toolArgv(env.ctx.gpa, skip_redirect, chkconfig, &.{ e.name, "resetpriorities" }), .quiet);
                 if (res.code != 0) env.ctx.diag.warn("{s}: chkconfig could not read the priorities again", .{e.name});
             }

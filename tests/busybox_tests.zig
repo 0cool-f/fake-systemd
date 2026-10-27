@@ -50,7 +50,7 @@ test "with runsvdir in the inittab the services are runit service directories li
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read("/etc/sv/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     var buf: [256]u8 = undefined;
     try testing.expectEqualStrings("/etc/sv/foo", try t.fs.readLink("/var/service/foo", &buf));
@@ -76,7 +76,7 @@ test "the scan directory of the inittab is where services are linked, and sv and
     try h.expectContains(run, "\nexport SVDIR=/etc/service\nexec 2>&1\n");
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
     try testing.expect(!std.mem.startsWith(u8, try t.read("/etc/sv/foo/log/run"), "export"));
     var saw_sv = false;
     for (t.rec.calls.items) |call| {
@@ -367,5 +367,79 @@ test "finish brings the service down with sv down, which BusyBox's runsv takes i
     const parsed = marker.parse(finish).?;
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
+}
+
+test "an inittab whose block is not closed is left untouched" {
+    var f: Fixture = .{};
+    try f.init(.inittab);
+    defer f.deinit();
+    const t = &f.t;
+    const broken = world.base_inittab ++ "# BEGIN fake-systemd\n::wait:/etc/init.d/old start\n";
+    try t.write("/etc/inittab", broken, 0o644);
+    try t.expectRun(1, &.{ "enable", "foo" });
+    try testing.expectEqualStrings(broken, try f.inittab());
+    try h.expectContains(t.stderr(), "/etc/inittab:");
+    try h.expectContains(t.stderr(), "BEGIN marker without an END marker");
+}
+
+test "an inittab with two blocks or a nested BEGIN is left untouched" {
+    var f: Fixture = .{};
+    try f.init(.inittab);
+    defer f.deinit();
+    const t = &f.t;
+    for ([_][]const u8{
+        "# BEGIN fake-systemd\n::wait:/etc/init.d/a start\n# END fake-systemd\nx::respawn:/bin/x\n# BEGIN fake-systemd\n::wait:/etc/init.d/b start\n# END fake-systemd\n",
+        "# BEGIN fake-systemd\n# BEGIN fake-systemd\n::wait:/etc/init.d/a start\n# END fake-systemd\n",
+    }) |tail| {
+        const broken = try std.mem.concat(t.a(), u8, &.{ world.base_inittab, tail });
+        try t.write("/etc/inittab", broken, 0o644);
+        try t.expectRun(1, &.{ "enable", "foo" });
+        try testing.expectEqualStrings(broken, try f.inittab());
+    }
+}
+
+test "an inittab that cannot be read is an error, not an empty file to rewrite" {
+    var f: Fixture = .{};
+    try f.init(.inittab);
+    defer f.deinit();
+    const t = &f.t;
+    try t.fs.deleteFile("/etc/inittab");
+    try t.fs.makePath("/etc/inittab");
+    try t.expectRun(1, &.{ "enable", "foo" });
+    try h.expectContains(t.stderr(), "cannot read /etc/inittab");
+    try testing.expect((try t.fs.stat("/etc/inittab")).kind == .directory);
+}
+
+test "the order of the inittab follows the units, not the header lines of the generated scripts" {
+    var f: Fixture = .{};
+    try f.init(.inittab);
+    defer f.deinit();
+    const t = &f.t;
+    for ([_][]const u8{ "app", "dep" }) |name| {
+        try t.write(try std.fmt.allocPrint(t.a(), "/usr/bin/{s}", .{name}), "#!/bin/sh\n", 0o755);
+        const requires = if (std.mem.eql(u8, name, "app")) "Requires=dep.service\n" else "";
+        const text = try std.fmt.allocPrint(t.a(), "[Unit]\n{s}[Service]\nExecStart=/usr/bin/{s}\n[Install]\nWantedBy=multi-user.target\n", .{ requires, name });
+        try t.write(try std.fmt.allocPrint(t.a(), "/usr/lib/systemd/system/{s}.service", .{name}), text, 0o644);
+    }
+    try t.expectRun(0, &.{ "enable", "app" });
+    const script = try t.read("/etc/init.d/app");
+    try h.expectContains(script, "dep");
+    try t.write("/etc/init.d/app", try std.mem.replaceOwned(u8, t.a(), script, "dep", "gone"), 0o755);
+    // The inittab lists app alone, so that enabling dep has to place it before app.
+    var list = try std.mem.replaceOwned(u8, t.a(), try f.inittab(), "::wait:/etc/init.d/dep start\n", "");
+    list = try std.mem.replaceOwned(u8, t.a(), list, "::shutdown:/etc/init.d/dep stop\n", "");
+    try t.write("/etc/inittab", list, 0o644);
+    try t.expectRun(0, &.{ "enable", "dep" });
+    const again = try f.inittab();
+    try testing.expect(std.mem.find(u8, again, "/etc/init.d/dep start").? < std.mem.find(u8, again, "/etc/init.d/app start").?);
+}
+
+test "a line break in a literal setting is refused and reaches no generated file in either mode" {
+    inline for (.{ .runsv, .inittab }) |setup| {
+        var f: Fixture = .{};
+        try f.init(setup);
+        defer f.deinit();
+        try h.expectControlRefused(&f.t);
+    }
 }

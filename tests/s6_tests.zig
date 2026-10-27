@@ -82,7 +82,7 @@ test "enable generates the service directory, links it and asks s6-svscan to sca
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read(sv ++ "/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 s6/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 s6/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expect(t.exists(sv ++ "/foo/finish"));
     try testing.expect(t.exists(sv ++ "/foo/log/run"));
@@ -638,4 +638,149 @@ test "starting a oneshot whose command failed exits 1" {
     f.sc.svwait_writes = .{ .path = sv ++ "/job/supervise/exit-status", .text = "failed 1 0\n" };
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "job" }));
     try h.expectContains(t.stderr(), "Job for job failed");
+}
+
+test "the Environment= of a unit with an account is not exported by the run script that root executes" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/envsvc", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/envsvc.service", "[Service]\nExecStart=/usr/bin/envsvc\nUser=svc-directory\nEnvironment=PATH=/var/lib/svc/bin:/usr/bin\nEnvironment=LD_LIBRARY_PATH=/var/lib/svc\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "envsvc" }));
+    const run = marker.parse(try t.read(sv ++ "/envsvc/run")).?.rest;
+    try h.expectNotContains(run, "export");
+    try h.expectNotContains(run, "var/lib/svc");
+    try h.expectContains(run, "/usr/bin/fake-systemd --exec envsvc.service");
+}
+
+test "an Environment= value with a line break adds no dependency to run, and no down file to a native service" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/inject", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/inject.service", "[Service]\nExecStart=/usr/bin/inject\nEnvironment=\"A=1\\ns6-svc -u /service/syslog\\n\"\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "inject" }));
+    const run = marker.parse(try t.read(sv ++ "/inject/run")).?.rest;
+    try h.expectNotContains(run, "s6-svc");
+    try testing.expect(!t.exists(sv ++ "/syslog/down"));
+}
+
+test "daemon-reload removes only the links of generated services that left nothing but supervision files" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    // A native service directory that lost its run script, and a leftover of a removed unit.
+    try t.write(sv ++ "/mine/conf", "x\n", 0o644);
+    try t.fs.symLink(sv ++ "/mine", scan ++ "/mine");
+    try t.write(sv ++ "/left/down", "", 0o644);
+    try t.write(sv ++ "/left/supervise/lock", "", 0o644);
+    try t.fs.symLink(sv ++ "/left", scan ++ "/left");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    _ = try t.fs.lstat(scan ++ "/mine");
+    try testing.expectError(error.FileNotFound, t.fs.lstat(scan ++ "/left"));
+}
+
+test "an account the executor cannot resolve is given to it as numeric ids in run" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/ldapsvc", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/ldapsvc.service", "[Service]\nExecStartPre=/usr/bin/ldapsvc --prep\nExecStart=/usr/bin/ldapsvc\nUser=svc-directory\nGroup=app\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapsvc" }));
+    const run = marker.parse(try t.read(sv ++ "/ldapsvc/run")).?.rest;
+    try h.expectContains(run, "\nexec /usr/bin/fake-systemd --exec ldapsvc.service --uid \"$(id -u -- svc-directory)\" --gid \"$(getent group app | cut -d: -f3)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"\n");
+    try h.expectNotContains(run, "s6-setuidgid");
+    try h.expectNotContains(run, "setpriv");
+    try h.expectNotContains(run, "--identity-set");
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload and the stop hook give the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nExecStop=/usr/bin/ldap --stop\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "enable", "ldap" });
+    f.sc.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try f.expectCall(1, &.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" });
+    f.sc.calls.clearRetainingCapacity();
+    try t.write("/usr/lib/systemd/system/keep.service", "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/ldap --run\nExecStop=/usr/bin/ldap --stop\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.expectRun(0, &.{ "enable", "keep" });
+    f.sc.rules = &.{.{ .prefix = &.{ "s6-svstat", scan ++ "/keep" }, .stdout = "up (pid 88 pgid 88) 2 seconds\n" }};
+    f.sc.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "stop", "keep" });
+    try f.expectCall(3, &.{ "env", "MAINPID=88", "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "keep.service", "--phase", "stop-main" });
+}
+
+test "the services linked with a service are those its meta file lists, not those its run script names" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "Restart=always");
+    try addSvc(t, "b", "", "Restart=always");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    try h.expectContains(try t.read(sv ++ "/a/fake-systemd.meta"), "\nStarts: b\n");
+    try t.write(sv ++ "/evil/run", "#!/bin/sh\nexec /usr/bin/evil\n", 0o755);
+    try t.fs.deleteFile(scan ++ "/b");
+    const edited = try std.mem.replaceOwned(u8, t.a(), try t.read(sv ++ "/a/run"), "/service/b", "/service/evil");
+    try t.write(sv ++ "/a/run", edited, 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    _ = try f.link("b");
+    try testing.expectError(error.FileNotFound, f.link("evil"));
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "two units that map to the same service directory are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write(sv ++ "/foo/run", try marker.compose(t.a(), "bar.service", "/x", 1, "fake-systemd 0.1.0 s6/1", "exec x\n"), 0o755);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(sv ++ "/foo/run"), "# Unit: bar.service\n");
+}
+
+test "a service generated before the meta file listed its dependencies is generated again at daemon-reload and then links them" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "Restart=always");
+    try addSvc(t, "b", "", "Restart=always");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    // What an older generator left: a meta file without `Starts:`, and an index that names the older generator.
+    const meta_path = sv ++ "/a/fake-systemd.meta";
+    const meta = try t.read(meta_path);
+    const old_meta = meta[0..std.mem.find(u8, meta, "Starts: ").?];
+    try t.write(meta_path, old_meta, 0o644);
+    try t.fs.deleteFile(scan ++ "/b");
+    const index_path = "/var/lib/fake-systemd/s6/index";
+    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=2", "generator=1");
+    // The index records the whole content of a meta file as its hash, and its fingerprint.
+    const entry = try std.fmt.allocPrint(t.a(), "{s}=", .{meta_path});
+    const at = std.mem.find(u8, old, entry).? + entry.len;
+    const end = std.mem.findAnyPos(u8, old, at, ",\t\n").?;
+    const recorded = try std.fmt.allocPrint(t.a(), "{f}:{f}", .{ h.index.hash.str(h.index.hash.ofBytes(old_meta)), h.index.hash.str(h.index.hash.fileFingerprint(t.fs, meta_path)) });
+    old = try std.mem.concat(t.a(), u8, &.{ old[0..at], recorded, old[end..] });
+    try t.write(index_path, old, 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try h.expectContains(try t.read(meta_path), "\nStarts: b\n");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
+    _ = try f.link("b");
 }

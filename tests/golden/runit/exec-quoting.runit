@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:8e93c9bf98a61038
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
 export PLAIN=1
 export SPACED='a b'
@@ -19,7 +19,7 @@ exec /usr/bin/quoter --name 'two words' --tag its '--path=/tmp/x#y' '--cost=$5' 
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0a64380829e1c75f
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -35,5 +35,5 @@ sv once .
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0d16decd03fdfa4a
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log exec-quoting.service

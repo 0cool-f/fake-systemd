@@ -11,8 +11,11 @@ const linux = std.os.linux;
 const core = @import("../core/root.zig");
 const unit = @import("../unit/root.zig");
 const executor = @import("../exec/executor.zig");
+const identity = @import("../exec/identity.zig");
 const logger = @import("../exec/logger.zig");
 const sys = @import("../exec/sys.zig");
+const accounts = @import("../exec/accounts.zig");
+const numeric = @import("../exec/numeric.zig");
 const schedule = @import("schedule.zig");
 const timer_unit = @import("timer_unit.zig");
 const Store = @import("store.zig");
@@ -92,6 +95,20 @@ fn installHandlers() void {
     for ([_]linux.SIG{ .TERM, .INT, .HUP }) |sig| _ = linux.sigaction(sig, &action, null);
 }
 
+/// Numeric ids of an account that only the system libc resolves, for the executor to switch to. A
+/// unit that cannot be loaded is left to the executor, which reports it.
+fn identityOf(ctx: *core.Context, service: []const u8) error{NotResolved}!?identity.Switch {
+    const loaded = executor.loadUnit(ctx, service) catch return null;
+    const db = accounts.Db.load(ctx.gpa, ctx.fs.*) catch return null;
+    return numeric.lookup(ctx, db, loaded) catch |e| switch (e) {
+        error.OutOfMemory => return error.NotResolved,
+        error.NotResolved => {
+            ctx.diag.err("{s}: User= is not in /etc/passwd and the system libc does not resolve it; refusing to run the service as root", .{service});
+            return error.NotResolved;
+        },
+    };
+}
+
 /// Forks the executor with its output on a pipe read by the unit's logger; waits for the exit.
 fn realExecute(_: ?*anyopaque, ctx: *core.Context, service: []const u8) Outcome {
     var fds: [2]i32 = undefined;
@@ -99,6 +116,7 @@ fn realExecute(_: ?*anyopaque, ctx: *core.Context, service: []const u8) Outcome 
         ctx.diag.err("{s}: cannot create a pipe", .{service});
         return .failed;
     }
+    const ids = identityOf(ctx, service) catch return .{ .exited = 217 };
     installHandlers();
     switch (sys.fork()) {
         .failed => |e| {
@@ -112,7 +130,7 @@ fn realExecute(_: ?*anyopaque, ctx: *core.Context, service: []const u8) Outcome 
             _ = linux.dup3(null_fd, 0, 0);
             _ = linux.dup3(fds[1], 1, 0);
             _ = linux.dup3(fds[1], 2, 0);
-            sys.exitNow(executor.run(ctx, .{ .unit = service }));
+            sys.exitNow(executor.run(ctx, .{ .unit = service, .identity = ids }));
         },
         .parent => |pid| {
             forward_child.store(pid, .seq_cst);

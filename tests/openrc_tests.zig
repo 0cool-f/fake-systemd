@@ -4,6 +4,7 @@
 const std = @import("std");
 const h = @import("harness.zig");
 const world = @import("openrc_world.zig");
+const dinit_world = @import("dinit_world.zig");
 
 const testing = std.testing;
 const marker = h.index.marker;
@@ -391,6 +392,7 @@ test "the main pid is read from the supervisor or from the pid file of start-sto
     defer f.deinit();
     const t = &f.t;
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try dinit_world.liveProcess(t, 777);
     try t.write(state ++ "/options/foo/child_pid", "4242", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "status", "foo" }));
     try h.expectContains(t.stdout(), "Main PID: 4242");
@@ -734,7 +736,7 @@ test "an account only the system libc resolves is switched by command_user, whos
     try h.expectContains(body, "\nstart_pre() {\n\tmkdir -p /var/log/fake-systemd/ldap.service &&\n\t\tcheckpath -q -d -m 0755 -o svc-directory:dir-group /var/log/fake-systemd/ldap.service\n}\n");
 }
 
-test "supplementary groups of an account the executor cannot resolve go through setpriv, or warn without it" {
+test "an account the executor cannot resolve is given to it as numeric ids, with the supplementary groups looked up too" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -742,14 +744,13 @@ test "supplementary groups of an account the executor cannot resolve go through 
     try addSvc(t, "ldapg", "", "User=svc-directory\nSupplementaryGroups=audio");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapg" }));
     const body = try f.script("ldapg");
-    try h.expectContains(body, "\ncommand=/usr/bin/setpriv\ncommand_args=\"--reuid=svc-directory --regid=\\\"\\$(id -g svc-directory)\\\" --groups \\\"\\$(id -G svc-directory | tr ' ' ,),audio\\\" -- /usr/bin/fake-systemd --exec ldapg.service --log --record-exit\"\n");
+    try h.expectContains(body, "\ncommand=/usr/bin/fake-systemd\ncommand_args=\"--exec ldapg.service --log --record-exit --uid \\\"\\$(id -u -- svc-directory)\\\" --gid \\\"\\$(id -g -- svc-directory)\\\" --groups \\\"\\$(id -G -- svc-directory | tr ' ' ,),\\$(getent group audio | cut -d: -f3)\\\"\"\n");
     try h.expectNotContains(body, "command_user");
-
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "ldapn", "", "User=svc-directory\nSupplementaryGroups=audio");
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapn" }));
-    try h.expectContains(t.stderr(), "setpriv is not installed");
-    try h.expectContains(try f.script("ldapn"), "\ncommand_user=svc-directory\n");
+    try h.expectNotContains(body, "setpriv");
+    try h.expectNotContains(body, "--identity-set");
+    // Root keeps the files of the executor: nothing is handed to the account.
+    try h.expectNotContains(body, "checkpath");
+    try h.expectNotContains(body, "start_pre");
 }
 
 test "an account the executor resolves needs no switch in the script" {
@@ -765,18 +766,14 @@ test "an account the executor resolves needs no switch in the script" {
     try h.expectContains(body, "command_args=\"--exec known.service --log --record-exit\"");
 }
 
-test "an executor call from a function switches to an account only libc resolves" {
+test "an executor call from a function carries the numeric ids of an account only libc resolves" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
     const t = &f.t;
     try addSvc(t, "hookd", "", "User=svc-directory\nExecReload=/usr/bin/reload-hookd");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "hookd" }));
-    try h.expectContains(try f.script("hookd"), "\t/usr/bin/setpriv --reuid=svc-directory --regid=\"$(id -g svc-directory)\" --init-groups /usr/bin/fake-systemd --exec hookd.service --phase reload\n");
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "hooke", "", "User=svc-directory\nExecReload=/usr/bin/reload-hooke");
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "hooke" }));
-    try h.expectContains(try f.script("hooke"), "\tsu -s /bin/sh -c 'exec /usr/bin/fake-systemd --exec hooke.service --phase reload' svc-directory\n");
+    try h.expectContains(try f.script("hookd"), "\t/usr/bin/fake-systemd --exec hookd.service --phase reload --uid \"$(id -u -- svc-directory)\" --gid \"$(id -g -- svc-directory)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"\n");
 }
 
 test "a oneshot is a start function that runs the executor and logs through the uniform logger" {
@@ -917,23 +914,24 @@ test "the main pid of an executor service is the one the executor recorded" {
     defer f.deinit();
     const t = &f.t;
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try dinit_world.liveProcess(t, 4300);
     try t.write(state ++ "/options/foo/child_pid", "4242", 0o644);
-    try t.write("/run/fake-systemd/foo.service.pid", "4300\n", 0o644);
+    try t.write("/run/fake-systemd/foo.service.pid", "4300 4300\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "status", "foo" }));
     try h.expectContains(t.stdout(), "Main PID: 4300");
 }
 
-test "an account only libc resolves owns the log directory and the files its executor rewrites" {
+test "a native command of an account only libc resolves takes command_user and owns the log directory" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
     const t = &f.t;
-    try addSvc(t, "ldapbg", "", "User=svc-directory");
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapbg" }));
-    const body = try f.script("ldapbg");
-    try h.expectContains(body, "\ncommand=/usr/bin/setpriv\ncommand_args=\"--reuid=svc-directory --regid=\\\"\\$(id -g svc-directory)\\\" --init-groups -- /usr/bin/fake-systemd --exec ldapbg.service --log --record-exit\"\ncommand_background=yes\n");
-    try h.expectNotContains(body, "command_user");
-    try h.expectContains(body, "\nstart_pre() {\n\tmkdir -p /var/log/fake-systemd/ldapbg.service /run/fake-systemd &&\n\t\tcheckpath -q -d -m 0755 -o svc-directory /var/log/fake-systemd/ldapbg.service &&\n\t\tcheckpath -q -f -m 0644 -o svc-directory /run/fake-systemd/ldapbg.service.exit &&\n\t\tcheckpath -q -f -m 0644 -o svc-directory /run/fake-systemd/ldapbg.service.pid\n}\n");
+    try addSvc(t, "ldapnat", "", "Restart=always\nUser=svc-directory");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapnat" }));
+    const body = try f.script("ldapnat");
+    try h.expectContains(body, "\ncommand=/usr/bin/ldapnat\n");
+    try h.expectContains(body, "\ncommand_user=svc-directory\n");
+    try h.expectContains(body, "\nstart_pre() {\n\tmkdir -p /var/log/fake-systemd/ldapnat.service &&\n\t\tcheckpath -q -d -m 0755 -o svc-directory /var/log/fake-systemd/ldapnat.service\n}\n");
 }
 
 test "a service OpenRC still records as started is crashed when its executor is gone" {
@@ -954,4 +952,82 @@ test "a service OpenRC still records as started is crashed when its executor is 
     try t.write("/proc/1000/stat", "", 0o644);
     try t.write("/run/foo.fake-systemd.pid", "1000\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "is-active", "foo" }));
+}
+
+test "a unit with an account gets its Environment= from the executor, not from exports root runs" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "envsvc", "", "Restart=always\nUser=svc-directory\nEnvironment=PATH=/var/lib/svc/bin:/usr/bin\nEnvironment=LD_PRELOAD=/var/lib/svc/x.so");
+    try addSvc(t, "envapp", "", "Restart=always\nUser=app\nEnvironment=PATH=/var/lib/svc/bin:/usr/bin");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "envsvc", "envapp" }));
+    for ([_][]const u8{ "envsvc", "envapp" }) |name| {
+        const body = try f.script(name);
+        try h.expectNotContains(body, "export");
+        try h.expectNotContains(body, "var/lib/svc");
+        try h.expectContains(body, "--exec ");
+    }
+    // Without an account the script still exports them.
+    try addSvc(t, "envroot", "", "Restart=always\nEnvironment=A=1");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "envroot" }));
+    try h.expectContains(try f.script("envroot"), "\nexport A=1\n");
+}
+
+test "two units that map to the same script name are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo.bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo.bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(init_d ++ "/foo.bar"), "# Unit: foo.bar.service\n");
+}
+
+test "a pid from a file the service can write is only signalled when it names a live process of that owner" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    // init is never signalled, whatever a pid file says.
+    try dinit_world.liveProcess(t, 1);
+    try t.write(state ++ "/options/foo/pidfile", "/run/foo.pid", 0o644);
+    try t.write("/run/foo.pid", "1\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    try testing.expect(!f.sc.called(&.{"kill"}));
+    // A pid without a process is not signalled either.
+    try t.write("/run/foo.pid", "31337\n", 0o644);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    try testing.expect(!f.sc.called(&.{"kill"}));
+    try dinit_world.liveProcess(t, 31337);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "kill", "-s", "SIGKILL", "foo" }));
+    try testing.expect(f.sc.called(&.{ "kill", "-s", "KILL", "31337" }));
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "a script that cannot be read in full is an error, not a native script whose pid file is signalled" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    const file = try t.fs.root.openFile(testing.io, "etc/init.d/foo", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, (1 << 20) + 1)));
+    try dinit_world.liveProcess(t, 777);
+    try t.write("/run/foo.pid", "777\n", 0o644);
+    try t.write(state ++ "/options/foo/pidfile", "/run/foo.pid", 0o644);
+    f.sc.calls.clearRetainingCapacity();
+    try testing.expect(t.run(&.{ "kill", "foo" }) != 0);
+    try testing.expect(!f.sc.called(&.{"kill"}));
 }

@@ -145,7 +145,15 @@ pub fn presetAll(s: *Session) !u8 {
         const name = try unit.name.parse(gpa, l.name);
         if (name.isTemplate()) continue;
         const action = lookup(rules, name.full) orelse continue;
-        agg.note(try applyOne(s, name, action, true));
+        // One failing unit must not leave the rest of the system unpreset.
+        const code = applyOne(s, name, action, true) catch |e| switch (e) {
+            error.OutOfMemory => return e,
+            else => blk: {
+                s.ctx.diag.err("{s}: preset failed: {t}", .{ name.full, e });
+                break :blk Exit.failure;
+            },
+        };
+        agg.note(code);
     }
     return agg.code;
 }

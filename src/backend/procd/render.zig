@@ -98,7 +98,9 @@ fn writeDepStarts(w: *Io.Writer, in: Input, indent: []const u8) Io.Writer.Error!
     for (in.deps.requires) |dep| {
         try w.print("{s}{s}/", .{ indent, in.script_dir });
         try writeWord(w, dep);
-        try w.print(" start || {{\n{s}\techo \"{s}: cannot start {s}\" >&2\n{s}\treturn 1\n{s}}}\n", .{ indent, in.unit.name.full, dep, indent, indent });
+        try w.print(" start || {{\n{s}\techo \"{s}: cannot start\" ", .{ indent, in.unit.name.full });
+        try writeWord(w, dep);
+        try w.print(" >&2\n{s}\treturn 1\n{s}}}\n", .{ indent, indent });
     }
     for (in.deps.wants) |dep| {
         try w.print("{s}{s}/", .{ indent, in.script_dir });
@@ -280,4 +282,31 @@ fn writeScript(w: *Io.Writer, in: Input) Io.Writer.Error!void {
             try writeStateReload(w, in);
         },
     }
+}
+
+const testing = std.testing;
+const name_mod = @import("../../unit/name.zig");
+
+test "the name of a required script is quoted in the message of the start" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const u: model.Unit = .{ .name = try name_mod.parse(a, "foo.service"), .scope = .system };
+    const text = try script(a, .{
+        .unit = &u,
+        .service = "foo",
+        .script_dir = "/etc/init.d",
+        .mode = .daemon,
+        .deps = .{ .requires = &.{"dep\\"} },
+        .start_priority = 50,
+        .stop_priority = 50,
+        .term_timeout = 90,
+        .executor_path = "/usr/bin/fake-systemd",
+        .state_dir = "/run/fake-systemd",
+        .log_dir = "/var/log/fake-systemd/foo.service",
+        .main_pid_file = "/run/fake-systemd/foo.service.pid",
+        .exit_file = "/run/fake-systemd/foo.service.exit",
+    });
+    try testing.expect(std.mem.find(u8, text, "echo \"foo.service: cannot start\" 'dep\\' >&2") != null);
+    try testing.expect(std.mem.find(u8, text, "cannot start dep\\\"") == null);
 }

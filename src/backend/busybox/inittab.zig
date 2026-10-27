@@ -10,6 +10,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const execline = @import("../../unit/execline.zig");
+const core_block = @import("../../core/block.zig");
 
 pub const begin_marker = "# BEGIN fake-systemd";
 pub const end_marker = "# END fake-systemd";
@@ -90,22 +91,18 @@ fn blockService(command: []const u8, script_dir: []const u8, action_word: []cons
     return if (name.len == 0 or std.mem.findScalar(u8, name, '/') != null) null else name;
 }
 
-/// Services of the block, in the order they start.
+/// Services of the block, in the order they start; none when the file holds no valid block.
 pub fn enabledServices(gpa: Allocator, text: []const u8, script_dir: []const u8) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    var inside = false;
-    var lines = std.mem.splitScalar(u8, text, '\n');
+    const bounds = switch (core_block.locate(text, begin_marker, end_marker)) {
+        .block => |b| b,
+        .none, .malformed => return out.toOwnedSlice(gpa),
+    };
+    var lines = std.mem.splitScalar(u8, text[bounds.start..bounds.end], '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (std.mem.eql(u8, line, begin_marker)) {
-            inside = true;
-        } else if (std.mem.eql(u8, line, end_marker)) {
-            inside = false;
-        } else if (inside) {
-            const entry = parseEntry(line) orelse continue;
-            if (!std.mem.eql(u8, entry.action, "wait")) continue;
-            if (blockService(entry.command, script_dir, "start")) |name| try out.append(gpa, try gpa.dupe(u8, name));
-        }
+        const entry = parseEntry(raw) orelse continue;
+        if (!std.mem.eql(u8, entry.action, "wait")) continue;
+        if (blockService(entry.command, script_dir, "start")) |name| try out.append(gpa, try gpa.dupe(u8, name));
     }
     return out.toOwnedSlice(gpa);
 }
@@ -119,37 +116,17 @@ fn writeBlock(w: *std.Io.Writer, services: []const []const u8, script_dir: []con
 }
 
 /// `text` with the block listing `services`: replaced where it is, appended when the file has
-/// none, and dropped when `services` is empty.
-pub fn withServices(gpa: Allocator, text: []const u8, services: []const []const u8, script_dir: []const u8) Allocator.Error![]u8 {
+/// none, and dropped when `services` is empty. Bytes outside the block are kept; a file that
+/// does not hold exactly one block fails with `error.MalformedBlock` and `fault` set.
+pub fn withServices(gpa: Allocator, text: []const u8, services: []const []const u8, script_dir: []const u8, fault: *core_block.Fault) (core_block.Error || Allocator.Error)![]u8 {
     var aw: std.Io.Writer.Allocating = .init(gpa);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-    var placed = false;
-    var inside = false;
-    var rest = text;
-    while (rest.len > 0) {
-        const nl = std.mem.findScalar(u8, rest, '\n');
-        const line_raw = if (nl) |n| rest[0..n] else rest;
-        const line = std.mem.trim(u8, line_raw, " \t\r");
-        const full = if (nl) |n| rest[0 .. n + 1] else rest;
-        rest = if (nl) |n| rest[n + 1 ..] else "";
-        if (inside) {
-            if (std.mem.eql(u8, line, end_marker)) inside = false;
-            continue;
-        }
-        if (std.mem.eql(u8, line, begin_marker)) {
-            inside = true;
-            if (services.len > 0 and !placed) {
-                writeBlock(w, services, script_dir) catch return error.OutOfMemory;
-                placed = true;
-            }
-            continue;
-        }
-        w.writeAll(full) catch return error.OutOfMemory;
-        if (nl == null and full.len > 0) w.writeByte('\n') catch return error.OutOfMemory;
+    defer aw.deinit();
+    var text_block: ?[]const u8 = null;
+    if (services.len > 0) {
+        writeBlock(&aw.writer, services, script_dir) catch return error.OutOfMemory;
+        text_block = aw.written();
     }
-    if (services.len > 0 and !placed) writeBlock(w, services, script_dir) catch return error.OutOfMemory;
-    return aw.toOwnedSlice();
+    return core_block.replace(gpa, text, begin_marker, end_marker, text_block, fault);
 }
 
 const testing = std.testing;
@@ -217,7 +194,8 @@ test "the block is replaced in place, with the stops in the reverse order" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const out = try withServices(a, block, &.{ "db", "net", "app" }, "/etc/init.d");
+    var fault: core_block.Fault = undefined;
+    const out = try withServices(a, block, &.{ "db", "net", "app" }, "/etc/init.d", &fault);
     try testing.expectEqualStrings(
         \\::sysinit:/etc/init.d/rcS
         \\# BEGIN fake-systemd
@@ -237,8 +215,9 @@ test "a file without the block gets it at the end, and an empty list drops it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    var fault: core_block.Fault = undefined;
     const plain = "::sysinit:/etc/init.d/rcS\n::respawn:/sbin/getty 38400 tty1";
-    const added = try withServices(a, plain, &.{"app"}, "/etc/init.d");
+    const added = try withServices(a, plain, &.{"app"}, "/etc/init.d", &fault);
     try testing.expectEqualStrings(
         \\::sysinit:/etc/init.d/rcS
         \\::respawn:/sbin/getty 38400 tty1
@@ -248,8 +227,23 @@ test "a file without the block gets it at the end, and an empty list drops it" {
         \\# END fake-systemd
         \\
     , added);
-    try testing.expectEqualStrings("::sysinit:/etc/init.d/rcS\n::respawn:/sbin/getty 38400 tty1\n", try withServices(a, added, &.{}, "/etc/init.d"));
-    try testing.expectEqualStrings("", try withServices(a, "", &.{}, "/etc/init.d"));
-    try testing.expectEqualStrings("# BEGIN fake-systemd\n::wait:/etc/init.d/x start\n::shutdown:/etc/init.d/x stop\n# END fake-systemd\n", try withServices(a, "", &.{"x"}, "/etc/init.d"));
-    try testing.expectEqualStrings(block, try withServices(a, block, &.{ "net", "app" }, "/etc/init.d"));
+    try testing.expectEqualStrings("::sysinit:/etc/init.d/rcS\n::respawn:/sbin/getty 38400 tty1\n", try withServices(a, added, &.{}, "/etc/init.d", &fault));
+    try testing.expectEqualStrings("", try withServices(a, "", &.{}, "/etc/init.d", &fault));
+    try testing.expectEqualStrings("# BEGIN fake-systemd\n::wait:/etc/init.d/x start\n::shutdown:/etc/init.d/x stop\n# END fake-systemd\n", try withServices(a, "", &.{"x"}, "/etc/init.d", &fault));
+    try testing.expectEqualStrings(block, try withServices(a, block, &.{ "net", "app" }, "/etc/init.d", &fault));
+}
+
+test "a block that is not closed exactly once is not rewritten" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var fault: core_block.Fault = undefined;
+    const open = "::sysinit:/etc/init.d/rcS\n# BEGIN fake-systemd\n::wait:/etc/init.d/net start\n::respawn:/sbin/getty 38400 tty1\n";
+    try testing.expectError(error.MalformedBlock, withServices(a, open, &.{"app"}, "/etc/init.d", &fault));
+    try testing.expectEqual(@as(usize, 2), fault.line);
+    try testing.expectError(error.MalformedBlock, withServices(a, open, &.{}, "/etc/init.d", &fault));
+    const nested = "# BEGIN fake-systemd\n# BEGIN fake-systemd\n::wait:/etc/init.d/a start\n# END fake-systemd\n";
+    try testing.expectError(error.MalformedBlock, withServices(a, nested, &.{"app"}, "/etc/init.d", &fault));
+    try testing.expectEqual(@as(usize, 2), fault.line);
+    try testing.expectEqual(@as(usize, 0), (try enabledServices(a, open, "/etc/init.d")).len);
 }

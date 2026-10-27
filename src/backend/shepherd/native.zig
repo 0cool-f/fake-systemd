@@ -119,30 +119,13 @@ pub fn requirementsOf(gpa: Allocator, content: []const u8) Allocator.Error![]con
     return symbolsAfter(gpa, content, "#:requirement");
 }
 
-/// The `setpriv` switch in front of the executor of a generated service.
-pub const Wrapper = struct {
-    path: []const u8,
-    user: []const u8,
-    /// The group named in the file; null when it is looked up for the account.
-    group: ?[]const u8,
-};
-
-/// Reads the switch the renderer writes: `(list "<setpriv>" "--reuid=<user>" <regid> "--init-groups" ...`.
-pub fn wrapperOf(gpa: Allocator, content: []const u8) Allocator.Error!?Wrapper {
-    const at = std.mem.find(u8, content, "(list \"") orelse return null;
-    var i = at + "(list ".len;
-    const path = (try readString(gpa, content, &i)) orelse return null;
-    if (!std.mem.endsWith(u8, path, "setpriv")) return null;
-    i = skipSpace(content, i);
-    const reuid = (try readString(gpa, content, &i)) orelse return null;
-    const user = std.mem.cutPrefix(u8, reuid, "--reuid=") orelse return null;
-    i = skipSpace(content, i);
-    if (i < content.len and content[i] == '"') {
-        const regid = (try readString(gpa, content, &i)) orelse return null;
-        const group = std.mem.cutPrefix(u8, regid, "--regid=") orelse return null;
-        return .{ .path = path, .user = user, .group = group };
-    }
-    return .{ .path = path, .user = user, .group = null };
+/// Script of the shell that runs the executor of a generated service with the numeric ids of an
+/// account the executor cannot resolve, as the renderer writes it: `'("/bin/sh" "-c" "<script>" ...`.
+pub fn identityScriptOf(gpa: Allocator, content: []const u8) Allocator.Error!?[]const u8 {
+    const needle = "\"/bin/sh\" \"-c\" ";
+    const at = std.mem.find(u8, content, needle) orelse return null;
+    var i = at + needle.len;
+    return readString(gpa, content, &i);
 }
 
 // ---- status ----------------------------------------------------------------------------
@@ -279,17 +262,11 @@ test "a missing service is recognised" {
     try testing.expect(!isMissing("Status of foo:\n"));
 }
 
-test "the setpriv switch of a generated file is read back" {
+test "the script of the numeric identity of a generated file is read back" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const looked_up = "(apply (make-forkexec-constructor (list \"/usr/bin/setpriv\" \"--reuid=ldap\" (string-append \"--regid=\" (number->string (passwd:gid (getpw \"ldap\")))) \"--init-groups\" \"/x\")) args)";
-    const w = (try wrapperOf(a, looked_up)).?;
-    try testing.expectEqualStrings("/usr/bin/setpriv", w.path);
-    try testing.expectEqualStrings("ldap", w.user);
-    try testing.expect(w.group == null);
-    const named = (try wrapperOf(a, "(list \"/usr/bin/setpriv\" \"--reuid=ldap\" \"--regid=staff\" \"--init-groups\")")).?;
-    try testing.expectEqualStrings("staff", named.group.?);
-    try testing.expect(try wrapperOf(a, "'(\"/usr/bin/fake-systemd\")") == null);
-    try testing.expect(try wrapperOf(a, "(list \"/bin/sh\" \"--reuid=x\")") == null);
+    const file = "#:start (make-forkexec-constructor\n '(\"/bin/sh\" \"-c\" \"exec \\\"$0\\\" \\\"$@\\\" --uid \\\"$(id -u ldap)\\\"\" \"/x\" \"--exec\" \"foo.service\"))";
+    try testing.expectEqualStrings("exec \"$0\" \"$@\" --uid \"$(id -u ldap)\"", (try identityScriptOf(a, file)).?);
+    try testing.expect(try identityScriptOf(a, "'(\"/usr/bin/fake-systemd\")") == null);
 }

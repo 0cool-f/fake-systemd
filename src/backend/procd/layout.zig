@@ -71,10 +71,13 @@ pub const Found = struct {
 };
 
 /// The links of `service`.
-pub fn linksOf(ctx: *const core.Context, dirs: *const Dirs, service: []const u8) Allocator.Error![]const Found {
+pub fn linksOf(ctx: *const core.Context, dirs: *const Dirs, service: []const u8) ![]const Found {
     var out: std.ArrayList(Found) = .empty;
     const dir = linkDir(dirs);
-    const entries = ctx.fs.iterateDir(ctx.gpa, dir) catch return out.items;
+    const entries = ctx.fs.iterateDir(ctx.gpa, dir) catch |e| switch (e) {
+        error.FileNotFound, error.NotDir => return out.items,
+        else => return e,
+    };
     for (entries) |e| {
         const link = parseLink(e.name) orelse continue;
         if (!std.mem.eql(u8, link.name, service)) continue;

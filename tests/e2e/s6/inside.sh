@@ -441,7 +441,7 @@ ExecStart=/usr/bin/dirjob'
 printf '#!/bin/sh\nid >/tmp/e2e-ldapjob-id\n' >/usr/bin/dirjob
 chmod 755 /usr/bin/dirjob
 expect "enable of units for an account the executor cannot resolve" 0 "" systemctl enable e2e-ldap e2e-ldapjob
-check "the longrun uses setpriv" grep -Eq '^exec /(usr/)?bin/setpriv --reuid=svc-directory --regid="\$\(id -g svc-directory\)" --init-groups ' "$(pdir e2e-ldap)/run"
+check "the longrun uses setpriv" grep -Eq '^exec /(usr/)?bin/setpriv --reuid=svc-directory --regid="\$\(id -g -- svc-directory\)" --init-groups ' "$(pdir e2e-ldap)/run"
 if [ $is_rc = 1 ]; then
     check "the oneshot runs setpriv through a shell" grep -Eq '^sh -c "exec /(usr/)?bin/setpriv --reuid=svc-directory ' "$gen/e2e-ldapjob/up"
 fi

@@ -2,7 +2,7 @@
 # Unit: user-ldap.service
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:618fe1f6c334a70c
+# Body-Hash: xxh3:08886bc6288bae96
 # Generator: fake-systemd 0.1.0 66/1
 # fake-systemd flags: restarts
 [Main]
@@ -13,8 +13,7 @@ Options = ( !log )
 [Start]
 Timeout = 90000
 Execute = (#!/bin/sh
-mkdir -p /var/log/fake-systemd/user-ldap.service && chown svc-directory /var/log/fake-systemd/user-ldap.service
-exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --init-groups /usr/bin/fake-systemd --exec user-ldap.service --log
+exec /usr/bin/fake-systemd --exec user-ldap.service --log --uid "$(id -u -- svc-directory)" --gid "$(id -g -- svc-directory)" --groups "$(id -G -- svc-directory | tr ' ' ,)"
 )
 
 [Stop]

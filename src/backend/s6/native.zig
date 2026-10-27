@@ -217,16 +217,6 @@ pub fn parseFlags(text: []const u8) Flags {
     return out;
 }
 
-/// Name after `s6-svc -u <scandir>/` in a line of a generated plain s6 `run`.
-pub fn startedService(gpa: Allocator, line: []const u8) Allocator.Error!?[]const u8 {
-    const ws = @import("../../unit/execline.zig").splitWords(gpa, line) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
-    if (ws.len < 3 or !std.mem.eql(u8, ws[0], "s6-svc") or !std.mem.eql(u8, ws[1], "-u")) return null;
-    return std.fs.path.basename(ws[2]);
-}
-
 // ---- s6-svstat -----------------------------------------------------------------------------
 
 /// How the last run of a service ended, as recorded by its `finish` script.
@@ -401,16 +391,6 @@ test "generated flags are read back" {
     try testing.expectEqual(@as(?u64, 0), parseFlags("# fake-systemd flags: oneshot start-timeout=0\n").start_timeout_ms);
     const none = parseFlags("#!/bin/sh\nexec 2>&1\n");
     try testing.expect(!none.exec_stop and !none.remain);
-}
-
-test "started services come from s6-svc lines" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("b", (try startedService(a, "s6-svc -u /service/b 2>/dev/null")).?);
-    try testing.expectEqualStrings("wg@x", (try startedService(a, "s6-svc -u /home/u/svc/wg@x")).?);
-    try testing.expect(try startedService(a, "s6-svwait -u -t 5 /service/b || exit 1") == null);
-    try testing.expect(try startedService(a, "s6-svc -d /service/b") == null);
 }
 
 fn expectStatus(state: output.ActiveState, pid: ?u32, verdict: ?Verdict, text: []const u8) !void {

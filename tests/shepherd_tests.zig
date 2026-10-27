@@ -217,21 +217,18 @@ test "a user service lives in the configuration of the user and its executor tak
     try f.expectCall(0, &.{ "/usr/bin/fake-systemd", "--exec", "foo.service", "--user", "--phase", "reload" });
 }
 
-test "an account the executor cannot resolve is switched by setpriv, and without setpriv the unit is refused" {
+test "an account the executor cannot resolve is given to it as numeric ids that a shell looks up" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
     const t = &f.t;
     try addSvc(t, "ldap", "", "User=ldapuser");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap" }));
-    try h.expectContains(try f.scm("ldap"), "(list \"/usr/bin/setpriv\" \"--reuid=ldapuser\" (string-append \"--regid=\" (number->string (passwd:gid (getpw \"ldapuser\")))) \"--init-groups\" \"/usr/bin/fake-systemd\" \"--exec\" \"ldap.service\" \"--log\")");
+    try h.expectContains(try f.scm("ldap"), "'(\"/bin/sh\" \"-c\" \"exec \\\"$0\\\" \\\"$@\\\" --uid \\\"$(id -u -- ldapuser)\\\" --gid \\\"$(id -g -- ldapuser)\\\" --groups \\\"$(id -G -- ldapuser | tr ' ' ,)\\\"\" \"/usr/bin/fake-systemd\" \"--exec\" \"ldap.service\" \"--log\")");
+    try h.expectNotContains(try f.scm("ldap"), "setpriv");
     try addSvc(t, "appsvc", "", "User=app");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "appsvc" }));
     try h.expectContains(try f.scm("appsvc"), "'(\"/usr/bin/fake-systemd\" \"--exec\" \"appsvc.service\" \"--log\")");
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "ldap2", "", "User=ldapuser2");
-    try testing.expectEqual(@as(u8, 1), t.run(&.{ "enable", "ldap2" }));
-    try h.expectContains(t.stderr(), "setpriv is needed to switch to ldapuser2");
 }
 
 test "oneshots, remaining oneshots and hooks have their own shapes" {
@@ -471,7 +468,7 @@ test "reverting a service removes its link and generated file" {
     try testing.expectError(error.FileNotFound, t.fs.lstat(enabled ++ "/foo.scm"));
 }
 
-test "the reload of an account the executor cannot resolve runs behind the same switch" {
+test "the reload of an account the executor cannot resolve carries the same numeric ids" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -481,7 +478,35 @@ test "the reload of an account the executor cannot resolve runs behind the same 
     f.herd.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "reload", "ldap" }));
     try f.expectCalls(&.{
-        &.{ "id", "-g", "ldapuser" },
-        &.{ "/usr/bin/setpriv", "--reuid=ldapuser", "--regid=4242", "--init-groups", "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" },
+        &.{ "/bin/sh", "-c", "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"", "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" },
     });
+}
+
+test "two units that map to the same Shepherd name are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo-bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo-bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+}
+
+test "a service name with a backslash is refused, as it would close the symbol that names it" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/bs\\.service", "[Service]\nExecStart=/usr/bin/foo\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expect(t.run(&.{ "enable", "bs\\" }) != 0);
+    try h.expectContains(t.stderr(), "is not a name Shepherd can register");
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
 }

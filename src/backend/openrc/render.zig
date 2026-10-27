@@ -33,27 +33,6 @@ pub const Command = union(enum) {
     executor,
 };
 
-/// Switching of the account around a program.
-pub const Wrapper = union(enum) {
-    /// `setpriv`, which resolves the user and its groups through the system libc. Without a
-    /// group the primary group of the user is taken at run time; supplementary groups are
-    /// added to the groups of the user.
-    setpriv: struct {
-        user: []const u8,
-        group: ?[]const u8 = null,
-        supplementary: []const []const u8 = &.{},
-    },
-    /// `su -s /bin/sh`, which applies the groups of the user and needs no group arguments.
-    su: []const u8,
-};
-
-pub const Identity = union(enum) {
-    /// `command_user`, `user[:group]`: OpenRC switches through the system libc and applies the
-    /// supplementary groups of the user.
-    command_user: []const u8,
-    wrapper: Wrapper,
-};
-
 pub const Deps = struct {
     need: []const []const u8 = &.{},
     want: []const []const u8 = &.{},
@@ -79,14 +58,14 @@ pub const Input = struct {
     unit: *const model.Unit,
     mode: Mode,
     command: Command,
-    /// How a daemon (`supervised`, `background` and `forking` modes) switches account.
-    identity: ?Identity = null,
-    /// How calls of the executor from script functions switch account; null when the executor
-    /// does it or the unit has no account.
-    call_wrapper: ?Wrapper = null,
+    /// `command_user`, `user[:group]`: OpenRC switches to it through the system libc and applies the
+    /// supplementary groups of the user. Only for a command that is not the executor.
+    command_user: ?[]const u8 = null,
+    /// An account the executor cannot resolve: the executor stays root and takes the numeric ids
+    /// that the script looks up.
+    numeric: ?shell.Numeric = null,
     deps: Deps = .{},
     executor_path: []const u8,
-    setpriv_path: []const u8 = "/usr/bin/setpriv",
     logging: Logging = .pipe,
     /// Directory of the uniform log of the unit.
     log_dir: []const u8,
@@ -175,18 +154,7 @@ fn writeArgsAssignment(w: *Io.Writer, name: []const u8, text: []const u8) Io.Wri
     try w.writeByte('\n');
 }
 
-/// The flags of `setpriv` that set the account, each behind a space.
-fn setprivFlags(w: *Io.Writer, s: anytype) Io.Writer.Error!void {
-    try w.print(" --reuid={s} ", .{s.user});
-    if (s.group) |g| {
-        try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{s.user});
-    if (s.supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{s.user});
-    for (s.supplementary) |g| try w.print(",{s}", .{g});
-    try w.writeByte('"');
-}
-
+/// Words of the executor.
 fn executorWords(gpa: Allocator, in: Input, phase: ?[]const u8, stop_on_signal: bool) Allocator.Error![]const []const u8 {
     var words: std.ArrayList([]const u8) = .empty;
     try words.appendSlice(gpa, &.{ in.executor_path, "--exec", in.unit.name.full });
@@ -215,31 +183,21 @@ fn commandWords(gpa: Allocator, in: Input) Allocator.Error![]const []const u8 {
     };
 }
 
-/// `command` and `command_args` for the program that runs, with a `setpriv` wrapper in front
-/// when the identity needs one.
+/// `command` and `command_args` for the program that runs; an executor that is given the numeric
+/// identity of its account gets the flags last.
 fn writeCommandVars(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
     const words = commandWords(gpa, in) catch return error.WriteFailed;
     var args: Io.Writer.Allocating = .init(gpa);
     defer args.deinit();
-    const wrapper: ?Wrapper = if (in.identity) |ident| switch (ident) {
-        .wrapper => |wrap| wrap,
-        .command_user => null,
-    } else null;
-    if (wrapper != null and wrapper.? == .setpriv) {
-        try w.writeAll("command=");
-        try writeWord(w, in.setpriv_path, false);
-        try w.writeByte('\n');
-        try setprivFlags(&args.writer, wrapper.?.setpriv);
-        try args.writer.writeAll(" -- ");
-        try writeWords(&args.writer, words, true);
-        return writeArgsAssignment(w, "command_args", std.mem.trimStart(u8, args.written(), " "));
-    }
     try w.writeAll("command=");
     try writeWord(w, words[0], true);
     try w.writeByte('\n');
-    if (words.len == 1) return;
     try writeWords(&args.writer, words[1..], true);
-    try writeArgsAssignment(w, "command_args", args.written());
+    if (in.command == .executor) {
+        if (in.numeric) |n| try shell.writeNumericFlags(&args.writer, n);
+    }
+    if (args.written().len == 0) return;
+    try writeArgsAssignment(w, "command_args", std.mem.trimStart(u8, args.written(), " "));
 }
 
 fn writeSeconds(w: *Io.Writer, usec: u64) Io.Writer.Error!void {
@@ -386,65 +344,22 @@ fn writeDepend(w: *Io.Writer, deps: Deps) Io.Writer.Error!void {
     try w.writeAll("}\n");
 }
 
-/// A call of the executor from a script function, wrapped in the account switch when needed.
+/// A call of the executor from a script function.
 fn writeCall(w: *Io.Writer, gpa: Allocator, in: Input, phase: ?[]const u8) Io.Writer.Error!void {
     const words = executorWords(gpa, in, phase, false) catch return error.WriteFailed;
-    const wrap = in.call_wrapper orelse return writeWords(w, words, false);
-    switch (wrap) {
-        .setpriv => |s| {
-            try writeWord(w, in.setpriv_path, false);
-            try setprivFlags(w, s);
-            try w.writeByte(' ');
-            try writeWords(w, words, false);
-        },
-        .su => |user| {
-            var inner: Io.Writer.Allocating = .init(gpa);
-            defer inner.deinit();
-            try inner.writer.writeAll("exec ");
-            try writeWords(&inner.writer, words, false);
-            try w.writeAll("su -s /bin/sh -c ");
-            try writeWord(w, inner.written(), false);
-            try w.writeByte(' ');
-            try writeWord(w, user, false);
-        },
-    }
+    try writeWords(w, words, false);
+    if (in.numeric) |n| try shell.writeNumericFlags(w, n);
 }
 
-/// Account the service runs as, for the files its executor and logger write.
-fn identityOwner(in: Input) ?[]const u8 {
-    const ident = in.identity orelse return null;
-    return switch (ident) {
-        .command_user => |spec| spec,
-        .wrapper => |wrap| switch (wrap) {
-            .setpriv => |s| s.user,
-            .su => |user| user,
-        },
-    };
-}
-
-/// Prepares what root has to create for a service whose executor or logger runs as an account:
-/// the log directory, and in `background` mode the files the executor rewrites in place.
+/// Prepares the log directory of a service whose logger runs as the account of its native command.
 fn writeStartPre(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    const owner = identityOwner(in);
     try w.writeAll("start_pre() {\n\tmkdir -p ");
     try writeWord(w, in.log_dir, false);
-    if (in.mode == .background and owner != null) {
-        try w.writeByte(' ');
-        try writeWord(w, std.fs.path.dirname(in.exec_pid_file) orelse "/run", false);
-    }
-    if (owner) |o| {
+    if (in.command_user) |o| {
         try w.writeAll(" &&\n\t\tcheckpath -q -d -m 0755 -o ");
         try writeWord(w, o, false);
         try w.writeByte(' ');
         try writeWord(w, in.log_dir, false);
-        if (in.mode == .background) {
-            for ([_][]const u8{ in.exit_file, in.exec_pid_file }) |file| {
-                try w.writeAll(" &&\n\t\tcheckpath -q -f -m 0644 -o ");
-                try writeWord(w, o, false);
-                try w.writeByte(' ');
-                try writeWord(w, file, false);
-            }
-        }
     }
     try w.writeAll("\n}\n");
 }
@@ -452,8 +367,8 @@ fn writeStartPre(w: *Io.Writer, in: Input) Io.Writer.Error!void {
 fn needsStartPre(in: Input) bool {
     return switch (in.mode) {
         .oneshot, .none, .forking => false,
-        .background => in.identity != null and in.unit.scope == .system,
-        .supervised => in.logging == .file or (if (in.identity) |ident| ident == .command_user and in.unit.scope == .system else false),
+        .background => false,
+        .supervised => in.logging == .file or (in.command_user != null and in.unit.scope == .system),
     };
 }
 
@@ -530,14 +445,11 @@ fn writeScript(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
         .supervised, .background, .forking => {
             if (in.mode == .supervised) try w.writeAll("supervisor=supervise-daemon\n");
             try writeCommandVars(w, gpa, in);
-            if (in.identity) |ident| switch (ident) {
-                .command_user => |spec| {
-                    try w.writeAll("command_user=");
-                    try writeWord(w, spec, false);
-                    try w.writeByte('\n');
-                },
-                .wrapper => {},
-            };
+            if (in.command_user) |spec| {
+                try w.writeAll("command_user=");
+                try writeWord(w, spec, false);
+                try w.writeByte('\n');
+            }
             if (in.mode == .background) try w.writeAll("command_background=yes\n");
             if (in.pidfile) |p| {
                 try w.writeAll("pidfile=");

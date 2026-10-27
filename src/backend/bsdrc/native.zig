@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Reading BSD-style rc files: the command of an rc script, the dependency lines a generated
-//! script carries, the managed block of a hook script, and a pid file.
+//! Reading BSD-style rc files: the command of an rc script, the managed block of a hook script,
+//! and a pid file.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const script = @import("script.zig");
+const core_block = @import("../../core/block.zig");
 
 // ---- command of a script -----------------------------------------------------------------
 
@@ -108,59 +109,26 @@ pub fn extractCommand(gpa: Allocator, content: []const u8) Allocator.Error!?[]co
     return null;
 }
 
-// ---- dependency lines of a generated script ----------------------------------------------
-
-/// What a generated script says about its place in the boot order, from the comment lines
-/// `# Requires:`, `# Wants:`, `# After:` and `# Before:`.
-pub const Relations = struct {
-    requires: []const []const u8 = &.{},
-    wants: []const []const u8 = &.{},
-    after: []const []const u8 = &.{},
-    before: []const []const u8 = &.{},
-};
-
-fn splitWords(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.tokenizeAny(u8, text, " \t");
-    while (it.next()) |w| try out.append(gpa, w);
-    return out.toOwnedSlice(gpa);
-}
-
-pub fn parseRelations(gpa: Allocator, content: []const u8) Allocator.Error!Relations {
-    var r: Relations = .{};
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw| {
-        if (raw.len > 0 and raw[0] != '#') {
-            // The header ends with the first line of code.
-            if (raw[0] != ' ') break;
-        }
-        const line = std.mem.cutPrefix(u8, raw, "# ") orelse continue;
-        if (std.mem.cutPrefix(u8, line, "Requires:")) |v| r.requires = try splitWords(gpa, v);
-        if (std.mem.cutPrefix(u8, line, "Wants:")) |v| r.wants = try splitWords(gpa, v);
-        if (std.mem.cutPrefix(u8, line, "After:")) |v| r.after = try splitWords(gpa, v);
-        if (std.mem.cutPrefix(u8, line, "Before:")) |v| r.before = try splitWords(gpa, v);
-    }
-    return r;
-}
-
 // ---- managed block of a hook script -------------------------------------------------------
 
 pub const block_begin = "# BEGIN fake-systemd";
 pub const block_end = "# END fake-systemd";
 pub const hook_shebang = "#!/bin/sh\n";
 
-fn blockBounds(content: []const u8) ?struct { start: usize, end: usize } {
-    var at: usize = 0;
-    var start: ?usize = null;
-    while (at < content.len) {
-        const eol = std.mem.findScalarPos(u8, content, at, '\n') orelse content.len;
-        const line = std.mem.trimEnd(u8, content[at..eol], " \t\r");
-        const next = @min(eol + 1, content.len);
-        if (start == null and std.mem.eql(u8, line, block_begin)) start = at;
-        if (start != null and std.mem.eql(u8, line, block_end)) return .{ .start = start.?, .end = next };
-        at = next;
-    }
-    return null;
+/// Bounds of the managed block; null when there is none, `error.MalformedBlock` unless the
+/// script holds exactly one BEGIN followed by one END.
+fn blockBounds(content: []const u8) core_block.Error!?core_block.Bounds {
+    var fault: core_block.Fault = undefined;
+    return core_block.find(content, block_begin, block_end, &fault);
+}
+
+/// Why the managed block of a hook script is not exactly one BEGIN followed by one END, null
+/// when it is valid or absent; callers name the file in the error they print.
+pub fn blockFault(content: []const u8) ?core_block.Fault {
+    return switch (core_block.locate(content, block_begin, block_end)) {
+        .malformed => |f| f,
+        else => null,
+    };
 }
 
 /// True when `content` holds nothing but a shebang line and blank lines.
@@ -181,8 +149,9 @@ fn onlyShebang(content: []const u8) bool {
 
 /// The text of a hook script with its managed block holding `commands`, one line each; null
 /// when the script should not exist: no commands and nothing else in it. `content` is the
-/// current text, null for a script that does not exist.
-pub fn withBlock(gpa: Allocator, content: ?[]const u8, commands: []const []const u8) Allocator.Error!?[]const u8 {
+/// current text, null for a script that does not exist. A script that does not hold exactly one
+/// block fails with `error.MalformedBlock` and is left as it is.
+pub fn withBlock(gpa: Allocator, content: ?[]const u8, commands: []const []const u8) (core_block.Error || Allocator.Error)!?[]const u8 {
     var block: std.ArrayList(u8) = .empty;
     if (commands.len > 0) {
         try block.appendSlice(gpa, block_begin);
@@ -199,7 +168,7 @@ pub fn withBlock(gpa: Allocator, content: ?[]const u8, commands: []const []const
         return try std.mem.concat(gpa, u8, &.{ hook_shebang, "\n", block.items });
     };
     var out: std.ArrayList(u8) = .empty;
-    if (blockBounds(text)) |b| {
+    if (try blockBounds(text)) |b| {
         var head = text[0..b.start];
         // Dropping the block also drops the blank line that set it apart.
         if (commands.len == 0 and std.mem.endsWith(u8, head, "\n\n")) head = head[0 .. head.len - 1];
@@ -225,7 +194,7 @@ pub fn parsePid(text: []const u8) ?u32 {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     const end = std.mem.findAny(u8, trimmed, " \t\r\n") orelse trimmed.len;
     const pid = std.fmt.parseInt(u32, trimmed[0..end], 10) catch return null;
-    return if (pid == 0) null else pid;
+    return if (pid <= 1) null else pid;
 }
 
 /// Name `pgrep -x` matches for a program: the kernel keeps the first 15 characters.
@@ -326,16 +295,6 @@ test "restart functions are not the start function" {
     _ = try extract("");
 }
 
-test "the relation lines of a generated script are read from its header" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const r = try parseRelations(arena.allocator(), "#!/bin/sh\n# Unit: a.service\n# Requires: b c\n# Wants: d\n# After: e\n# Before: f g\n\nPATH=/bin\n# Requires: late\n");
-    try expectWords(&.{ "b", "c" }, r.requires);
-    try expectWords(&.{"d"}, r.wants);
-    try expectWords(&.{"e"}, r.after);
-    try expectWords(&.{ "f", "g" }, r.before);
-}
-
 test "a block is appended, replaced and removed, and an empty hook script goes away" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -359,6 +318,20 @@ test "pid files and process names" {
     try testing.expectEqual(@as(?u32, 42), parsePid("42\n"));
     try testing.expectEqual(@as(?u32, 7), parsePid(" 7 extra\n"));
     try testing.expectEqual(@as(?u32, null), parsePid("0\n"));
+    try testing.expectEqual(@as(?u32, null), parsePid("1\n"));
     try testing.expectEqual(@as(?u32, null), parsePid("x"));
     try testing.expectEqualStrings("a-very-long-nam", processName("/usr/sbin/a-very-long-name-daemon"));
+}
+
+test "a hook script whose block is not closed exactly once is not rewritten" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const open = "#!/bin/sh\necho mine\n# BEGIN fake-systemd\nx start\necho user\n";
+    try testing.expectError(error.MalformedBlock, withBlock(a, open, &.{"y start"}));
+    try testing.expectError(error.MalformedBlock, withBlock(a, open, &.{}));
+    try testing.expectEqual(@as(usize, 3), blockFault(open).?.line);
+    const twice = "# BEGIN fake-systemd\na\n# END fake-systemd\n# BEGIN fake-systemd\nb\n# END fake-systemd\n";
+    try testing.expectError(error.MalformedBlock, withBlock(a, twice, &.{"y start"}));
+    try testing.expect(blockFault("#!/bin/sh\n") == null);
 }

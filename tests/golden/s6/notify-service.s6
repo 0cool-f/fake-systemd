@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0f0e83045c2cd8ca
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 exec 2>&1
 exec /usr/bin/fake-systemd --exec notify-service.service
 === finish 0755
@@ -15,7 +15,7 @@ exec /usr/bin/fake-systemd --exec notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -31,7 +31,7 @@ s6-svc -O .
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:f044e17008c891d5
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 exec /usr/bin/fake-systemd --log notify-service.service
 === timeout-kill 0644
 45000
@@ -42,6 +42,6 @@ SIGINT
 Unit: notify-service.service
 Source: /usr/lib/systemd/system/notify-service.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6/1
+Generator: fake-systemd 0.1.0 s6/2
 Body-Hash: timeout-kill xxh3:182a3cb1bcc392ef
 Body-Hash: down-signal xxh3:f7cb5889c2a198c7

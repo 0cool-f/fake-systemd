@@ -3,7 +3,7 @@
 # Unit: admin-override.service
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:8ef923fb58a8b15a
+# Body-Hash: xxh3:369f176beced1240
 # Generator: fake-systemd 0.1.0 sysvinit/1
 ### BEGIN INIT INFO
 # Provides:          admin-override
@@ -24,7 +24,8 @@ stop_wait=100
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
-	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+	case $_pid in ''|*[!0-9]*) return 1 ;; esac
+	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
 }
 
 do_start() {

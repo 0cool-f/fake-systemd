@@ -19,6 +19,9 @@ pub const runtime_dir = "/run/finit/system";
 pub const conf_suffix = ".conf";
 /// Suffix of the script that finit runs after the service stopped.
 pub const post_suffix = ".stop-post";
+/// Suffix of the script that runs the executor with the numeric ids of an account that it cannot
+/// resolve.
+pub const exec_suffix = ".exec";
 
 /// An instance becomes `name-instance`, because `@` in a finit identity selects a template.
 pub fn serviceName(gpa: Allocator, name: name_mod.Name) Allocator.Error![]const u8 {
@@ -31,12 +34,13 @@ pub fn serviceName(gpa: Allocator, name: name_mod.Name) Allocator.Error![]const 
     return out.toOwnedSlice(gpa);
 }
 
-/// Service a generated file belongs to: the `.conf` file and the stop-post script of a service
-/// share its name.
+/// Service a generated file belongs to: the `.conf` file and the scripts of a service share its
+/// name.
 pub fn serviceOfFile(path: []const u8) []const u8 {
     const base = std.fs.path.basename(path);
     if (std.mem.cutSuffix(u8, base, conf_suffix)) |s| return s;
     if (std.mem.cutSuffix(u8, base, post_suffix)) |s| return s;
+    if (std.mem.cutSuffix(u8, base, exec_suffix)) |s| return s;
     return base;
 }
 
@@ -73,6 +77,11 @@ pub fn runtimePath(gpa: Allocator, service: []const u8) Allocator.Error![]const 
 /// Path of the stop-post script of `service`, next to its `.conf` file.
 pub fn postScriptPath(gpa: Allocator, dirs: *const Dirs, service: []const u8) Allocator.Error![]const u8 {
     return std.fs.path.join(gpa, &.{ try availableDir(gpa, dirs), try std.fmt.allocPrint(gpa, "{s}{s}", .{ service, post_suffix }) });
+}
+
+/// Path of the script that runs the executor of `service` with the numeric ids of its account.
+pub fn execScriptPath(gpa: Allocator, dirs: *const Dirs, service: []const u8) Allocator.Error![]const u8 {
+    return std.fs.path.join(gpa, &.{ try availableDir(gpa, dirs), try std.fmt.allocPrint(gpa, "{s}{s}", .{ service, exec_suffix }) });
 }
 
 /// Directories whose `.conf` files define services: loaded at boot (`rcsd`, `enabled`) or on

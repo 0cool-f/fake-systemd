@@ -20,6 +20,13 @@ pub const Parsed = struct {
     record_exit: bool = false,
     /// `--exec` only: the executor detaches from its caller and records its own pid.
     daemon: bool = false,
+    /// `--exec` only: the service manager has set the identity, so `User=` and `Group=` that do not resolve are not refused.
+    identity_set: bool = false,
+    /// `--exec` only: the numeric identity of the service, for accounts that `/etc/passwd` does
+    /// not list. The executor, as root, switches to it itself.
+    uid: ?u32 = null,
+    gid: ?u32 = null,
+    groups: ?[]const u32 = null,
     /// Filesystem root for units, accounts, directories and logs; defaults to `/`.
     root: ?[]const u8 = null,
     /// Logger only: size at which `current` is rotated, in bytes.
@@ -34,7 +41,7 @@ pub const Result = union(enum) {
 };
 
 pub const usage =
-    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--log] [--record-exit] [--daemon] [--root DIR]
+    \\usage: fake-systemd --exec <unit> [--user] [--phase start|stop|reload|stop-post|stop-main] [--stop-on-signal] [--log] [--record-exit] [--daemon] [--identity-set] [--uid N] [--gid N] [--groups N,N] [--root DIR]
     \\       fake-systemd --log <unit> [--user] [--root DIR] [--max-size BYTES] [--keep N]
     \\
 ;
@@ -72,6 +79,20 @@ pub fn parse(gpa: Allocator, args: []const []const u8) Allocator.Error!Result {
             parsed.record_exit = true;
         } else if (mode == .exec and std.mem.eql(u8, a, "--daemon")) {
             parsed.daemon = true;
+        } else if (mode == .exec and std.mem.eql(u8, a, "--identity-set")) {
+            parsed.identity_set = true;
+        } else if (mode == .exec and std.mem.eql(u8, a, "--uid")) {
+            const v = value(args, &i) orelse return .{ .err = "--uid needs a value" };
+            parsed.uid = std.fmt.parseInt(u32, v, 10) catch return .{ .err = "invalid --uid" };
+        } else if (mode == .exec and std.mem.eql(u8, a, "--gid")) {
+            const v = value(args, &i) orelse return .{ .err = "--gid needs a value" };
+            parsed.gid = std.fmt.parseInt(u32, v, 10) catch return .{ .err = "invalid --gid" };
+        } else if (mode == .exec and std.mem.eql(u8, a, "--groups")) {
+            const v = value(args, &i) orelse return .{ .err = "--groups needs a value" };
+            var list: std.ArrayList(u32) = .empty;
+            var it = std.mem.tokenizeScalar(u8, v, ',');
+            while (it.next()) |g| try list.append(gpa, std.fmt.parseInt(u32, g, 10) catch return .{ .err = "invalid --groups" });
+            parsed.groups = try list.toOwnedSlice(gpa);
         } else if (mode == .exec and std.mem.eql(u8, a, "--phase")) {
             const v = value(args, &i) orelse return .{ .err = "--phase needs a value" };
             parsed.phase = std.meta.stringToEnum(executor.Phase, v) orelse
@@ -91,6 +112,7 @@ pub fn parse(gpa: Allocator, args: []const []const u8) Allocator.Error!Result {
     }
     if (!have_unit) return .{ .err = "missing unit name" };
     if (parsed.daemon and parsed.phase != .start) return .{ .err = "--daemon applies to the start phase only" };
+    if (parsed.identity_set and (parsed.uid != null or parsed.gid != null or parsed.groups != null)) return .{ .err = "--identity-set excludes --uid, --gid and --groups" };
     return .{ .ok = parsed };
 }
 
@@ -130,6 +152,7 @@ test "exec arguments" {
     try std.testing.expectEqual(executor.Phase.start, d.phase);
     try std.testing.expectEqual(core.Scope.system, d.scope);
     try std.testing.expect((try expectOk(&.{ "--exec", "x", "--daemon", "--log" })).daemon and !d.daemon);
+    try std.testing.expect((try expectOk(&.{ "--exec", "x", "--identity-set" })).identity_set and !d.identity_set);
 }
 
 test "log arguments" {
@@ -149,9 +172,45 @@ test "argument errors" {
     try expectErr(&.{ "--log", "a", "--stop-on-signal" }, "unknown option '--stop-on-signal'");
     try expectErr(&.{ "--log", "a", "--record-exit" }, "unknown option '--record-exit'");
     try expectErr(&.{ "--log", "a", "--daemon" }, "unknown option '--daemon'");
+    try expectErr(&.{ "--log", "a", "--identity-set" }, "unknown option '--identity-set'");
     try expectErr(&.{ "--exec", "a", "--daemon", "--phase", "stop" }, "--daemon applies to the start phase only");
     try expectErr(&.{ "--log", "a", "--max-size", "x" }, "invalid --max-size");
     try expectErr(&.{"--other"}, "expected --exec or --log");
     try std.testing.expect(isServiceCommand(&.{ "--log", "x" }));
     try std.testing.expect(!isServiceCommand(&.{"status"}));
+}
+
+/// The executor request that `parsed` describes.
+pub fn request(p: Parsed) executor.Request {
+    return .{
+        .unit = p.unit,
+        .phase = p.phase,
+        .stop_on_signal = p.stop_on_signal,
+        .log = p.log,
+        .record_exit = p.record_exit,
+        .identity_set = p.identity_set,
+        .identity = if (p.uid != null or p.gid != null or p.groups != null) .{ .uid = p.uid, .gid = p.gid, .groups = p.groups } else null,
+    };
+}
+
+test "numeric identity arguments" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const parsed = try parse(arena.allocator(), &.{ "--exec", "x", "--uid", "1500", "--gid", "1501", "--groups", "1502,1503" });
+    const p = parsed.ok;
+    try std.testing.expectEqual(@as(?u32, 1500), p.uid);
+    try std.testing.expectEqual(@as(?u32, 1501), p.gid);
+    try std.testing.expectEqualSlices(u32, &.{ 1502, 1503 }, p.groups.?);
+    const r = request(p);
+    try std.testing.expectEqual(@as(?u32, 1500), r.identity.?.uid);
+    try std.testing.expectEqualSlices(u32, &.{ 1502, 1503 }, r.identity.?.groups.?);
+    const none = (try parse(arena.allocator(), &.{ "--exec", "x", "--groups", "" })).ok;
+    try std.testing.expectEqual(@as(usize, 0), none.groups.?.len);
+    try std.testing.expect(request((try parse(arena.allocator(), &.{ "--exec", "x" })).ok).identity == null);
+    try std.testing.expect(request((try parse(arena.allocator(), &.{ "--exec", "x", "--identity-set" })).ok).identity_set);
+    try expectErr(&.{ "--exec", "x", "--uid", "-1" }, "invalid --uid");
+    try expectErr(&.{ "--exec", "x", "--uid" }, "--uid needs a value");
+    try expectErr(&.{ "--exec", "x", "--groups", "a" }, "invalid --groups");
+    try expectErr(&.{ "--exec", "x", "--identity-set", "--uid", "1" }, "--identity-set excludes --uid, --gid and --groups");
+    try expectErr(&.{ "--log", "x", "--uid", "1" }, "unknown option '--uid'");
 }

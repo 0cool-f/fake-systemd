@@ -340,7 +340,7 @@ test "dependencies: required scripts fail the start, wanted ones do not, and STA
     const body = try f.script("a");
     try h.expectContains(body, "\n# Requires: b\n# Wants: c\n# After: d\n# Before: e\n");
     try h.expectContains(body, "\nSTART=61\nSTOP=39\n");
-    try h.expectContains(body, "\nstart_service() {\n\t/etc/init.d/b start || {\n\t\techo \"a.service: cannot start b\" >&2\n\t\treturn 1\n\t}\n\t/etc/init.d/c start || :\n\tprocd_open_instance\n");
+    try h.expectContains(body, "\nstart_service() {\n\t/etc/init.d/b start || {\n\t\techo \"a.service: cannot start\" b >&2\n\t\treturn 1\n\t}\n\t/etc/init.d/c start || :\n\tprocd_open_instance\n");
     // The scripts of the units it pulls in are generated and not enabled.
     for ([_][]const u8{ "b", "c" }) |dep| {
         try testing.expect(t.exists(try std.fmt.allocPrint(t.a(), "{s}/{s}", .{ init_d, dep })));
@@ -602,4 +602,67 @@ fn runEntry(e: world.Entry) !void {
 
 test "corpus translates to the golden procd scripts" {
     for (world.entries("procd", "procd")) |e| try runEntry(e);
+}
+
+test "a stop link of a native script whose file is gone is left alone, one of a removed generated script goes" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try f.link("K90nativegone", "nativegone");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "foo" }));
+    try testing.expect(f.hasLink("K50foo"));
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!f.hasLink("K50foo"));
+    try testing.expect(f.hasLink("K90nativegone"));
+}
+
+test "two units that map to the same script name are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "foo.bar", "", "");
+    try addSvc(t, "foo@", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo.bar" }));
+    try testing.expect(t.run(&.{ "enable", "foo@bar" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(init_d ++ "/foo.bar"), "# Unit: foo.bar.service\n");
+}
+
+test "daemon-reload with a lost index still removes the stop link of our removed script and keeps a native one" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try f.link("K90nativegone", "nativegone");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "foo" }));
+    try testing.expect(f.hasLink("K50foo"));
+    try t.fs.deleteFile("/var/lib/fake-systemd/procd/index");
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!f.hasLink("K50foo"));
+    try testing.expect(f.hasLink("K90nativegone"));
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "a script that cannot be read in full is an error, and disable removes no link of it" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    t.ctx.offline = true;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    const file = try t.fs.root.openFile(testing.io, "etc/init.d/foo", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, (1 << 20) + 1)));
+    try testing.expect(t.run(&.{ "disable", "foo" }) != 0);
+    try testing.expect(f.hasLink("S50foo") and f.hasLink("K50foo"));
 }

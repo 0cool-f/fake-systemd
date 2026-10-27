@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/user/user-unit.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:c5f250d5f722c404
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
 exec /usr/bin/clipd --watch
 === finish 0755
@@ -15,7 +15,7 @@ exec /usr/bin/clipd --watch
 # Source: /usr/lib/systemd/user/user-unit.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:4383fe9580049a7d
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -35,5 +35,5 @@ fi
 # Source: /usr/lib/systemd/user/user-unit.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:11a6d221f98f6011
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log user-unit.service --user

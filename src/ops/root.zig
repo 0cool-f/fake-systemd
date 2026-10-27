@@ -17,6 +17,7 @@ pub const query = @import("query.zig");
 pub const reload = @import("reload.zig");
 pub const edit = @import("edit.zig");
 pub const preset = @import("preset.zig");
+pub const pending = @import("pending.zig");
 pub const journal = @import("journal.zig");
 pub const journal_time = @import("journal_time.zig");
 pub const timers = @import("timers.zig");
@@ -53,6 +54,14 @@ fn ignoredNotice(ctx: *core.Context, req: cli.systemctl.Request) void {
         w.print("{s}--{s}", .{ if (i > 0) " " else "", o.name }) catch break;
     }
     ctx.diag.info("accepted but ignored options: {s}", .{w.buffered()});
+}
+
+/// Verbs that write units or the index, directly or by translating a unit on the way.
+fn needsTrustedConfig(verb: Verb) bool {
+    return verb.mutates() or switch (verb) {
+        .start, .restart, .try_restart, .reload_or_restart, .try_reload_or_restart => true,
+        else => false,
+    };
 }
 
 fn dispatch(s: *Session, verb: Verb) !u8 {
@@ -114,6 +123,13 @@ fn systemctlInner(ctx: *core.Context, deps: Deps, req: cli.systemctl.Request) u8
         .run => {},
     }
     ignoredNotice(ctx, req);
+    if (req.command) |command| switch (command) {
+        .known => |verb| if (ctx.config.load_error) |problem| if (needsTrustedConfig(verb)) {
+            ctx.diag.err("refusing to run '{s}': the configuration is not usable: {s}", .{ verb.name(), problem });
+            return Exit.failure;
+        },
+        .unknown => {},
+    };
     var s = Session.init(ctx, deps, req) catch |e| {
         ctx.diag.err("cannot start: {t}", .{e});
         return Exit.failure;
@@ -125,6 +141,7 @@ fn systemctlInner(ctx: *core.Context, deps: Deps, req: cli.systemctl.Request) u8
         .known => |verb| {
             s.runtime_verb = !isQuery(verb);
             code = dispatch(&s, verb) catch |e| blk: {
+                if (e == error.UnitFileTooLarge and units.reportOversized(&s)) break :blk Exit.failure;
                 ctx.diag.err("{s}: {t}", .{ verb.name(), e });
                 break :blk Exit.failure;
             };
@@ -171,7 +188,8 @@ pub fn journalctl(ctx: *core.Context, deps: Deps, req: cli.journalctl.Request) u
         .help => deps.out.writeAll(journalctl_help) catch return Exit.failure,
         .version => versionText(deps.out, deps.backend.name()) catch return Exit.failure,
         .run => {
-            const code = journal.show(ctx, .{ .out = deps.out, .runner = deps.runner, .detected = deps.detected }, req);
+            const tty = Io.File.stdout().isTty(ctx.io) catch false;
+            const code = journal.show(ctx, .{ .out = deps.out, .runner = deps.runner, .detected = deps.detected, .tty = tty }, req);
             deps.out.flush() catch |e| ctx.diag.err("cannot write standard output: {t}", .{e});
             return code;
         },
@@ -196,5 +214,5 @@ pub fn journalctlArgs(ctx: *core.Context, deps: Deps, args: []const []const u8) 
 
 test {
     std.testing.refAllDecls(@This());
-    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset, journal, journal_time, timers }) |m| std.testing.refAllDecls(m);
+    inline for (.{ Session, pipeline, native, units, lifecycle, runtime, query, reload, edit, preset, pending, journal, journal_time, timers }) |m| std.testing.refAllDecls(m);
 }

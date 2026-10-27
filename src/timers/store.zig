@@ -33,11 +33,15 @@ pub const Txn = struct {
     lock: index_pkg.lock.Lock,
     idx: Index,
     exclusive: bool,
+    /// The file held no usable index (missing, unusable or newer): the index in memory is empty
+    /// and is never saved over it; `daemon-reload` rebuilds it.
+    unusable: bool = false,
 
     /// Saves the index when the lock is exclusive, then releases the lock.
     pub fn commit(t: *Txn) !void {
         defer t.release();
         if (!t.exclusive) return;
+        if (t.unusable) return t.store.ctx.diag.info("the index is missing or unusable, the timer state is not saved until daemon-reload rebuilds it", .{});
         const gpa = t.store.ctx.gpa;
         try t.idx.save(gpa, t.store.ctx.fs.*, try t.store.layout.indexPath(gpa));
     }
@@ -61,7 +65,7 @@ pub fn begin(st: Store, exclusive: bool) !Txn {
     );
     errdefer lock.release();
     const loaded = try Index.load(gpa, st.ctx.fs.*, st.ctx.diag, try st.layout.indexPath(gpa), st.backend_name, st.generator);
-    return .{ .store = st, .lock = lock, .idx = loaded.index, .exclusive = exclusive };
+    return .{ .store = st, .lock = lock, .idx = loaded.index, .exclusive = exclusive, .unusable = loaded.status.needsRebuild() };
 }
 
 /// The per-service job lock of `--run-job`; null when another run holds it.

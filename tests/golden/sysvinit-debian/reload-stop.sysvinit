@@ -3,7 +3,7 @@
 # Unit: reload-stop.service
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:dd78231450911a2a
+# Body-Hash: xxh3:80ac2eae40b7f1b8
 # Generator: fake-systemd 0.1.0 sysvinit/1
 ### BEGIN INIT INFO
 # Provides:          reload-stop
@@ -24,7 +24,8 @@ stop_wait=100
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
-	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+	case $_pid in ''|*[!0-9]*) return 1 ;; esac
+	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
 }
 
 do_start() {

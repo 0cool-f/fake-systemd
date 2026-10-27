@@ -184,8 +184,9 @@ service does not depend on what `start-stop-daemon` can do (the one of dpkg can 
 - A service with `ExecStop=` runs under the executor, which stays resident and runs the stop commands
   when it gets SIGTERM, so they run on every stop: `systemctl stop`, a runlevel change, a shutdown.
 - `User=` and `Group=` use `command_user` under `supervise-daemon`, which applies the groups of the
-  account, and `setpriv` in front of the executor for the others. The account that the executor cannot
-  read from `/etc/passwd` gets a log directory it owns, because the logger runs as it.
+  account. An account the executor cannot read from `/etc/passwd` (LDAP, sssd) reaches the executor as
+  numeric ids (`--uid`, `--gid`, `--groups`) that the script looks up with `id` and `getent`; the
+  executor stays root and switches itself.
 - OpenRC reads dependencies from a cache that it does not rebuild when a script appears, so `start` and
   `restart` run `rc-update -u` first when the script directory is newer than the cache.
 - User services need OpenRC 0.60 or later with a user session (`openrc-user`).
@@ -268,8 +269,9 @@ of the release installed by `slackpkg`): a boot starts the enabled services from
   `rc.local` runs after `rc.inet1` and `rc.inet2`.
 - The state of a native script is the process of its pid file, else a process named like the program
   it starts, since these scripts have no `status` verb.
-- Accounts the executor cannot read from `/etc/passwd` (LDAP, sssd) are switched through `setpriv`, or
-  `su` without it.
+- An account the executor cannot read from `/etc/passwd` (LDAP, sssd) reaches it as numeric ids
+  (`--uid`, `--gid`, `--groups`) that the script looks up with `id` and `getent`; the executor stays
+  root and switches itself.
 - Power verbs run `shutdown -r now`, `shutdown -h -P now` and `shutdown -h -H now`, which go through
   `rc.6`.
 - There are no user services.
@@ -397,7 +399,8 @@ service only from a file it read at a reload, so `start` of a service that is no
   expressed. `initctl reload` starts what is newly enabled and restarts what changed, so `daemon-reload`
   does both. `Type=forking` without `PIDFile=` is a task, started but not supervised. User services are
   not supported. Finit's `@user` option sets no groups, so an account the executor cannot read from
-  `/etc/passwd` is switched by `setpriv` in front of the executor.
+  `/etc/passwd` reaches the executor as numeric ids (`--uid`, `--gid`, `--groups`) that a script looks
+  up with `id` and `getent`; the executor stays root and switches itself.
 - Finit kills the process group of a service when its process ends, so the last lines the logger still
   holds can be lost when a service exits at once.
 
@@ -422,7 +425,8 @@ the stop hooks run.
   `ExecStopPost=` when the service is stopped, not when its process ends by itself. Shepherd has no
   soft dependencies and no signal action: `Wants=` is not expressed and `kill` signals the main process.
   `#:user` sets neither group nor supplementary groups, so an account the executor cannot read from
-  `/etc/passwd` is switched by `setpriv`, with its group looked up when the service starts.
+  `/etc/passwd` reaches the executor as numeric ids (`--uid`, `--gid`, `--groups`) that a shell looks
+  up when the service starts; the executor stays root and switches itself.
 
 ### nosh (experimental)
 
@@ -474,6 +478,35 @@ Deny=
 
 The environment overrides the files: `FAKE_SYSTEMD_INIT`, `FAKE_SYSTEMD_PROFILE`,
 `FAKE_SYSTEMD_DRY_RUN`, `FAKE_SYSTEMD_LOG_LEVEL`.
+
+## Security notes
+
+Unit files are trusted as the packages that install them are: a unit is installed by root, and
+fake-systemd runs its commands, and hands its directories to its account, with the privileges of
+the caller. The executor limits what a service account can steer.
+
+- `User=`, `Group=` and `SupplementaryGroups=` names that start with `-` are refused. A name that
+  is not in `/etc/passwd` and `/etc/group` is refused as root (status 217 or 216) instead of
+  running the service as root; accounts that only the system libc knows (LDAP, sssd) reach the
+  executor as numeric ids, which always come as a uid and a gid together.
+- `RuntimeDirectory=`, `StateDirectory=`, `CacheDirectory=`, `LogsDirectory=` and
+  `ConfigurationDirectory=` may not name `fake-systemd` or anything below it under any base:
+  the index, its locks, the runtime state and the logs belong to root.
+- Like systemd, the directory settings take over an existing directory: `StateDirectory=dpkg`
+  changes the owner of `/var/lib/dpkg` and everything in it to the service account. Symlinks are
+  changed themselves, never followed; files with several links are skipped, since another link may
+  lie outside the directory. Only install units whose directory names you would accept in systemd.
+  Setting up a directory is refused when a component below the base is on another mount than the
+  base; the ownership change skips a directory on another device, and the removal of a runtime
+  directory refuses it.
+- `stop`, `reload` and kill act on the process that the executor recorded when it started the
+  service, as `<pid> <start time>` in its root-owned state file, and only while that start time
+  still holds. `PIDFile=` is read once, at start, and only for a process that descends from the
+  executor; a pid file that names any other process, and `MAINPID` from the caller, are ignored
+  unless the process runs as the service account.
+- Backends read pid files through the opened file, without following links.
+- `daemon-reload` stops nothing: a service whose unit file disappeared is disabled at boot and
+  keeps running, except on inits (runit, s6) that stop a service when its definition is removed.
 
 ## Building
 

@@ -17,6 +17,9 @@ pub const Native = struct {
     forking_plain: bool = false,
     /// `Environment=` is applied by the command or script itself.
     environment: bool = false,
+    /// The format applies `Environment=` to the process after the account switch, so a unit
+    /// with an account keeps it native; otherwise the executor applies it after dropping.
+    environment_after_switch: bool = false,
     /// Resource limit names (`LimitNOFILE` form) the format sets with plain numbers or `infinity`.
     limits: []const []const u8 = &.{},
     /// `Group=` and `SupplementaryGroups=` accompany `User=` natively.
@@ -33,6 +36,7 @@ pub const Reason = enum {
     exec_start_post,
     environment_file,
     environment,
+    environment_value,
     unset_environment,
     variable_expansion,
     unrepresentable_word,
@@ -55,6 +59,7 @@ pub const Reason = enum {
             .exec_start_post => "ExecStartPost=",
             .environment_file => "EnvironmentFile=",
             .environment => "Environment=",
+            .environment_value => "an Environment= name or value with a line break or NUL",
             .unset_environment => "UnsetEnvironment=",
             .variable_expansion => "variable expansion in a command",
             .unrepresentable_word => "a command word the native format cannot hold",
@@ -124,6 +129,26 @@ fn commandReason(c: model.Command, oneshot: bool) ?Reason {
     return null;
 }
 
+/// True when the unit switches to an account, a point where text exported by a script would still
+/// be applied to the privileged part of it.
+fn hasAccount(u: model.Unit) bool {
+    return u.user != null or u.group != null or u.supplementary_groups.len > 0;
+}
+
+/// True when an environment name or value holds a line break or NUL, which no line-oriented
+/// format holds literally.
+pub fn environmentHasControl(u: model.Unit) bool {
+    for (u.environment) |e| {
+        if (hasControl(e.name) or hasControl(e.value)) return true;
+    }
+    return false;
+}
+
+/// True when `text` holds a line break, a carriage return or NUL.
+pub fn hasControl(text: []const u8) bool {
+    return std.mem.findAny(u8, text, "\n\r\x00") != null;
+}
+
 fn hasDirectories(u: model.Unit) bool {
     return u.runtime_directory.len + u.state_directory.len + u.cache_directory.len +
         u.logs_directory.len + u.configuration_directory.len > 0;
@@ -140,7 +165,11 @@ pub fn executorReason(unit: model.Unit, caps: interface.Capabilities, native: Na
     if (unit.exec_start_post.len > 0) return .exec_start_post;
     if (unit.environment_file.len > 0) return .environment_file;
     if (unit.unset_environment.len > 0) return .unset_environment;
-    if (unit.environment.len > 0 and !native.environment) return .environment;
+    if (unit.environment.len > 0) {
+        if (!native.environment) return .environment;
+        if (!native.environment_after_switch and hasAccount(unit)) return .environment;
+        if (environmentHasControl(unit)) return .environment_value;
+    }
     if (hasDirectories(unit)) return .runtime_directories;
     if (unit.service_type == .forking) {
         const supervised = if (unit.pid_file != null) native.forking_pidfile else native.forking_plain;
@@ -423,4 +452,36 @@ test "plain limit values" {
     try testing.expect(!plainLimit("1:2:3"));
     try testing.expect(!plainLimit(":2"));
     try testing.expect(!plainLimit(""));
+}
+
+test "Environment= with an account stays native only where the format applies it after the switch" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var u = try base(arena.allocator());
+    u.environment = &.{.{ .name = "PATH", .value = "/srv/bin" }};
+    const exported: Native = .{ .environment = true };
+    const after_switch: Native = .{ .environment = true, .environment_after_switch = true };
+    try testing.expectEqual(@as(?Reason, null), executorReason(u, all_caps, exported));
+    u.user = "svc";
+    try testing.expectEqual(@as(?Reason, .environment), executorReason(u, all_caps, exported));
+    try testing.expectEqual(@as(?Reason, null), executorReason(u, all_caps, after_switch));
+    u.user = null;
+    u.group = "grp";
+    try testing.expectEqual(@as(?Reason, .environment), executorReason(u, all_caps, exported));
+    u.group = null;
+    u.supplementary_groups = &.{"audio"};
+    try testing.expectEqual(@as(?Reason, .environment), executorReason(u, all_caps, exported));
+}
+
+test "an Environment= name or value with a line break or NUL always goes to the executor" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var u = try base(arena.allocator());
+    const native: Native = .{ .environment = true, .environment_after_switch = true };
+    for ([_][]const u8{ "a\nb", "a\rb", "a\x00b" }) |value| {
+        u.environment = &.{.{ .name = "A", .value = value }};
+        try testing.expectEqual(@as(?Reason, .environment_value), executorReason(u, all_caps, native));
+    }
+    u.environment = &.{.{ .name = "A", .value = "tab\tand space" }};
+    try testing.expectEqual(@as(?Reason, null), executorReason(u, all_caps, native));
 }

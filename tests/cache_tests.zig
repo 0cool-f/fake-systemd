@@ -138,7 +138,7 @@ test "a corrupted or absent index still gives correct results" {
     try testing.expectEqualStrings("", t.stderr());
 }
 
-test "a removed executable reclassifies the unit on the next daemon-reload" {
+test "a removed executable is noticed on the next daemon-reload and the generated files are kept" {
     var t: h.Harness = undefined;
     try setup(&t);
     defer t.deinit();
@@ -150,8 +150,8 @@ test "a removed executable reclassifies the unit on the next daemon-reload" {
 
     try t.fs.deleteFile("/usr/bin/foo");
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
-    try testing.expect(!t.exists(generated_foo));
-    try h.expectNotContains(try t.indexText(), "unit\tfoo.service");
+    try testing.expect(t.exists(generated_foo));
+    try h.expectContains(try unitLine(&t), "\tmissing\t");
 }
 
 test "an executable that appears earlier in the search path reruns the pipeline" {

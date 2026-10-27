@@ -4,10 +4,10 @@
 # Unit: user-ldap.service
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:d1dd80e021ebebfe
-# Generator: fake-systemd 0.1.0 runit/1
+# Body-Hash: xxh3:bebe6b7f27567b1d
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
-exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --init-groups /usr/bin/dirsync --interval 300
+exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g -- svc-directory)" --init-groups /usr/bin/dirsync --interval 300
 === finish 0755
 #!/bin/sh
 # Generated automatically by fake-systemd. Remove this block to take ownership of the file.
@@ -15,7 +15,7 @@ exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --i
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:aee4fc693b3f2fe3
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -31,5 +31,5 @@ case "$(cat supervise/stat)" in *"want down"*) ;; *) sleep 2 ;; esac
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:2617e5dff300bf9d
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log user-ldap.service

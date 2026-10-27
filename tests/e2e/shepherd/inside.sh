@@ -285,7 +285,7 @@ wait_for "it runs as the account" 5 grep -qx e2eapp /tmp/e2e-user-name
 wait_for "with the groups of the account" 5 grep -qw e2egrp /tmp/e2e-user-groups
 expect "stop succeeds" 0 "" systemctl stop e2e-user
 
-# --- An account only the system libc knows (LDAP, sssd) is switched by setpriv -----------------------------
+# --- An account only the system libc knows (LDAP, sssd) is given to the executor as numeric ids ----------
 mkdir -p /var/lib/extrausers
 echo 'ldaplike:x:2500:2500:ldap like:/:/usr/sbin/nologin' >/var/lib/extrausers/passwd
 printf 'ldapgrp:x:2500:\nldapsup:x:2600:ldaplike\n' >/var/lib/extrausers/group
@@ -295,11 +295,11 @@ unit e2e-ldap 'User=ldaplike
 ExecStart=/bin/sh -c "id -un >/tmp/e2e-ldap-name; id -gn >/tmp/e2e-ldap-group; id -Gn >/tmp/e2e-ldap-groups; exec sleep 1018"
 ExecReload=/bin/sh -c "id -un >/tmp/e2e-ldap-reload"'
 expect "a service whose account is not in /etc/passwd starts" 0 "" systemctl start e2e-ldap
-check "the file switches with setpriv, which resolves the account through the libc" grep -q 'setpriv' /etc/shepherd/available/e2e-ldap.scm
+check "the file gives the executor the numeric ids of the account, looked up by a shell" grep -q -- '--uid .*id -u -- ldaplike' /etc/shepherd/available/e2e-ldap.scm
 wait_for "it runs as the account" 5 grep -qx ldaplike /tmp/e2e-ldap-name
 wait_for "with its primary group" 5 grep -qx ldapgrp /tmp/e2e-ldap-group
 wait_for "and its supplementary groups" 5 grep -qw ldapsup /tmp/e2e-ldap-groups
-expect "reload runs behind the same switch" 0 "" systemctl reload e2e-ldap
+expect "reload carries the same ids" 0 "" systemctl reload e2e-ldap
 wait_for "ExecReload= ran as the account" 5 grep -qx ldaplike /tmp/e2e-ldap-reload
 expect "stop succeeds" 0 "" systemctl stop e2e-ldap
 

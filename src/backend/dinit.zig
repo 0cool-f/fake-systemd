@@ -20,6 +20,8 @@ const apply = @import("../reconcile/apply.zig");
 const logpath = @import("../exec/logpath.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
+const shell = @import("shell.zig");
 const network = @import("network.zig");
 const render = @import("dinit/render.zig");
 const layout = @import("dinit/layout.zig");
@@ -50,6 +52,7 @@ const native_support: policy.Native = .{
     .forking_pidfile = true,
     .forking_plain = true,
     .environment = true,
+    .environment_after_switch = true,
     .limits = &render.nativeLimitNames(),
 };
 
@@ -210,7 +213,7 @@ fn mapDependencies(self: *Dinit, own: []const u8, u: *const model.Unit, resoluti
 }
 
 fn accountKnown(self: *Dinit, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -220,17 +223,32 @@ fn accountKnown(self: *Dinit, file: []const u8, account: []const u8) bool {
     return false;
 }
 
-/// User dinit switches to. With the executor, an account the static binary can resolve from
-/// `/etc/passwd` and `/etc/group` is left to it; anything else is switched by dinit through the
-/// system libc, and the executor then runs with the final identity.
-fn runAs(self: *Dinit, u: *const model.Unit, use_executor: bool) ?[]const u8 {
-    if (u.scope == .user) return null;
+/// User dinit switches to: the account of a native command. The executor is not run as the
+/// account by dinit, which would leave it unable to write its state files.
+fn runAs(u: *const model.Unit, use_executor: bool) ?[]const u8 {
+    if (u.scope == .user or use_executor) return null;
+    return u.user;
+}
+
+/// An account the static executor cannot resolve from `/etc/passwd` and `/etc/group` (LDAP, sssd)
+/// is passed to it as numeric ids that a shell looks up when dinit starts the service.
+fn identityFor(self: *Dinit, u: *const model.Unit, use_executor: bool) !?shell.Numeric {
+    if (u.scope == .user or !use_executor) return null;
     const user = u.user orelse return null;
-    if (!use_executor) return user;
-    if (!self.accountKnown("/etc/passwd", user)) return user;
-    if (u.group) |g| if (!self.accountKnown("/etc/group", g)) return user;
-    for (u.supplementary_groups) |g| if (!self.accountKnown("/etc/group", g)) return user;
-    return null;
+    if (self.accountKnown("/etc/passwd", user)) {
+        var known = true;
+        if (u.group) |g| known = known and self.accountKnown("/etc/group", g);
+        for (u.supplementary_groups) |g| known = known and self.accountKnown("/etc/group", g);
+        if (known) return null;
+    }
+    var plain = shell.plainAccount(user);
+    if (u.group) |g| plain = plain and shell.plainAccount(g);
+    for (u.supplementary_groups) |g| plain = plain and shell.plainAccount(g);
+    if (!plain) {
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
+        return error.Unsupported;
+    }
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
 }
 
 const command_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
@@ -276,6 +294,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const self = me(ptr);
     const u = input.unit;
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
 
     const reason = policy.executorReason(u.*, capabilities, native_support);
     const use_executor = reason != null and reason.? != .no_command;
@@ -298,7 +317,8 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         .command = command,
         .stop = stop_cmd,
         .executor_path = policy.executor_path,
-        .run_as = self.runAs(u, use_executor),
+        .run_as = runAs(u, use_executor),
+        .identity = try self.identityFor(u, use_executor),
         .deps = try self.mapDependencies(svc, u, input.deps),
         .log_file = try std.fs.path.join(gpa, &.{ logpath.logDir(self.ctx, u.name.full), "current" }),
         .notes = try notesFor(gpa, u),
@@ -308,8 +328,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
 
     const dir = try layout.generationDir(self.ctx, self.dirs, u.scope, input.tier, input.source);
+    const path = try std.fs.path.join(gpa, &.{ dir, svc });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ dir, svc }), .content = content };
+    files[0] = .{ .path = path, .content = content };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -348,6 +370,7 @@ const max_dependency_depth = 16;
 
 fn ensureLogDirDepth(self: *Dinit, service: []const u8, depth: usize) void {
     if (depth > max_dependency_depth) return;
+    if (!guard.serviceNameOk(service)) return;
     const path = (layout.locate(self.ctx, self.dirs, service) catch return) orelse return;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch return;
     const parsed = marker.parse(content) orelse return;
@@ -424,7 +447,7 @@ fn isEnabled(ptr: *anyopaque, _: Env, service: []const u8) anyerror!output.Enabl
     return if (self.linked(try self.linkPath(service))) .enabled else .disabled;
 }
 
-fn serviceEnabled(ptr: *anyopaque, service: []const u8) bool {
+fn serviceEnabled(ptr: *anyopaque, service: []const u8) anyerror!bool {
     const self = me(ptr);
     const link = self.linkPath(service) catch return false;
     return self.linked(link);
@@ -459,11 +482,12 @@ fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     const gpa = env.ctx.gpa;
-    const unit_name = self.generatedUnit(service) orelse {
+    const unit_name = (try self.generatedUnit(service)) orelse {
         env.ctx.diag.err("{s}: not generated by fake-systemd and dinit has no reload action; use 'kill --signal=' instead", .{service});
         return error.Unsupported;
     };
     var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(gpa, guard.executorPrefix(env.ctx, unit_name));
     try argv.appendSlice(gpa, &.{ policy.executor_path, "--exec", unit_name });
     if (env.ctx.scope == .user) try argv.append(gpa, "--user");
     try argv.appendSlice(gpa, &.{ "--phase", "reload" });
@@ -472,11 +496,10 @@ fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 }
 
 /// Unit recorded in the marker of the service file, null for native services.
-fn generatedUnit(self: *Dinit, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *Dinit, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const content = (try guard.readOrAbsent(self.ctx, path, 1 << 20)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
 fn kill(_: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
@@ -496,7 +519,7 @@ fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const listing = try runCtl(env, &.{"list"}, .capture);
     if (listing.code != 0) return error.CommandFailed;
     for (try native.parseList(env.ctx.gpa, listing.stdout)) |service| {
-        if (self.generatedUnit(service) == null) continue;
+        if ((try self.generatedUnit(service)) == null) continue;
         const res = try runCtl(env, &.{ "--quiet", "reload", service }, .inherit);
         if (res.code != 0) env.ctx.diag.warn("{s}: dinit could not reload the service description", .{service});
     }

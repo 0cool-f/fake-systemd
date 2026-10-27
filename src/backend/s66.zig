@@ -31,6 +31,7 @@ const apply = @import("../reconcile/apply.zig");
 const logpath = @import("../exec/logpath.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const network = @import("network.zig");
 const runner = @import("runner.zig");
 const shell = @import("shell.zig");
@@ -156,17 +157,17 @@ fn parsed(self: *S66, service: []const u8) bool {
     return true;
 }
 
-fn readResolve(self: *S66, service: []const u8) ?[]const u8 {
-    const path = layout.resolvePath(self.ctx, service) catch return null;
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn readResolve(self: *S66, service: []const u8) !?[]const u8 {
+    const path = try layout.resolvePath(self.ctx, service);
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
-fn enabledNow(self: *S66, service: []const u8) bool {
-    const data = self.readResolve(service) orelse return false;
+fn enabledNow(self: *S66, service: []const u8) !bool {
+    const data = (try self.readResolve(service)) orelse return false;
     return (cdb.number(data, "enabled") orelse 0) != 0;
 }
 
-fn serviceEnabled(ptr: *anyopaque, service: []const u8) bool {
+fn serviceEnabled(ptr: *anyopaque, service: []const u8) anyerror!bool {
     return me(ptr).enabledNow(service);
 }
 
@@ -174,9 +175,9 @@ fn enabledLookup(self: *S66) network.Enabled {
     return .{ .ptr = self, .is_enabled = serviceEnabled, .injected = self.enabled_override };
 }
 
-fn frontendText(self: *S66, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn frontendText(self: *S66, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
 /// True when the frontend file is newer than what 66 parsed from it.
@@ -190,17 +191,16 @@ fn isStale(self: *S66, service: []const u8) bool {
 
 /// Settings recorded in the frontend file of `service`; a service fake-systemd did not generate
 /// holds its state when it is done, as 66 says.
-fn flagsOf(self: *S66, service: []const u8) render.Flags {
-    const text = self.frontendText(service) orelse return .{ .remain = true };
+fn flagsOf(self: *S66, service: []const u8) !render.Flags {
+    const text = (try self.frontendText(service)) orelse return .{ .remain = true };
     const parsed_file = marker.parse(text) orelse return .{ .remain = true };
     return native.parseFlags(parsed_file.rest);
 }
 
 /// Unit recorded in the marker of the frontend file, null for services fake-systemd did not generate.
-fn generatedUnit(self: *S66, service: []const u8) ?[]const u8 {
-    const text = self.frontendText(service) orelse return null;
-    const parsed_file = marker.parse(text) orelse return null;
-    return parsed_file.marker.unit;
+fn generatedUnit(self: *S66, service: []const u8) !?[]const u8 {
+    const text = (try self.frontendText(service)) orelse return null;
+    return guard.unitOfMarked(text);
 }
 
 // ---- generation -------------------------------------------------------------------------
@@ -296,11 +296,9 @@ fn resolveProgram(self: *S66, name: []const u8, fallback: []const u8) ![]const u
     return (try self.findProgram(name)) orelse fallback;
 }
 
-/// How the start script switches to an account the executor cannot resolve (LDAP, sssd).
-/// `setpriv` resolves the user through the system libc and `--init-groups` applies its groups;
-/// without it `execl-runas`, which 66 ships, applies the groups of the account but not a
-/// `Group=` or `SupplementaryGroups=` the unit adds. 66's own `RunAs` keeps the groups of root.
-fn identityFor(self: *S66, u: *const model.Unit) !?render.Identity {
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+/// scripts look up with `id` and `getent`; the executor stays root and switches to them itself.
+fn identityFor(self: *S66, u: *const model.Unit) !?shell.Numeric {
     if (u.scope == .user) return null;
     const user = u.user orelse return null;
     if (self.executorResolves(u)) return null;
@@ -308,30 +306,23 @@ fn identityFor(self: *S66, u: *const model.Unit) !?render.Identity {
     if (u.group) |g| plain = plain and shell.plainAccount(g);
     for (u.supplementary_groups) |g| plain = plain and shell.plainAccount(g);
     if (!plain) {
-        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be switched by the system libc", .{u.name.full});
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
         return error.Unsupported;
     }
-    if ((try self.findProgram("setpriv")) != null) {
-        return .{ .setpriv = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } };
-    }
-    if (u.group != null or u.supplementary_groups.len > 0) {
-        self.ctx.diag.warn("{s}: setpriv is not installed, execl-runas switches to {s} with its own groups only", .{ u.name.full, user });
-    }
-    return .{ .runas = user };
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
 }
 
 fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) anyerror!interface.Generated {
     const self = me(ptr);
     const u = input.unit;
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
     const in: render.Input = .{
         .unit = u,
         .service = svc,
         .depends = try self.dependencies(svc, u, input.deps),
         .identity = try self.identityFor(u),
         .executor_path = policy.executor_path,
-        .setpriv_path = try self.resolveProgram("setpriv", "/usr/bin/setpriv"),
-        .runas_path = try self.resolveProgram("execl-runas", "/usr/bin/execl-runas"),
         .ctl_path = try self.resolveProgram(ctl, "/usr/bin/66"),
         .log_dir = logpath.logDir(self.ctx, u.name.full),
     };
@@ -339,8 +330,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
     const dir = try layout.generationDir(self.ctx, self.dirs, u.scope, input.tier);
+    const path = try std.fs.path.join(gpa, &.{ dir, svc });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ dir, svc }), .content = content, .mode = 0o644 };
+    files[0] = .{ .path = path, .content = content, .mode = 0o644 };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -371,8 +364,8 @@ fn refuseInRoot(self: *S66, env: Env, service: []const u8, what: []const u8) err
 /// parsed, or whose frontend fake-systemd did not generate.
 fn refresh(self: *S66, env: Env, service: []const u8, keep_enabled: bool) !void {
     if (env.ctx.dry_run or !self.parsed(service)) return;
-    if (self.generatedUnit(service) == null or !self.isStale(service)) return;
-    const was_enabled = self.enabledNow(service);
+    if ((try self.generatedUnit(service)) == null or !self.isStale(service)) return;
+    const was_enabled = try self.enabledNow(service);
     var res = try run66(env, null, &.{ "parse", "-f", service }, .quiet);
     if (res.code != 0) return failed(env, service, "66 parse", res);
     if (!was_enabled or !keep_enabled) return;
@@ -382,7 +375,7 @@ fn refresh(self: *S66, env: Env, service: []const u8, keep_enabled: bool) !void 
 
 fn refreshWithDependencies(self: *S66, env: Env, service: []const u8, depth: usize) !void {
     if (depth > max_dependency_depth) return;
-    if (self.frontendText(service)) |text| {
+    if (try self.frontendText(service)) |text| {
         for (try native.dependsOf(env.ctx.gpa, text)) |dep| try self.refreshWithDependencies(env, dep, depth + 1);
     }
     try self.refresh(env, service, true);
@@ -398,7 +391,7 @@ fn enable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOpt
         env.ctx.diag.err("{s}: no frontend file found", .{service});
         return error.Unsupported;
     }
-    if (self.enabledNow(service) and !self.isStale(service)) return &.{};
+    if (try self.enabledNow(service) and !self.isStale(service)) return &.{};
     try self.refresh(env, service, false);
     const res = try run66(env, self.dirs.boot_target, &.{ "enable", "-P", service }, .quiet);
     if (res.code != 0) return failed(env, service, "66 enable", res);
@@ -410,7 +403,7 @@ fn enable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOpt
 fn disable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOptions) anyerror![]const interface.Change {
     const self = me(ptr);
     if (!self.canRun() and !env.ctx.dry_run) return self.refuseInRoot(env, service, "disable");
-    if (!env.ctx.dry_run and !self.enabledNow(service)) return &.{};
+    if (!env.ctx.dry_run and !try self.enabledNow(service)) return &.{};
     const res = try run66(env, null, &.{ "disable", "-P", service }, .quiet);
     if (res.code != 0) return failed(env, service, "66 disable", res);
     return &.{};
@@ -418,7 +411,7 @@ fn disable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOp
 
 fn isEnabled(ptr: *anyopaque, _: Env, service: []const u8) anyerror!output.EnabledState {
     const self = me(ptr);
-    return if (self.parsed(service) and self.enabledNow(service)) .enabled else .disabled;
+    return if (self.parsed(service) and try self.enabledNow(service)) .enabled else .disabled;
 }
 
 // ---- runtime control --------------------------------------------------------------------
@@ -432,7 +425,7 @@ fn runstateOf(self: *S66, env: Env, service: []const u8) !?native.Runstate {
 
 fn statusOf(self: *S66, env: Env, service: []const u8) !interface.Status {
     const rs = (try self.runstateOf(env, service)) orelse return .{ .state = .inactive };
-    return native.normalize(rs, self.flagsOf(service));
+    return native.normalize(rs, try self.flagsOf(service));
 }
 
 fn begin(self: *S66, env: Env, service: []const u8) !void {
@@ -479,7 +472,7 @@ fn stopService(self: *S66, env: Env, service: []const u8) !void {
     var res = try run66(env, null, &.{ "stop", service }, .quiet);
     if (res.code != 0) return failed(env, service, "66 stop", res);
     if (env.ctx.dry_run) return;
-    const flags = self.flagsOf(service);
+    const flags = try self.flagsOf(service);
     var rs = (try self.runstateOf(env, service)) orelse return;
     if (stillRunning(rs, flags)) {
         try self.holdDown(env, service);
@@ -504,7 +497,7 @@ fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 /// Sends `signal` to the process 66 supervises: `66 signal` and `66 reload` do not reach a
 /// service that is up.
 fn signalMain(self: *S66, env: Env, service: []const u8, signal: []const u8) !void {
-    const pid = (try self.statusOf(env, service)).pid orelse {
+    const pid = guard.accepted(self.ctx, (try self.statusOf(env, service)).pid, null) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -519,11 +512,12 @@ fn signalMain(self: *S66, env: Env, service: []const u8, signal: []const u8) !vo
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     const gpa = env.ctx.gpa;
-    const unit_name = self.generatedUnit(service) orelse return self.signalMain(env, service, "HUP");
+    const unit_name = (try self.generatedUnit(service)) orelse return self.signalMain(env, service, "HUP");
     var argv: std.ArrayList([]const u8) = .empty;
     if ((try self.statusOf(env, service)).pid) |pid| {
         try argv.appendSlice(gpa, &.{ "env", try std.fmt.allocPrint(gpa, "MAINPID={d}", .{pid}) });
     }
+    try argv.appendSlice(gpa, guard.executorPrefix(env.ctx, unit_name));
     try argv.appendSlice(gpa, &.{ policy.executor_path, "--exec", unit_name });
     if (env.ctx.scope == .user) try argv.append(gpa, "--user");
     try argv.appendSlice(gpa, &.{ "--phase", "reload" });
@@ -540,27 +534,26 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
 }
 
 /// Parses again the generated services whose frontend file changed, so that the next boot runs
-/// the new definition, and removes what 66 parsed from a frontend file that is gone. A service
-/// that runs keeps running.
+/// the new definition, and removes what 66 parsed from a generated frontend file that is gone.
+/// A service that runs keeps running.
 fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
     if (env.ctx.dry_run or !self.canRun()) return;
     const gpa = env.ctx.gpa;
     const links = try std.fs.path.join(gpa, &.{ try layout.stateRoot(self.ctx), ".resolve", "service" });
-    const entries = self.ctx.fs.iterateDir(gpa, links) catch return;
-    const lookup = try layout.lookupDirs(self.ctx, self.dirs, self.ctx.scope);
+    const entries = try guard.iterateOrEmpty(self.ctx, links);
+    const owned = guard.indexedPaths(self.ctx, env.owned_paths, backend_name, generator_number);
     for (entries) |entry| {
         const service = entry.name;
-        if (self.generatedUnit(service) != null) {
+        if ((try self.generatedUnit(service)) != null) {
             self.refresh(env, service, true) catch |e| env.ctx.diag.warn("{s}: cannot parse it again: {t}", .{ service, e });
             continue;
         }
-        const data = self.readResolve(service) orelse continue;
+        const data = (try self.readResolve(service)) orelse continue;
         const frontend = cdb.string(data, "frontend") orelse continue;
-        const ours = for (lookup) |d| {
-            if (std.mem.startsWith(u8, frontend, d) and frontend.len > d.len and frontend[d.len] == '/') break true;
-        } else false;
-        if (!ours or self.ctx.fs.exists(frontend)) continue;
+        // Only what the index lists as generated is removed: a service whose frontend file went
+        // away with its package is not ours.
+        if (!guard.anyUnder(owned, frontend) or self.ctx.fs.exists(frontend)) continue;
         const res = try run66(env, null, &.{ "remove", "-P", service }, .quiet);
         if (res.code != 0) env.ctx.diag.warn("{s}: 66 remove exited {d}", .{ service, res.code });
     }

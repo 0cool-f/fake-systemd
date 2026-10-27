@@ -241,7 +241,7 @@ test "an instance name that 66 would take for an identifier is kept out of the f
     }
 }
 
-test "an account only the system libc knows is switched with setpriv, or with execl-runas without it" {
+test "an account only the system libc knows is given to the executor as numeric ids" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -249,17 +249,10 @@ test "an account only the system libc knows is switched with setpriv, or with ex
     try addSvc(t, "ldap", "", "User=ldapuser\nGroup=ldapgroup\nSupplementaryGroups=extra");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap" }));
     const text = try t.read(vendor ++ "/ldap");
-    try h.expectContains(text, "mkdir -p /var/log/fake-systemd/ldap.service && chown ldapuser /var/log/fake-systemd/ldap.service\n");
-    try h.expectContains(text, "exec /usr/bin/setpriv --reuid=ldapuser --regid=ldapgroup --groups \"$(id -G ldapuser | tr ' ' ,),extra\" /usr/bin/fake-systemd --exec ldap.service --log\n");
-
-    try t.fs.deleteFile("/usr/bin/setpriv");
-    try addSvc(t, "ldap2", "", "User=ldapuser");
-    try t.write("/usr/bin/execl-runas", "#!/bin/sh\n", 0o755);
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap2" }));
-    try h.expectContains(try t.read(vendor ++ "/ldap2"), "exec /usr/bin/execl-runas ldapuser /usr/bin/fake-systemd --exec ldap2.service --log\n");
-    try addSvc(t, "ldap3", "", "User=ldapuser\nGroup=ldapgroup");
-    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap3" }));
-    try h.expectContains(t.stderr(), "setpriv is not installed, execl-runas switches to ldapuser with its own groups only");
+    try h.expectContains(text, "exec /usr/bin/fake-systemd --exec ldap.service --log --uid \"$(id -u -- ldapuser)\" --gid \"$(getent group ldapgroup | cut -d: -f3)\" --groups \"$(id -G -- ldapuser | tr ' ' ,),$(getent group extra | cut -d: -f3)\"\n");
+    try h.expectNotContains(text, "chown");
+    try h.expectNotContains(text, "setpriv");
+    try h.expectNotContains(text, "--identity-set");
 }
 
 test "an account in /etc/passwd is switched by the executor, which keeps the file free of it" {
@@ -539,16 +532,24 @@ test "daemon-reload on a running system parses regenerated services again" {
     try testing.expectEqual(@as(usize, 2), f.f66.calls.items.len);
 }
 
-test "daemon-reload removes what 66 parsed from a frontend file that is gone, and keeps the rest" {
+test "daemon-reload removes what 66 parsed from a generated frontend file that is gone, and keeps the rest" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
     const t = &f.t;
-    // The resolve file of the fixture names /etc/66/service/hello as its frontend file.
+    // The resolve file of the fixture names /etc/66/service/hello as its frontend file. A service
+    // fake-systemd did not generate is left alone when that file is gone.
     try world.markParsed(t, "orphan", true);
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
-    try f.expectCall(0, &.{ "66", "remove", "-P", "orphan" });
-    try testing.expectEqual(@as(usize, 1), f.f66.calls.items.len);
+    try testing.expectEqual(@as(usize, 0), f.f66.count(&.{ "66", "remove" }));
+
+    // A generated service is removed with its frontend file, which the index lists.
+    try t.write("/etc/systemd/system/hello.service", "[Service]\nExecStart=/usr/bin/foo\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "hello" }));
+    try t.fs.deleteFile(admin ++ "/hello");
+    f.clear();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try f.expectCall(0, &.{ "66", "remove", "-P", "hello" });
 
     try world.markParsed(t, "kept", true);
     try t.write(admin ++ "/hello", world.native_frontend, 0o644);
@@ -610,4 +611,52 @@ test "a dry run writes nothing and names the 66 command it would run" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "--dry-run", "enable", "foo" }));
     try testing.expect(!t.exists(vendor ++ "/foo"));
     try h.expectContains(t.stdout(), "would run: 66 enable -P foo\n");
+}
+
+test "daemon-reload with a lost index still removes what 66 parsed from our removed frontend file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/etc/systemd/system/hello.service", "[Service]\nExecStart=/usr/bin/foo\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "hello" }));
+    try t.fs.deleteFile("/var/lib/fake-systemd/66/index");
+    try t.fs.deleteFile("/etc/systemd/system/hello.service");
+    f.clear();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expectEqual(@as(usize, 1), f.f66.count(&.{ "66", "remove" }));
+    try f.expectCall(1, &.{ "66", "remove", "-P", "hello" });
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload gives the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "enable", "ldap" });
+    f.clear();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try f.expectCall(1, &.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" });
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "two units that map to the same frontend file are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write(vendor ++ "/foo", try marker.compose(t.a(), "bar.service", "/x", 1, "fake-systemd 0.1.0 66/1", "[main]\n"), 0o644);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(vendor ++ "/foo"), "# Unit: bar.service\n");
 }

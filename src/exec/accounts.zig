@@ -23,18 +23,29 @@ pub const Db = struct {
     users: []const User = &.{},
     groups: []const Group = &.{},
 
-    /// Reads both files; a missing or unreadable file reads as empty. Allocates with `gpa`,
-    /// an arena.
-    pub fn load(gpa: Allocator, fs: Fs) Db {
+    /// Reads both files. A missing file reads as empty; a file that cannot be read, or that is
+    /// larger than `max_file_bytes`, is an error, so a failure never reads as "no such account".
+    /// Allocates with `gpa`, an arena.
+    pub fn load(gpa: Allocator, fs: Fs) !Db {
+        return loadLimited(gpa, fs, max_file_bytes);
+    }
+
+    fn loadLimited(gpa: Allocator, fs: Fs, max_bytes: usize) !Db {
         return .{
-            .users = parsePasswd(gpa, readOrEmpty(gpa, fs, "/etc/passwd")) catch &.{},
-            .groups = parseGroup(gpa, readOrEmpty(gpa, fs, "/etc/group")) catch &.{},
+            .users = try parsePasswd(gpa, try readDb(gpa, fs, "/etc/passwd", max_bytes)),
+            .groups = try parseGroup(gpa, try readDb(gpa, fs, "/etc/group", max_bytes)),
         };
+    }
+
+    /// A name that starts with `-` is never an account: tools would read it as an option.
+    pub fn isDashed(name: []const u8) bool {
+        return name.len > 0 and name[0] == '-';
     }
 
     /// A user name or a numeric uid. A numeric uid without a passwd entry resolves to itself
     /// with the same gid.
     pub fn findUser(db: Db, spec: []const u8) ?User {
+        if (Db.isDashed(spec)) return null;
         if (std.fmt.parseInt(u32, spec, 10)) |uid| {
             for (db.users) |u| if (u.uid == uid) return u;
             return .{ .name = spec, .uid = uid, .gid = uid };
@@ -45,6 +56,7 @@ pub const Db = struct {
 
     /// A group name or a numeric gid; a numeric gid needs no group entry.
     pub fn findGroup(db: Db, spec: []const u8) ?Group {
+        if (Db.isDashed(spec)) return null;
         if (std.fmt.parseInt(u32, spec, 10)) |gid| {
             for (db.groups) |g| if (g.gid == gid) return g;
             return .{ .name = spec, .gid = gid };
@@ -68,8 +80,19 @@ pub const Db = struct {
     }
 };
 
-fn readOrEmpty(gpa: Allocator, fs: Fs, path: []const u8) []const u8 {
-    return fs.readFileAlloc(gpa, path, 4 << 20) catch "";
+/// Largest account file read; a database of a million accounts is well below it.
+pub const max_file_bytes: usize = 256 << 20;
+
+/// Content of an account file below the size limit; a missing file reads as empty.
+pub fn readFile(gpa: Allocator, fs: Fs, path: []const u8) ![]const u8 {
+    return readDb(gpa, fs, path, max_file_bytes);
+}
+
+fn readDb(gpa: Allocator, fs: Fs, path: []const u8, max_bytes: usize) ![]const u8 {
+    return fs.readFileAlloc(gpa, path, max_bytes) catch |e| switch (e) {
+        error.FileNotFound => "",
+        else => e,
+    };
 }
 
 fn nonEmpty(s: []const u8) ?[]const u8 {
@@ -170,9 +193,23 @@ test "load reads through Fs and tolerates absence" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var fs: Fs = .initDir(std.testing.io, tmp.dir);
-    try std.testing.expectEqual(@as(usize, 0), Db.load(arena.allocator(), fs).users.len);
+    try std.testing.expectEqual(@as(usize, 0), (try Db.load(arena.allocator(), fs)).users.len);
     try fs.makePath("/etc");
     try fs.writeFileAtomic("/etc/passwd", "u:x:5:6::/h:/s\n", 0o644);
-    const db = Db.load(arena.allocator(), fs);
+    const db = try Db.load(arena.allocator(), fs);
     try std.testing.expectEqual(@as(u32, 5), db.findUser("u").?.uid);
+}
+
+test "an unreadable or oversized account file is an error, not an empty database" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(std.testing.io, tmp.dir);
+    try fs.makePath("/etc/passwd");
+    try std.testing.expectError(error.IsDir, Db.load(arena.allocator(), fs));
+    try fs.deleteTree("/etc/passwd");
+    try fs.writeFileAtomic("/etc/passwd", "u:x:5:6::/h:/s\nv:x:7:8::/h:/s\n", 0o644);
+    try std.testing.expectError(error.StreamTooLong, Db.loadLimited(arena.allocator(), fs, 8));
+    try std.testing.expectEqual(@as(usize, 2), (try Db.loadLimited(arena.allocator(), fs, 1024)).users.len);
 }

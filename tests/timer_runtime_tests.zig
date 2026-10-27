@@ -391,3 +391,21 @@ test "termination signals running jobs and waits for them" {
     // TERM after the grace period expired, then KILL: both counted
     try testing.expect(w.signals_sent >= 2);
 }
+
+test "a missing or newer index is never saved over by the timer state" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    const path = "/var/lib/fake-systemd/fake/index";
+    var missing = try (try store(&t)).begin(true);
+    try testing.expect(missing.unusable);
+    try missing.commit();
+    try testing.expect(!t.exists(path));
+
+    const newer = "# fake-systemd index v99 backend=fake generator=1 config=xxh3:0000000000000000\nfuture\tline\n";
+    try t.write(path, newer, 0o644);
+    var future = try (try store(&t)).begin(true);
+    try testing.expect(future.unusable);
+    try future.commit();
+    try testing.expectEqualStrings(newer, try t.read(path));
+}

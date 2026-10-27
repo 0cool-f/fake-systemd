@@ -49,6 +49,10 @@ fn editOne(s: *Session, name: unit.name.Name) !u8 {
     const path = try std.fs.path.join(gpa, &.{ dir, "override.conf" });
     const before: ?[]u8 = s.ctx.fs.readFileAlloc(gpa, path, unit.resolve.max_unit_file_size) catch |e| switch (e) {
         error.FileNotFound => null,
+        error.StreamTooLong => {
+            s.ctx.diag.err("{s}: {s} is larger than {d} bytes, the limit for unit files", .{ name.full, path, unit.resolve.max_unit_file_size });
+            return Exit.failure;
+        },
         else => return e,
     };
     if (!s.ctx.dry_run and before == null) {
@@ -68,7 +72,13 @@ fn editOne(s: *Session, name: unit.name.Name) !u8 {
         s.ctx.diag.err("editor exited with status {d}", .{res.code});
         return Exit.failure;
     }
-    const after = try s.ctx.fs.readFileAlloc(gpa, path, unit.resolve.max_unit_file_size);
+    const after = s.ctx.fs.readFileAlloc(gpa, path, unit.resolve.max_unit_file_size) catch |e| switch (e) {
+        error.StreamTooLong => {
+            s.ctx.diag.err("{s}: {s} is larger than {d} bytes, the limit for unit files", .{ name.full, path, unit.resolve.max_unit_file_size });
+            return Exit.failure;
+        },
+        else => return e,
+    };
     const unchanged = if (before) |b| std.mem.eql(u8, b, after) else std.mem.eql(u8, std.mem.trim(u8, after, " \t\r\n"), std.mem.trim(u8, initial_content, "\n"));
     if (unchanged) {
         if (before == null) try cleanupCreated(s, dir, path);
@@ -79,7 +89,13 @@ fn editOne(s: *Session, name: unit.name.Name) !u8 {
     return Exit.success;
 }
 
+/// The editor is a host process: it cannot be confined to a `--root` tree, and it would resolve
+/// the tree's absolute symlinks against the host. `edit` therefore refuses `--root`.
 pub fn run(s: *Session) !u8 {
+    if (s.req.options.root != null) {
+        s.ctx.diag.err("edit is not supported with --root: the editor cannot be confined to the tree", .{});
+        return Exit.failure;
+    }
     const names = (try units.parseArgs(s)) orelse return Exit.failure;
     if (names.len == 0) return units.tooFew(s);
     var agg: units.Aggregate = .{};

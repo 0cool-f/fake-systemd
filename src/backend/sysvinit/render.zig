@@ -27,29 +27,10 @@ pub const Mode = enum {
     none,
 };
 
-/// Switching of the account around a program.
-pub const Wrapper = union(enum) {
-    /// `setpriv`, which resolves the user and its groups through the system libc.
-    setpriv: struct {
-        path: []const u8,
-        user: []const u8,
-        group: ?[]const u8 = null,
-        supplementary: []const []const u8 = &.{},
-    },
-    /// `su -s /bin/sh -c`, which applies the groups of the user.
-    su: []const u8,
-};
-
-/// How an account the executor cannot resolve (LDAP, sssd) runs the service.
+/// How an account the executor cannot resolve (LDAP, sssd) runs the service: the executor stays
+/// root and takes the numeric ids the script looks up.
 pub const Identity = struct {
-    /// `--chuid` of `start-stop-daemon`, `user[:group]`.
-    chuid: ?[]const u8 = null,
-    /// Wrapper in front of the executor of a daemon.
-    daemon: ?Wrapper = null,
-    /// Wrapper in front of the executor calls that run to the end.
-    call: ?Wrapper = null,
-    /// Account that owns the files the executor rewrites and the log directory.
-    owner: ?[]const u8 = null,
+    numeric: ?shell.Numeric = null,
 };
 
 pub const Deps = struct {
@@ -186,47 +167,13 @@ fn writeWords(w: *Io.Writer, words: []const []const u8) Io.Writer.Error!void {
     }
 }
 
-/// The flags of `setpriv` that set the account, behind a space.
-fn setprivFlags(w: *Io.Writer, s: anytype) Io.Writer.Error!void {
-    try w.print(" --reuid={s} ", .{s.user});
-    if (s.group) |g| {
-        try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{s.user});
-    if (s.supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{s.user});
-    for (s.supplementary) |g| try w.print(",{s}", .{g});
-    try w.writeByte('"');
-}
-
-/// The executor with `args`, behind a wrapper when the account needs one.
-fn writeExecutor(w: *Io.Writer, gpa: Allocator, in: Input, wrapper: ?Wrapper, args: []const []const u8) Io.Writer.Error!void {
-    const wrap = wrapper orelse {
-        try writeWord(w, in.executor_path);
-        try w.writeByte(' ');
-        return writeWords(w, args);
-    };
-    switch (wrap) {
-        .setpriv => |s| {
-            try writeWord(w, s.path);
-            try setprivFlags(w, s);
-            try w.writeByte(' ');
-            try writeWord(w, in.executor_path);
-            try w.writeByte(' ');
-            try writeWords(w, args);
-        },
-        .su => |user| {
-            var inner: Io.Writer.Allocating = .init(gpa);
-            defer inner.deinit();
-            try inner.writer.writeAll("exec ");
-            try writeWord(&inner.writer, in.executor_path);
-            try inner.writer.writeByte(' ');
-            try writeWords(&inner.writer, args);
-            try w.writeAll("su -s /bin/sh -c ");
-            try writeWord(w, inner.written());
-            try w.writeByte(' ');
-            try writeWord(w, user);
-        },
-    }
+/// The executor with `args`, and the numeric ids of the account after them when the executor cannot
+/// resolve it.
+fn writeExecutor(w: *Io.Writer, in: Input, args: []const []const u8) Io.Writer.Error!void {
+    try writeWord(w, in.executor_path);
+    try w.writeByte(' ');
+    try writeWords(w, args);
+    if (in.identity.numeric) |n| try shell.writeNumericFlags(w, n);
 }
 
 fn execArgs(gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const u8) Allocator.Error![]const []const u8 {
@@ -237,10 +184,10 @@ fn execArgs(gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const
     return args.items;
 }
 
-/// A call of the executor that runs to the end, behind the wrapper of the account.
+/// A call of the executor that runs to the end.
 fn writeCall(w: *Io.Writer, gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const u8) Io.Writer.Error!void {
     const args = execArgs(gpa, in, phase, tail) catch return error.WriteFailed;
-    return writeExecutor(w, gpa, in, in.identity.call, args);
+    return writeExecutor(w, in, args);
 }
 
 /// True when `start` and `stop` keep a lock file, the convention of Red Hat's `rc` script,
@@ -269,16 +216,6 @@ fn writeVariables(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     if (locks(in)) try w.print("lock_file={s}/{s}\n", .{ lock_dir, in.service });
 }
 
-/// `chown` of the files and the log directory the executor writes as another account.
-fn writeOwnership(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    const owner = in.identity.owner orelse return;
-    try w.writeAll("\tfor _f in \"$log_dir\" \"$main_pid\" \"$exit_file\"");
-    if (in.mode == .daemon) try w.writeAll(" \"$daemon_pid\"");
-    try w.writeAll("; do\n\t\t[ -d \"$_f\" ] || : >> \"$_f\"\n\t\tchown ");
-    try writeWord(w, owner);
-    try w.writeAll(" \"$_f\"\n\tdone\n");
-}
-
 fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
     const u = in.unit;
     var tail: std.ArrayList([]const u8) = .empty;
@@ -286,35 +223,15 @@ fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!vo
     tail.appendSlice(gpa, &.{ "--log", "--record-exit" }) catch return error.WriteFailed;
     try w.writeAll("\ndo_start() {\n\trunning && return 0\n\tmkdir -p \"$state_dir\" \"$log_dir\" || return 1\n\trm -f \"$exit_file\" \"$main_pid\"\n");
     if (locks(in)) try w.writeAll("\tmkdir -p " ++ lock_dir ++ "\n");
-    try writeOwnership(w, in);
     try w.print("\techo \"Starting {s}\"\n", .{u.name.full});
     switch (in.variant) {
         .debian => {
             const args = execArgs(gpa, in, null, tail.items) catch return error.WriteFailed;
-            try w.writeAll("\tstart-stop-daemon --start --quiet --background --make-pidfile --pidfile \"$daemon_pid\"");
-            if (in.identity.chuid) |spec| {
-                try w.writeAll(" --chuid ");
-                try writeWord(w, spec);
-            }
-            try w.writeAll(" --exec ");
+            try w.writeAll("\tstart-stop-daemon --start --quiet --background --make-pidfile --pidfile \"$daemon_pid\" --exec ");
             try writeWord(w, in.executor_path);
-            if (in.identity.daemon) |wrap| switch (wrap) {
-                .setpriv => |s| {
-                    try w.writeAll(" --startas ");
-                    try writeWord(w, s.path);
-                    try w.writeAll(" --");
-                    try setprivFlags(w, s);
-                    try w.writeAll(" -- ");
-                    try writeWord(w, in.executor_path);
-                    try w.writeByte(' ');
-                    try writeWords(w, args);
-                    try w.writeByte('\n');
-                    return writeStartTail(w, in);
-                },
-                .su => {},
-            };
             try w.writeAll(" -- ");
             try writeWords(w, args);
+            if (in.identity.numeric) |n| try shell.writeNumericFlags(w, n);
             try w.writeByte('\n');
         },
         .redhat => {
@@ -323,7 +240,7 @@ fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!vo
             args.append(gpa, "--daemon") catch return error.WriteFailed;
             args.appendSlice(gpa, tail.items) catch return error.WriteFailed;
             try w.writeByte('\t');
-            try writeExecutor(w, gpa, in, in.identity.daemon, args.items);
+            try writeExecutor(w, in, args.items);
             try w.writeByte('\n');
         },
     }
@@ -344,7 +261,6 @@ fn writeStopDaemon(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll(
         "\nstop_daemon() {\n" ++
             "\trunning || return 0\n" ++
-            "\t_pid=$(cat \"$daemon_pid\")\n" ++
             "\tkill -TERM \"$_pid\" 2>/dev/null\n" ++
             "\t_n=0\n" ++
             "\twhile running && [ \"$_n\" -lt $((stop_wait * 10)) ]; do\n" ++
@@ -416,7 +332,8 @@ fn writeRunning(w: *Io.Writer) Io.Writer.Error!void {
     try w.writeAll(
         "\nrunning() {\n" ++
             "\t_pid=$(cat \"$daemon_pid\" 2>/dev/null)\n" ++
-            "\t[ -n \"$_pid\" ] && [ \"$(cat \"/proc/$_pid/comm\" 2>/dev/null)\" = fake-systemd ]\n" ++
+            "\tcase $_pid in ''|*[!0-9]*) return 1 ;; esac\n" ++
+            "\t[ \"$_pid\" -gt 1 ] && [ \"$(cat \"/proc/$_pid/comm\" 2>/dev/null)\" = fake-systemd ]\n" ++
             "}\n",
     );
 }
@@ -429,7 +346,6 @@ fn writeOneshotStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!v
     }
     try w.writeAll("\tmkdir -p \"$state_dir\" \"$log_dir\" || return 1\n");
     if (locks(in)) try w.writeAll("\tmkdir -p " ++ lock_dir ++ "\n");
-    try writeOwnership(w, in);
     try w.print("\techo \"Starting {s}\"\n\t", .{u.name.full});
     try writeCall(w, gpa, in, null, &.{ "--log", "--record-exit" });
     try w.writeAll(" > /dev/null\n\t_rc=$?\n\trm -f \"$main_pid\"\n");

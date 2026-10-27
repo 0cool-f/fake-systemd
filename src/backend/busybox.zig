@@ -24,6 +24,7 @@ const marker = @import("../index/marker.zig");
 const rebuild = @import("../index/rebuild.zig");
 const apply = @import("../reconcile/apply.zig");
 const interface = @import("interface.zig");
+const guard = @import("guard.zig");
 const shell = @import("shell.zig");
 const runner = @import("runner.zig");
 const Runit = @import("runit.zig");
@@ -38,7 +39,7 @@ const Env = interface.Env;
 const Busybox = @This();
 
 pub const backend_name = "busybox";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 pub const Mode = enum { runsvdir, inittab };
 
@@ -188,14 +189,15 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     return if (self.mode == .runsvdir) self.adaptFiles(gpa, generated) else generated;
 }
 
-/// A file of a runit service directory (`run`, `finish`, `log/run`, `control/t`) names its
+/// A file of a runit service directory (`run`, `finish`, `log/run`, `control/t`, the meta file) names its
 /// service by the directory; an init script by its own name.
 fn serviceOfFile(path: []const u8) []const u8 {
     const leaf = std.fs.path.basename(path);
     const dir = std.fs.path.dirname(path) orelse return leaf;
     const parent = std.fs.path.basename(dir);
     const in_service_dir = std.mem.eql(u8, parent, "log") or std.mem.eql(u8, parent, "control") or
-        std.mem.eql(u8, leaf, "run") or std.mem.eql(u8, leaf, "finish") or std.mem.eql(u8, leaf, "down");
+        std.mem.eql(u8, leaf, "run") or std.mem.eql(u8, leaf, "finish") or std.mem.eql(u8, leaf, "down") or
+        std.mem.eql(u8, leaf, marker.meta_name);
     return if (in_service_dir) runit_layout.serviceOfFile(path) else leaf;
 }
 
@@ -209,13 +211,21 @@ fn scriptPath(self: *Busybox, service: []const u8) ![]const u8 {
     return std.fs.path.join(self.ctx.gpa, &.{ self.scriptDir(), service });
 }
 
-fn readInittab(self: *Busybox) []const u8 {
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, inittab_path, 1 << 20) catch "";
+/// Text of the inittab; empty when the file does not exist, any other read failure is an error.
+fn readInittab(self: *Busybox) ![]const u8 {
+    return self.ctx.fs.readFileAlloc(self.ctx.gpa, inittab_path, 1 << 20) catch |e| switch (e) {
+        error.FileNotFound => "",
+        else => {
+            self.ctx.diag.err("cannot read {s}: {t}", .{ inittab_path, e });
+            return e;
+        },
+    };
 }
 
 fn enabledList(self: *Busybox) std.ArrayList([]const u8) {
     var list: std.ArrayList([]const u8) = .empty;
-    const services = inittab.enabledServices(self.ctx.gpa, self.readInittab(), self.scriptDir()) catch return list;
+    const text = self.readInittab() catch return list;
+    const services = inittab.enabledServices(self.ctx.gpa, text, self.scriptDir()) catch return list;
     list.appendSlice(self.ctx.gpa, services) catch return list;
     return list;
 }
@@ -227,8 +237,11 @@ fn indexOf(list: []const []const u8, name: []const u8) ?usize {
 
 const max_dependency_depth = 8;
 
+/// The start relations of the script of `service`: derived from the unit for a generated script,
+/// read from the LSB header for any other.
 fn headerOf(self: *Busybox, service: []const u8) !sysv_native.Header {
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, try self.scriptPath(service), 1 << 20) catch "";
+    const content = (try guard.readOrAbsent(self.ctx, try self.scriptPath(service), 1 << 20)) orelse "";
+    if (try self.sysv.generatedDeps(service, content)) |deps| return .{ .required_start = deps.required, .should_start = deps.should };
     return sysv_native.parseHeader(self.ctx.gpa, content);
 }
 
@@ -269,8 +282,12 @@ fn addOrdered(self: *Busybox, list: *std.ArrayList([]const u8), service: []const
 /// running init to read it again so that its shutdown entries are the new ones.
 fn commit(self: *Busybox, env: Env, list: []const []const u8) !void {
     const gpa = env.ctx.gpa;
-    const text = self.readInittab();
-    const updated = try inittab.withServices(gpa, text, list, self.scriptDir());
+    const text = try self.readInittab();
+    var fault: core.block.Fault = undefined;
+    const updated = inittab.withServices(gpa, text, list, self.scriptDir(), &fault) catch |e| {
+        if (e == error.MalformedBlock) core.block.report(env.ctx.diag, inittab_path, fault);
+        return e;
+    };
     if (env.ctx.dry_run) return;
     const mode: u16 = if (self.ctx.fs.stat(inittab_path)) |st| st.mode else |_| 0o644;
     try self.ctx.fs.writeFileAtomic(inittab_path, updated, mode);

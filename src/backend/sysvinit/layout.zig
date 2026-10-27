@@ -71,11 +71,14 @@ pub const Found = struct {
 pub const levels = "0123456S";
 
 /// The links of `service` in all runlevel directories, in runlevel order.
-pub fn linksOf(ctx: *const core.Context, dirs: *const Dirs, service: []const u8) Allocator.Error![]const Found {
+pub fn linksOf(ctx: *const core.Context, dirs: *const Dirs, service: []const u8) ![]const Found {
     var out: std.ArrayList(Found) = .empty;
     for (levels) |level| {
         const dir = try runlevelDir(ctx.gpa, dirs, level);
-        const entries = ctx.fs.iterateDir(ctx.gpa, dir) catch continue;
+        const entries = ctx.fs.iterateDir(ctx.gpa, dir) catch |e| switch (e) {
+            error.FileNotFound, error.NotDir => continue,
+            else => return e,
+        };
         for (entries) |e| {
             const link = native.parseLink(e.name) orelse continue;
             if (!std.mem.eql(u8, link.name, service)) continue;

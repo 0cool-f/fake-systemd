@@ -23,6 +23,8 @@ const logpath = @import("../exec/logpath.zig");
 const executor = @import("../exec/executor.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
+const shell = @import("shell.zig");
 const network = @import("network.zig");
 const runner = @import("runner.zig");
 const render = @import("openrc/render.zig");
@@ -203,7 +205,7 @@ fn mapDependencies(self: *OpenRc, own: []const u8, u: *const model.Unit, resolut
 }
 
 fn accountKnown(self: *OpenRc, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -214,7 +216,7 @@ fn accountKnown(self: *OpenRc, file: []const u8, account: []const u8) bool {
 }
 
 fn numeric(name: []const u8) bool {
-    return name.len > 0 and std.ascii.isDigit(name[0]);
+    return shell.allDigits(name);
 }
 
 /// True when the static executor can switch to the unit's user and groups from `/etc/passwd`
@@ -282,40 +284,23 @@ fn accountSpec(gpa: Allocator, u: *const model.Unit) Allocator.Error![]const u8 
     return if (u.group) |g| std.fmt.allocPrint(gpa, "{s}:{s}", .{ user, g }) else gpa.dupe(u8, user);
 }
 
-const Identities = struct {
-    /// How the daemon switches account.
-    daemon: ?render.Identity = null,
-    /// How executor calls from script functions do.
-    call: ?render.Wrapper = null,
-};
+fn plainGroups(u: *const model.Unit) bool {
+    if (u.group) |g| if (!render.plainAccount(g)) return false;
+    for (u.supplementary_groups) |g| if (!render.plainAccount(g)) return false;
+    return true;
+}
 
-/// An account the executor cannot resolve (LDAP, sssd) is switched by OpenRC through the system
-/// libc: `command_user` applies the groups of the account. Supplementary groups and executor
-/// calls from script functions need `setpriv`, or `su`, which knows no group arguments. A
-/// native command always takes `command_user`, since no executor switches for it.
-fn identitiesFor(self: *OpenRc, u: *const model.Unit, mode: render.Mode, use_executor: bool, have_setpriv: bool) !Identities {
-    if (u.scope == .user) return .{};
-    const user = u.user orelse return .{};
-    const resolves = self.executorResolves(u);
-    if (resolves and use_executor) return .{};
-    var out: Identities = .{};
-    const wrapper: render.Wrapper = if (have_setpriv)
-        .{ .setpriv = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } }
-    else
-        .{ .su = user };
-    if (!resolves) {
-        if (!have_setpriv and (u.group != null or u.supplementary_groups.len > 0)) {
-            self.ctx.diag.warn("{s}: setpriv is not installed, the groups of {s} come from the group database only", .{ u.name.full, user });
-        }
-        out.call = wrapper;
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+/// script looks up, wherever the script runs it; the executor stays root and switches itself.
+fn numericFor(self: *OpenRc, u: *const model.Unit) !?shell.Numeric {
+    if (u.scope == .user) return null;
+    const user = u.user orelse return null;
+    if (self.executorResolves(u)) return null;
+    if (!render.plainAccount(user) or !plainGroups(u)) {
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
+        return error.Unsupported;
     }
-    // The daemon of `background` mode is started by start-stop-daemon, whose `--user` is not
-    // OpenRC's on Debian, so the switch is made by `setpriv` there as well.
-    out.daemon = if (have_setpriv and use_executor and (u.supplementary_groups.len > 0 or mode == .background))
-        .{ .wrapper = wrapper }
-    else
-        .{ .command_user = try accountSpec(self.ctx.gpa, u) };
-    return out;
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
 }
 
 fn readVersion(self: *OpenRc) ?native.Version {
@@ -382,13 +367,13 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const self = me(ptr);
     const u = input.unit;
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
 
     const reason = policy.executorReason(u.*, capabilities, native_support);
     const mode = modeFor(u);
     // Without a supervisor of its own a service runs under the executor, which logs and records the exit.
     const use_executor = (reason != null and reason.? != .no_command) or nativeBlocked(u) or mode == .background;
-    const have_setpriv = (try self.findProgram("setpriv")) != null;
-    const ids = try self.identitiesFor(u, mode, use_executor, have_setpriv);
+    const exec_ids = try self.numericFor(u);
     const version = self.readVersion();
     const pipes = version == null or version.?.atLeast(logger_pipe_version.major, logger_pipe_version.minor);
 
@@ -400,11 +385,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         .unit = u,
         .mode = mode,
         .command = command,
-        .identity = ids.daemon,
-        .call_wrapper = ids.call,
+        .command_user = if (use_executor or u.scope == .user) null else if (u.user != null) try accountSpec(gpa, u) else null,
+        .numeric = exec_ids,
         .deps = try self.mapDependencies(svc, u, input.deps),
         .executor_path = policy.executor_path,
-        .setpriv_path = (try self.findProgram("setpriv")) orelse "/usr/bin/setpriv",
         .logging = if (pipes) .pipe else .file,
         .log_dir = logpath.logDir(self.ctx, u.name.full),
         .pidfile = try pidFile(gpa, self.ctx, u, svc, mode),
@@ -417,8 +401,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
 
     const dir = try layout.generationDir(self.ctx, self.dirs, u.scope);
+    const path = try std.fs.path.join(gpa, &.{ dir, svc });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ dir, svc }), .content = content, .mode = 0o755 };
+    files[0] = .{ .path = path, .content = content, .mode = 0o755 };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -508,20 +494,22 @@ fn readState(self: *OpenRc, comptime fmt: []const u8, args: anytype) ?[]const u8
 }
 
 /// Main process of the service: the one its executor recorded, else the child `supervise-daemon`
-/// supervises, else the process in
-/// the pid file `start-stop-daemon` recorded.
-fn pidOf(self: *OpenRc, service: []const u8) ?u32 {
-    if (self.generatedUnit(service)) |unit| {
+/// supervises, else the process in the pid file `start-stop-daemon` recorded. A pid read from a
+/// file is only taken when `guard.acceptPid` allows signaling it. The pid file of a generated
+/// unit that names an account is the daemon's own claim, so it is not followed.
+fn pidOf(self: *OpenRc, service: []const u8) !?u32 {
+    var generated = false;
+    if (try self.generatedUnit(service)) |unit| {
+        generated = true;
         if (executor.execPidPath(self.ctx, unit) catch null) |path| {
-            if (self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch null) |text| {
-                if (native.parsePid(text)) |pid| return pid;
-            }
+            if (guard.recordedPid(self.ctx, path)) |pid| return pid;
         }
     }
     const state = layout.stateDir(self.ctx) catch return null;
     if (self.readState("{s}/options/{s}/child_pid", .{ state, service })) |text| {
-        if (native.parsePid(text)) |pid| return pid;
+        if (guard.accepted(self.ctx, native.parsePid(text), null)) |pid| return pid;
     }
+    if (generated and try self.runsAsAccount(service)) return null;
     const path = if (self.readState("{s}/options/{s}/pidfile", .{ state, service })) |text|
         std.mem.trim(u8, text, " \t\r\n")
     else if (self.readState("{s}/daemons/{s}/001", .{ state, service })) |text|
@@ -529,8 +517,14 @@ fn pidOf(self: *OpenRc, service: []const u8) ?u32 {
     else
         return null;
     if (path.len == 0) return null;
-    const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return null;
-    return native.parsePid(text);
+    return guard.pidFromFile(self.ctx, path);
+}
+
+/// True when the generated unit of `service` has `User=`: the account can write its pid file.
+fn runsAsAccount(self: *OpenRc, service: []const u8) !bool {
+    const unit = (try self.generatedUnit(service)) orelse return false;
+    const u = executor.loadUnit(self.ctx, unit) catch return true;
+    return u.user != null;
 }
 
 /// True when a supervisor gave up on the service: it is `stopped` with a `failed` marker.
@@ -542,24 +536,23 @@ fn markedFailed(self: *OpenRc, service: []const u8) bool {
 }
 
 /// Flags recorded in a generated script; none for native services.
-fn flagsOf(self: *OpenRc, service: []const u8) native.Flags {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return .{}) orelse return .{};
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch return .{};
+fn flagsOf(self: *OpenRc, service: []const u8) !native.Flags {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return .{};
+    const content = (try guard.readOrAbsent(self.ctx, path, 1 << 20)) orelse return .{};
     const parsed = marker.parse(content) orelse return .{};
     return native.parseFlags(parsed.rest);
 }
 
 /// Unit recorded in the marker of the script, null for native services.
-fn generatedUnit(self: *OpenRc, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *OpenRc, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const content = (try guard.readOrAbsent(self.ctx, path, 1 << 20)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
 /// How the executor recorded the end of the service, when it ran with `--record-exit`.
-fn recordedExit(self: *OpenRc, service: []const u8) ?native.Exit {
-    const unit = self.generatedUnit(service) orelse return null;
+fn recordedExit(self: *OpenRc, service: []const u8) !?native.Exit {
+    const unit = (try self.generatedUnit(service)) orelse return null;
     const path = executor.execExitPath(self.ctx, unit) catch return null;
     const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return null;
     return native.parseExit(text);
@@ -575,8 +568,8 @@ fn ssdPidFile(self: *OpenRc, service: []const u8) ![]const u8 {
 /// True when the executor of a recording service has ended: it wrote its exit file, or the
 /// process of its pid file is gone. A start-stop-daemon that registers no daemon with OpenRC, as
 /// the one of dpkg does not, leaves the service `started` after its death.
-fn executorGone(self: *OpenRc, service: []const u8) bool {
-    if (self.recordedExit(service) != null) return true;
+fn executorGone(self: *OpenRc, service: []const u8) !bool {
+    if ((try self.recordedExit(service)) != null) return true;
     const path = self.ssdPidFile(service) catch return false;
     const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return false;
     const pid = native.parsePid(text) orelse return false;
@@ -586,14 +579,14 @@ fn executorGone(self: *OpenRc, service: []const u8) bool {
 
 fn probe(self: *OpenRc, env: Env, service: []const u8) !Probe {
     const res = try runRc(env, rc_service, &.{ service, "status" }, .capture);
-    const flags = self.flagsOf(service);
+    const flags = try self.flagsOf(service);
     var code = res.code;
-    if (code == 0 and flags.record_exit and self.executorGone(service)) code = native.status_crashed;
+    if (code == 0 and flags.record_exit and try self.executorGone(service)) code = native.status_crashed;
     const failed = code == 3 and self.markedFailed(service);
-    const exit = if (native.isCrashed(code)) self.recordedExit(service) else null;
+    const exit = if (native.isCrashed(code)) try self.recordedExit(service) else null;
     const state = native.stateOfStatus(code, failed, flags.transient, exit);
     const live = state == .active or state == .deactivating or state == .activating;
-    return .{ .code = code, .stdout = res.stdout, .state = state, .pid = if (live) self.pidOf(service) else null };
+    return .{ .code = code, .stdout = res.stdout, .state = state, .pid = if (live) try self.pidOf(service) else null };
 }
 
 fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Status {
@@ -629,8 +622,8 @@ fn start(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     if (env.ctx.dry_run) return rcService(env, service, "start");
     try self.refreshDependencies(env);
     const p = try self.probe(env, service);
-    const finished = self.flagsOf(service).transient and p.code == 0;
-    if (native.isCrashed(p.code) and self.flagsOf(service).record_exit) {
+    const finished = (try self.flagsOf(service)).transient and p.code == 0;
+    if (native.isCrashed(p.code) and (try self.flagsOf(service)).record_exit) {
         try rcService(env, service, "zap");
         return rcService(env, service, "start");
     }
@@ -643,7 +636,7 @@ fn start(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     if (self.markedFailed(service)) return rcService(env, service, "zap");
-    if (self.flagsOf(service).record_exit and self.executorGone(service)) return rcService(env, service, "zap");
+    if ((try self.flagsOf(service)).record_exit and try self.executorGone(service)) return rcService(env, service, "zap");
     return rcService(env, service, "stop");
 }
 
@@ -661,7 +654,7 @@ fn reload(_: *anyopaque, env: Env, service: []const u8) anyerror!void {
 fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
     const self = me(ptr);
     const name = std.mem.cutPrefix(u8, signal, "SIG") orelse signal;
-    const pid = self.pidOf(service) orelse {
+    const pid = (try self.pidOf(service)) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };

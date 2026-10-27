@@ -32,6 +32,7 @@ const environment = @import("environment.zig");
 const expand = @import("expand.zig");
 const identity = @import("identity.zig");
 const limits = @import("limits.zig");
+const procs = @import("procs.zig");
 const sys = @import("sys.zig");
 const logger = @import("logger.zig");
 
@@ -46,6 +47,11 @@ pub const Request = struct {
     log: bool = false,
     /// `start` only: the executor stays resident and writes how the main process ended to `execExitPath`.
     record_exit: bool = false,
+    /// The service manager has set the identity of the process: `User=`, `Group=` and
+    /// `SupplementaryGroups=` are neither switched to nor refused when they do not resolve.
+    identity_set: bool = false,
+    /// A numeric identity to switch to instead of resolving `User=`, `Group=` and `SupplementaryGroups=`.
+    identity: ?identity.Switch = null,
 };
 
 pub const search_path = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
@@ -161,21 +167,15 @@ const Prepared = struct {
     limit_list: []const limits.Limit,
     umask: u32,
     success: SuccessSet,
+    /// Uid of the service: the account switched to, else the uid of the executor.
+    service_uid: u32 = 0,
     /// Main process of the unit for `stop` and `reload`.
     main_pid: ?i32 = null,
+    /// Why `main_pid` was accepted, for the checks before it is signalled.
+    main_source: procs.Source = .{ .service_uid = 0 },
     stop_on_signal: bool = false,
     record_exit: bool = false,
 };
-
-fn lookupUser(context: ?*anyopaque, name: []const u8) ?specifier.UserInfo {
-    const db: *const accounts.Db = @ptrCast(@alignCast(context.?));
-    const u = db.findUser(name) orelse return null;
-    var group_name: ?[]const u8 = null;
-    for (db.groups) |g| {
-        if (g.gid == u.gid) group_name = g.name;
-    }
-    return .{ .name = u.name, .uid = u.uid, .group = group_name, .gid = u.gid, .home = u.home };
-}
 
 fn readTrimmed(ctx: *const core.Context, path: []const u8) ?[]const u8 {
     const content = ctx.fs.readFileAlloc(ctx.gpa, path, 4096) catch return null;
@@ -183,12 +183,18 @@ fn readTrimmed(ctx: *const core.Context, path: []const u8) ?[]const u8 {
     return if (t.len == 0) null else t;
 }
 
-pub fn specifierEnv(ctx: *const core.Context) Allocator.Error!specifier.Env {
-    const user: specifier.UserInfo = .{
-        .name = ctx.getEnv("USER") orelse if (ctx.uid == 0) "root" else "user",
-        .uid = ctx.uid,
-        .home = ctx.home,
-    };
+/// Accounts of the root in use for the specifiers: the user that runs the manager is its
+/// `/etc/passwd` entry, never what `$USER` or `$HOME` say.
+fn readAccounts(ctx: *const core.Context) Allocator.Error!*const specifier.Accounts {
+    const acc = try ctx.gpa.create(specifier.Accounts);
+    // An unreadable database reads as empty here; `runInner` loads it again and refuses a unit that
+    // names an account.
+    acc.* = specifier.Accounts.read(ctx.gpa, ctx.fs.*) catch .{};
+    return acc;
+}
+
+fn specifierEnvFor(ctx: *const core.Context, acc: *const specifier.Accounts) Allocator.Error!specifier.Env {
+    const user = try acc.manager(ctx.gpa, ctx.uid);
     var env: specifier.Env = switch (ctx.scope) {
         .system => .system(user),
         .user => try .userScope(ctx.gpa, user, .{
@@ -203,13 +209,18 @@ pub fn specifierEnv(ctx: *const core.Context) Allocator.Error!specifier.Env {
     return env;
 }
 
+pub fn specifierEnv(ctx: *const core.Context) Allocator.Error!specifier.Env {
+    return specifierEnvFor(ctx, try readAccounts(ctx));
+}
+
 /// Resolves `unit_name` in the scope of `ctx` and builds its model.
-pub fn loadUnit(ctx: *core.Context, db: *const accounts.Db, unit_name: []const u8) !model.Unit {
+pub fn loadUnit(ctx: *core.Context, unit_name: []const u8) !model.Unit {
     const name = try name_mod.parse(ctx.gpa, unit_name);
     const resolved = try resolve.resolve(ctx.gpa, ctx.fs.*, .{ .scope = ctx.scope, .xdg_config_home = ctx.xdg_config_home }, name);
+    const acc = try readAccounts(ctx);
     return model.load(ctx.gpa, ctx.fs.*, resolved, .{
-        .env = try specifierEnv(ctx),
-        .user_lookup = .{ .context = @constCast(db), .lookup = lookupUser },
+        .env = try specifierEnvFor(ctx, acc),
+        .user_lookup = .{ .context = @constCast(acc), .lookup = specifier.Accounts.lookup },
     });
 }
 
@@ -218,15 +229,53 @@ fn fail(ctx: *core.Context, comptime fmt: []const u8, args: anytype) u8 {
     return 1;
 }
 
-/// Reads a pid file; null unless it holds the pid of a live process.
-fn readPidFile(ctx: *const core.Context, path: []const u8) ?i32 {
-    const content = ctx.fs.readFileAlloc(ctx.gpa, path, 64) catch return null;
-    const pid = std.fmt.parseInt(i32, std.mem.trim(u8, content, " \t\r\n"), 10) catch return null;
-    if (pid <= 0) return null;
-    return switch (linux.errno(linux.kill(pid, @fromBackingInt(0)))) {
-        .SUCCESS, .PERM => pid,
-        else => null,
-    };
+/// A pid that passed the checks of its source, with the source it passed for.
+const Accepted = struct { pid: i32, src: procs.Source };
+
+const PidFile = struct { text: []const u8, owner: u32 };
+
+/// Reads a small file that is a regular file, not a symlink, through one descriptor.
+fn readPidFile(ctx: *const core.Context, path: []const u8, buf: []u8) ?PidFile {
+    const file = ctx.fs.openNoFollow(path, .{}) catch return null;
+    defer file.close(ctx.io);
+    const info = core.Fs.fileInfo(file) catch return null;
+    if (info.kind != .file) return null;
+    var len: usize = 0;
+    while (len < buf.len) {
+        const rc = linux.read(file.handle, buf[len..].ptr, buf.len - len);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return null,
+        }
+        if (rc == 0) break;
+        len += rc;
+    }
+    return .{ .text = buf[0..len], .owner = info.uid };
+}
+
+/// The process that the executor recorded in its state file: null unless the file is a regular
+/// file holding `<pid> <start time>` of a live process that `procs.acceptable` allows and whose
+/// start time is still the recorded one. A refused pid is reported when `report` is set.
+fn readRecorded(ctx: *const core.Context, path: []const u8, service_uid: u32, report: bool) ?Accepted {
+    var buf: [64]u8 = undefined;
+    const file = readPidFile(ctx, path, &buf) orelse return null;
+    const record = procs.parseRecord(file.text) orelse return null;
+    const src: procs.Source = .{ .service_uid = service_uid, .file_owner = file.owner };
+    if (procs.recordLives(record) and procs.acceptable(record.pid, src)) return .{ .pid = record.pid, .src = src };
+    if (report and record.pid > 1) ctx.diag.warn("ignoring pid {d} from {s}: not the recorded process of the service", .{ record.pid, path });
+    return null;
+}
+
+/// The pid that the daemon of a forking unit wrote to `PIDFile=`. The file is only a claim by
+/// the service, so the pid is taken when it is a descendant of this executor, whose subreaper
+/// role makes every process the daemon left behind one.
+fn readClaimedPid(ctx: *const core.Context, path: []const u8, service_uid: u32) ?Accepted {
+    var buf: [64]u8 = undefined;
+    const file = readPidFile(ctx, path, &buf) orelse return null;
+    const pid = std.fmt.parseInt(i32, std.mem.trim(u8, file.text, " \t\r\n"), 10) catch return null;
+    if (!procs.acceptableDescendant(pid)) return null;
+    return .{ .pid = pid, .src = .{ .service_uid = service_uid } };
 }
 
 fn pidFilePath(ctx: *const core.Context, unit: model.Unit) Allocator.Error!?[]const u8 {
@@ -260,19 +309,31 @@ fn buildEnvp(gpa: Allocator, vars: *const expand.Vars) Allocator.Error![*:null]c
 
 /// Everything `start`, `stop`, `reload` and `stop-post` share. Returns an exit status to stop
 /// with, after reporting the reason, or null.
-fn prepare(ctx: *core.Context, unit: model.Unit, db: accounts.Db, phase: Phase, out: *Prepared) !?u8 {
+fn prepare(ctx: *core.Context, unit: model.Unit, db: accounts.Db, phase: Phase, req: Request, out: *Prepared) !?u8 {
     var warnings: std.ArrayList(identity.Warning) = .empty;
+    const euid = linux.geteuid();
     const ident = try identity.resolve(ctx.gpa, db, unit, .{
-        .euid = linux.geteuid(),
+        .euid = euid,
         .egid = linux.getegid(),
+        .identity_set = req.identity_set,
+        .explicit = req.identity,
     }, &warnings);
     for (warnings.items) |w| switch (w) {
-        .unresolved => |n| ctx.diag.warn("{s}: '{s}' is not in /etc/passwd or /etc/group; the identity must already be set by the service manager", .{ unit.name.full, n }),
         .unprivileged => |n| ctx.diag.warn("{s}: cannot switch to '{s}' without root; keeping the current identity", .{ unit.name.full, n }),
     };
+    if (ident.refused) |r| {
+        if (r.incomplete) {
+            ctx.diag.err("{s}: the numeric identity needs both --uid and --gid; refusing to run the service as root", .{unit.name.full});
+            return r.code;
+        }
+        ctx.diag.err("{s}: '{s}' is not in /etc/passwd or /etc/group; refusing to run the service as root (pass --identity-set when the service manager has set the identity)", .{ unit.name.full, r.name });
+        return r.code;
+    }
+    const service_uid = if (ident.switch_to) |sw| sw.uid orelse euid else euid;
 
     var extra: std.ArrayList(model.EnvVar) = .empty;
-    const main_pid = if (phase == .start) null else try mainPid(ctx, unit);
+    const main: ?Accepted = if (phase == .start) null else try mainPid(ctx, unit, service_uid);
+    const main_pid: ?i32 = if (main) |m| m.pid else null;
     if (phase == .start) {
         if (try dirs.prepare(ctx, unit, ident.switch_to, &extra)) |code| return code;
     } else if (main_pid) |pid| {
@@ -310,35 +371,52 @@ fn prepare(ctx: *core.Context, unit: model.Unit, db: accounts.Db, phase: Phase, 
         .limit_list = try limit_list.toOwnedSlice(ctx.gpa),
         .umask = unit.umask orelse 0o022,
         .success = success,
+        .service_uid = service_uid,
         .main_pid = main_pid,
+        .main_source = if (main) |m| m.src else .{ .service_uid = service_uid },
     };
     return null;
 }
 
-/// Pid file the executor writes in every start, holding the main process of the unit.
+/// State file the executor writes in every start, holding `<pid> <start time>` of the main process
+/// of the unit. It is the only source of the process that stop and reload signal.
 pub fn execPidPath(ctx: *const core.Context, unit_name: []const u8) Allocator.Error![]const u8 {
     const file = try std.fmt.allocPrint(ctx.gpa, "fake-systemd/{s}.pid", .{unit_name});
     return std.fs.path.join(ctx.gpa, &.{ if (ctx.scope == .user) ctx.xdg_runtime_dir else "/run", file });
 }
 
-fn writeMainPid(ctx: *core.Context, unit: model.Unit, pid: i32) void {
-    const path = execPidPath(ctx, unit.name.full) catch return;
-    const dir = std.fs.path.dirname(path) orelse return;
-    ctx.fs.makePath(dir) catch |e| return ctx.diag.warn("{s}: cannot create {s}: {t}", .{ unit.name.full, dir, e });
-    const text = std.fmt.allocPrint(ctx.gpa, "{d}\n", .{pid}) catch return;
-    ctx.fs.writeFileInPlace(path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
+/// Mode of the directory and the files that the executor keeps in the runtime directory. They
+/// are written by root before or beside the service, never by the service account.
+const state_dir_mode = 0o755;
+const state_file_mode = 0o644;
+
+/// Writes one of the executor's state files below `<runtime>/fake-systemd`.
+pub fn writeStateFile(ctx: *core.Context, path: []const u8, content: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| try dirs.ensureRootDir(ctx, dir, state_dir_mode);
+    try ctx.fs.writeFileInPlace(path, content, state_file_mode);
 }
 
-/// `$MAINPID` for control commands and the process to stop: inherited from the caller, else
-/// from `PIDFile=`, else from the pid file of the executor.
-fn mainPid(ctx: *const core.Context, unit: model.Unit) !?i32 {
+fn writeMainPid(ctx: *core.Context, unit: model.Unit, pid: i32) void {
+    const path = execPidPath(ctx, unit.name.full) catch return;
+    const started = procs.startTime(pid) orelse {
+        ctx.diag.warn("{s}: process {d} is gone before it could be recorded", .{ unit.name.full, pid });
+        return;
+    };
+    const text = std.fmt.allocPrint(ctx.gpa, "{d} {d}\n", .{ pid, started }) catch return;
+    writeStateFile(ctx, path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
+}
+
+/// `$MAINPID` for control commands and the process to stop: inherited from the caller, else the
+/// process recorded by the executor. Every candidate has to pass `procs.acceptable`.
+fn mainPid(ctx: *const core.Context, unit: model.Unit, service_uid: u32) !?Accepted {
     if (ctx.environ.get("MAINPID")) |text| {
-        if (std.fmt.parseInt(i32, text, 10)) |pid| return pid else |_| {}
+        if (std.fmt.parseInt(i32, text, 10)) |pid| {
+            const src: procs.Source = .{ .service_uid = service_uid };
+            if (procs.acceptable(pid, src)) return .{ .pid = pid, .src = src };
+            ctx.diag.warn("{s}: ignoring MAINPID={d}: not a live process of the service", .{ unit.name.full, pid });
+        } else |_| {}
     }
-    if (try pidFilePath(ctx, unit)) |path| {
-        if (readPidFile(ctx, path)) |pid| return pid;
-    }
-    return readPidFile(ctx, try execPidPath(ctx, unit.name.full));
+    return readRecorded(ctx, try execPidPath(ctx, unit.name.full), service_uid, true);
 }
 
 const Argv = struct {
@@ -494,12 +572,12 @@ fn sleepMs(ctx: *const core.Context, ms: u64) void {
 }
 
 /// Waits for `PIDFile=` to name a live process; null on timeout or when interrupted.
-fn waitForPidFile(prep: *Prepared, path: []const u8) ?i32 {
+fn waitForPidFile(prep: *Prepared, path: []const u8) ?Accepted {
     const ctx = prep.ctx;
     const began = Io.Timestamp.now(ctx.io, .awake);
     const limit_ms = startTimeoutMs(prep.unit);
     while (true) {
-        if (readPidFile(ctx, path)) |pid| return pid;
+        if (readClaimedPid(ctx, path, prep.service_uid)) |accepted| return accepted;
         if (received_signal.load(.seq_cst) != 0) return null;
         if (limit_ms) |limit| {
             const elapsed_ms: u64 = @intCast(@max(0, began.untilNow(ctx.io, .awake).toMilliseconds()));
@@ -573,12 +651,14 @@ fn startForking(prep: *Prepared) u8 {
         ctx.diag.warn("{s}: Type=forking without PIDFile=: the service is started but not supervised", .{unit.name.full});
         return runSequence(prep, unit.exec_start_post, .control) orelse 0;
     };
-    const pid = waitForPidFile(prep, pid_path) orelse
+    const accepted = waitForPidFile(prep, pid_path) orelse
         return fail(ctx, "{s}: no live process in {s} (timeout or interrupted)", .{ unit.name.full, pid_path });
+    const pid = accepted.pid;
+    prep.main_source = accepted.src;
     writeMainPid(ctx, unit, pid);
     forward_main.store(pid, .seq_cst);
     if (runSequence(prep, unit.exec_start_post, .control)) |code| {
-        sys.kill(pid, .TERM);
+        signalChecked(prep, pid, .TERM);
         return code;
     }
     return follow(prep, pid);
@@ -672,13 +752,12 @@ fn removeExit(ctx: *core.Context, unit: model.Unit) void {
     };
 }
 
-/// Written in place, so that a file the service account owns can be rewritten in a directory it
-/// cannot create files in.
+/// Written by the resident executor, which keeps its own identity while the service runs as its
+/// account.
 fn writeExit(ctx: *core.Context, unit: model.Unit, code: u8) void {
     const path = execExitPath(ctx, unit.name.full) catch return;
-    if (std.fs.path.dirname(path)) |dir| ctx.fs.makePath(dir) catch |e| ctx.diag.warn("{s}: cannot create {s}: {t}", .{ unit.name.full, dir, e });
     const text = std.fmt.allocPrint(ctx.gpa, "{s} {d}\n", .{ if (code == 0) "ok" else "failed", code }) catch return;
-    ctx.fs.writeFileInPlace(path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
+    writeStateFile(ctx, path, text) catch |e| ctx.diag.warn("{s}: cannot write {s}: {t}", .{ unit.name.full, path, e });
 }
 
 /// Forks a `fake-systemd --log` child and points stdout and stderr at it. The child outlives
@@ -712,9 +791,12 @@ fn startLogger(prep: *Prepared) void {
     }
 }
 
+/// Runs the start phase. When it returns, the main process has ended (or was never supervised),
+/// so the pid file that named it goes.
 fn start(prep: *Prepared) u8 {
     if (prep.record_exit) removeExit(prep.ctx, prep.unit);
     const code = startPhase(prep);
+    removeExecPidFile(prep.ctx, prep.unit);
     if (prep.record_exit) writeExit(prep.ctx, prep.unit, code);
     return code;
 }
@@ -739,12 +821,34 @@ fn stopTimeoutMs(unit: model.Unit) ?i32 {
     return @intCast(@min(us / std.time.us_per_ms, std.math.maxInt(i32)));
 }
 
-/// Signals the process, or its whole process group when it leads one that is not ours.
-fn signalMain(unit: model.Unit, pid: i32, sig: linux.SIG) void {
+/// A pidfd for `pid` when it is a process of the service. The pidfd pins that process: it is
+/// checked to be running after the checks, so a pid that was recycled in the meantime is
+/// never signalled.
+fn openChecked(prep: *const Prepared, pid: i32) ?i32 {
+    const fd = switch (sys.pidfdOpen(pid)) {
+        .fd => |f| f,
+        .failed => return null,
+    };
+    const running = procs.acceptable(pid, prep.main_source) and !(sys.waitReadable(fd, 0) catch true);
+    if (running) return fd;
+    sys.closeFd(fd);
+    return null;
+}
+
+/// Signals the process of `pidfd`, or its whole process group when the process leads one that
+/// is not ours: a group led by a process of the service holds only its descendants.
+fn signalMain(unit: model.Unit, pidfd: i32, pid: i32, sig: linux.SIG) void {
     const own_group = linux.getpgid(0);
     const group = linux.getpgid(pid);
     const leads = unit.kill_mode != .process and group == @as(usize, @intCast(pid)) and group != own_group;
-    sys.kill(if (leads) -pid else pid, sig);
+    if (leads) sys.kill(-pid, sig) else _ = sys.pidfdKill(pidfd, sig);
+}
+
+/// One signal to a process of the service, after the checks of `openChecked`.
+fn signalChecked(prep: *const Prepared, pid: i32, sig: linux.SIG) void {
+    const fd = openChecked(prep, pid) orelse return;
+    defer sys.closeFd(fd);
+    signalMain(prep.unit, fd, pid, sig);
 }
 
 const final_kill_wait_ms = 5000;
@@ -754,17 +858,17 @@ const final_kill_wait_ms = 5000;
 fn terminateMain(prep: *Prepared, pid: i32) void {
     const ctx = prep.ctx;
     const unit = prep.unit;
-    if (unit.kill_mode == .none) return;
-    const fd = switch (sys.pidfdOpen(pid)) {
-        .fd => |f| f,
-        .failed => return,
+    if (unit.kill_mode == .none or procs.parentOf(pid) == null) return;
+    const fd = openChecked(prep, pid) orelse {
+        ctx.diag.warn("{s}: not signalling process {d}: it is not a live process of the service", .{ unit.name.full, pid });
+        return;
     };
     defer sys.closeFd(fd);
     const sig = parseSignal(unit.kill_signal orelse "SIGTERM") orelse .TERM;
-    signalMain(unit, pid, sig);
+    signalMain(unit, fd, pid, sig);
     if (sys.waitReadable(fd, stopTimeoutMs(unit) orelse -1) catch true) return;
     ctx.diag.warn("{s}: process {d} did not stop in time, sending SIGKILL", .{ unit.name.full, pid });
-    signalMain(unit, pid, .KILL);
+    signalMain(unit, fd, pid, .KILL);
     if (!(sys.waitReadable(fd, final_kill_wait_ms) catch true)) ctx.diag.err("{s}: process {d} survived SIGKILL", .{ unit.name.full, pid });
 }
 
@@ -803,10 +907,21 @@ fn reloadPhase(prep: *Prepared) u8 {
 }
 
 fn runInner(ctx: *core.Context, req: Request) !u8 {
-    const db = accounts.Db.load(ctx.gpa, ctx.fs.*);
-    const unit = loadUnit(ctx, &db, req.unit) catch |e| return fail(ctx, "{s}: cannot load the unit: {t}", .{ req.unit, e });
+    var db_error: ?anyerror = null;
+    const db = accounts.Db.load(ctx.gpa, ctx.fs.*) catch |e| blk: {
+        db_error = e;
+        break :blk accounts.Db{};
+    };
+    const unit = loadUnit(ctx, req.unit) catch |e| return fail(ctx, "{s}: cannot load the unit: {t}", .{ req.unit, e });
+    // As root the accounts decide who the service runs as, so a database that cannot be read must
+    // not read as "no such account".
+    const names_account = unit.user != null or unit.group != null or unit.supplementary_groups.len > 0;
+    if (db_error) |e| if (names_account and linux.geteuid() == 0 and !req.identity_set and req.identity == null) {
+        ctx.diag.err("{s}: cannot read /etc/passwd or /etc/group: {t}", .{ unit.name.full, e });
+        return if (unit.user != null) 217 else 216;
+    };
     var prep: Prepared = undefined;
-    if (try prepare(ctx, unit, db, req.phase, &prep)) |code| return code;
+    if (try prepare(ctx, unit, db, req.phase, req, &prep)) |code| return code;
     prep.stop_on_signal = req.stop_on_signal;
     prep.record_exit = req.record_exit;
     if (req.log and req.phase == .start) startLogger(&prep);

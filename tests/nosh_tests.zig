@@ -414,3 +414,80 @@ test "a start waits out the moment a service changes state, but not forever" {
     try testing.expect(f.ctl.count(&.{ "system-control", "status", "foo" }) > 2);
     try testing.expectEqual(@as(usize, 1), f.ctl.count(&.{ "system-control", "start", "foo" }));
 }
+
+test "a bundle without record is removed only when the converter left both the marker and the hash file in it" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    const a = t.a();
+    const run_text = try marker.compose(a, "stale.service", "/s/stale.service", 1, "g", "#!/bin/nosh\nexec x\n");
+    try t.write(services ++ "/stale/service/run", run_text, 0o755);
+    try t.write(services ++ "/stale/service/precious", "keep\n", 0o644);
+    try t.write(services ++ "/gone/service/run", run_text, 0o755);
+    try t.write(services ++ "/gone/fake-systemd.hash", "abc\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(t.exists(services ++ "/stale/service/precious"));
+    try testing.expect(!t.exists(services ++ "/gone"));
+    try testing.expect(t.exists(services ++ "/syslog/service/run"));
+}
+
+test "a pid that status reports is never init" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try f.state("foo", "/etc/service-bundles/services/foo: \n\tState   : running since 2026-10-26 19:53:45 +0000; 2s ago\n\tMain PID: 1\n\tConfig  : enabled\n");
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGUSR1", "foo" }));
+    try testing.expectEqual(@as(usize, 0), f.ctl.count(&.{"kill"}));
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload gives the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "enable", "ldap" });
+    f.ctl.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try f.expectCalls(&.{&.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" }});
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "two units that map to the same service are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write(records ++ "/foo", try marker.compose(t.a(), "bar.service", "/x", 1, "fake-systemd 0.1.0 nosh/1", "directory /x\n"), 0o644);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(records ++ "/foo"), "# Unit: bar.service\n");
+}
+
+test "a record that cannot be read is an error, and the bundle it belongs to is not removed" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    const run_text = try marker.compose(t.a(), "gone.service", "/s/gone.service", 1, "g", "#!/bin/nosh\nexec x\n");
+    try t.write(services ++ "/gone/service/run", run_text, 0o755);
+    try t.write(services ++ "/gone/fake-systemd.hash", "abc\n", 0o644);
+    try t.write(records ++ "/gone", "x\n", 0o644);
+    const file = try t.fs.root.openFile(testing.io, "etc/service-bundles/fake-systemd/gone", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, (1 << 16) + 1)));
+    try testing.expect(t.run(&.{"daemon-reload"}) != 0);
+    try testing.expect(t.exists(services ++ "/gone/service/run"));
+}

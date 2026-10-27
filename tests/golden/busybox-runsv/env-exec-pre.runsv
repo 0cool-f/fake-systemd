@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:588fd275b1a629a7
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
 exec /usr/bin/fake-systemd --exec env-exec-pre.service
 === finish 0755
@@ -15,7 +15,7 @@ exec /usr/bin/fake-systemd --exec env-exec-pre.service
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:8ac4c4ed95f8311e
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -31,5 +31,5 @@ sv down .
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:18468a7f77eb8bb1
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log env-exec-pre.service

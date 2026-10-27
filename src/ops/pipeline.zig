@@ -144,14 +144,24 @@ fn readTrimmed(s: *Session, path: []const u8) ?[]const u8 {
     return if (t.len == 0) null else t;
 }
 
+/// Accounts of the root in use, read once per invocation.
+fn accounts(s: *Session) !*const unit.specifier.Accounts {
+    if (s.accounts) |a| return a;
+    const acc = try s.ctx.gpa.create(unit.specifier.Accounts);
+    acc.* = try .read(s.ctx.gpa, s.ctx.fs.*);
+    s.accounts = acc;
+    return acc;
+}
+
+/// How the model resolves `User=` to an account.
+fn userLookup(s: *Session) !model.UserLookup {
+    return .{ .context = @constCast(try accounts(s)), .lookup = unit.specifier.Accounts.lookup };
+}
+
 fn specifierEnv(s: *Session) !unit.specifier.Env {
     if (s.spec_env) |e| return e;
     const ctx = s.ctx;
-    const user: unit.specifier.UserInfo = .{
-        .name = ctx.getEnv("USER") orelse if (ctx.uid == 0) "root" else "user",
-        .uid = ctx.uid,
-        .home = ctx.home,
-    };
+    const user = try (try accounts(s)).manager(ctx.gpa, ctx.uid);
     var e: unit.specifier.Env = switch (ctx.scope) {
         .system => .system(user),
         .user => try .userScope(ctx.gpa, user, .{
@@ -245,7 +255,7 @@ pub fn prepareResolved(s: *Session, name: Name, resolved: resolve.Resolved) !Pla
         .found => {},
     }
     plan.tier = resolved.tier() orelse .admin;
-    const u = try model.load(gpa, s.ctx.fs.*, resolved, .{ .env = try specifierEnv(s) });
+    const u = try model.load(gpa, s.ctx.fs.*, resolved, .{ .env = try specifierEnv(s), .user_lookup = try userLookup(s) });
     plan.unit = u;
     const class = classify.classify(u, facts(s));
     plan.class = class;

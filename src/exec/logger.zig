@@ -16,7 +16,17 @@ const name_mod = @import("../unit/name.zig");
 pub const current_name = "current";
 const lock_name = ".lock";
 const lock_exclusive = 2;
+const lock_nonblock = 4;
 const lock_unlock = 8;
+/// Longest wait for the rotation lock; a logger that cannot get it keeps appending to `current`.
+const lock_wait_ms = 500;
+/// After a skipped rotation the next attempt waits this long.
+const rotation_backoff_ms = 5000;
+const lock_poll_ms = 5;
+/// The directory of a unit and its files are readable by their group only. The directories above
+/// it stay traversable, because a backend may hand the unit directory to the service account.
+const dir_mode = 0o750;
+const file_mode = 0o640;
 
 pub const Options = struct {
     /// Size at which `current` is rotated.
@@ -96,8 +106,11 @@ fn rotatedLess(_: void, a: []const u8, b: []const u8) bool {
 
 /// Names of the rotated files in `dir` (an in-root path), oldest first. A missing directory
 /// yields no files.
-pub fn rotatedFiles(gpa: Allocator, fs: Fs, dir: []const u8) Allocator.Error![]const []const u8 {
-    const entries = fs.iterateDir(gpa, dir) catch return &.{};
+pub fn rotatedFiles(gpa: Allocator, fs: Fs, dir: []const u8) ![]const []const u8 {
+    const entries = fs.iterateDir(gpa, dir) catch |e| switch (e) {
+        error.FileNotFound, error.NotDir => return &.{},
+        else => return e,
+    };
     defer Fs.freeEntries(gpa, entries);
     var names: std.ArrayList([]const u8) = .empty;
     errdefer names.deinit(gpa);
@@ -137,13 +150,19 @@ pub const Logger = struct {
     lock_fd: ?i32 = null,
     size: u64 = 0,
     lost: u64 = 0,
+    /// Rotation is off because `.lock` cannot be used.
+    rotation_off: bool = false,
+    /// Wall-clock time before which a skipped rotation is not tried again.
+    rotation_retry_ms: i64 = 0,
+    rotation_warned: bool = false,
     line: std.ArrayList(u8) = .empty,
 
     /// Creates the directory; the file is opened lazily by the first line.
     pub fn init(gpa: Allocator, fs: Fs, diag: *core.Diag, dir: []const u8, tz: tz_mod.Tz, opts: Options) Logger {
         var l: Logger = .{ .gpa = gpa, .fs = fs, .diag = diag, .dir = dir, .tz = tz, .opts = opts };
         l.opts.keep = @max(opts.keep, 1);
-        fs.makePath(dir) catch |e| l.report("cannot create {s}: {t}", .{ dir, e });
+        if (std.fs.path.dirname(dir)) |parent| fs.makePath(parent) catch |e| l.report("cannot create {s}: {t}", .{ parent, e });
+        fs.makePathMode(dir, dir_mode) catch |e| l.report("cannot create {s}: {t}", .{ dir, e });
         return l;
     }
 
@@ -171,40 +190,36 @@ pub const Logger = struct {
         return joined;
     }
 
-    fn open(l: *Logger) !void {
-        const rel = try l.path(current_name);
+    /// Opens `name` below the log directory without following a symlink and without blocking on
+    /// a FIFO; anything but a regular file is refused.
+    fn openRegular(l: *Logger, name: []const u8, flags: linux.O) !i32 {
+        const rel = try l.path(name);
         defer l.gpa.free(rel);
-        const rc = linux.openat(l.fs.root.handle, rel.ptr, .{
-            .ACCMODE = .WRONLY,
-            .CREAT = true,
-            .APPEND = true,
-            .CLOEXEC = true,
-            .NOFOLLOW = true,
-        }, 0o644);
+        var open_flags = flags;
+        open_flags.CLOEXEC = true;
+        open_flags.NOFOLLOW = true;
+        open_flags.NONBLOCK = true;
+        const rc = linux.openat(l.fs.root.handle, rel.ptr, open_flags, file_mode);
         switch (linux.errno(rc)) {
             .SUCCESS => {},
             else => |e| return errnoError(e),
         }
         const fd: i32 = @intCast(rc);
+        errdefer _ = linux.close(fd);
+        const info = try Fs.fileInfo(.{ .handle = fd, .flags = .{ .nonblocking = false } });
+        if (info.kind != .file) return error.NotRegularFile;
+        return fd;
+    }
+
+    fn open(l: *Logger) !void {
+        const fd = try l.openRegular(current_name, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true });
         l.size = seek(fd, 0, linux.SEEK.END) catch 0;
         l.fd = fd;
     }
 
     fn openLock(l: *Logger) !i32 {
         if (l.lock_fd) |fd| return fd;
-        const rel = try l.path(lock_name);
-        defer l.gpa.free(rel);
-        const rc = linux.openat(l.fs.root.handle, rel.ptr, .{
-            .ACCMODE = .RDWR,
-            .CREAT = true,
-            .CLOEXEC = true,
-            .NOFOLLOW = true,
-        }, 0o644);
-        switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            else => |e| return errnoError(e),
-        }
-        l.lock_fd = @intCast(rc);
+        l.lock_fd = try l.openRegular(lock_name, .{ .ACCMODE = .RDWR, .CREAT = true });
         return l.lock_fd.?;
     }
 
@@ -221,19 +236,49 @@ pub const Logger = struct {
         return theirs.inode != ours.inode;
     }
 
-    /// Rotates `current` under the lock of the log directory, unless another logger did it since
-    /// this one opened the file; the caller opens the new `current` either way.
-    fn rotate(l: *Logger, unix_secs: i64) !void {
-        const lock = try l.openLock();
-        while (true) switch (linux.errno(linux.flock(lock, lock_exclusive))) {
-            .SUCCESS => break,
-            .INTR => continue,
-            else => |e| return errnoError(e),
+    fn warnRotation(l: *Logger, comptime fmt: []const u8, args: anytype) void {
+        if (!l.rotation_warned) l.diag.warn("log: " ++ fmt, args);
+        l.rotation_warned = true;
+    }
+
+    /// Takes the exclusive lock of the log directory, waiting at most `lock_wait_ms`. Null, after
+    /// one warning, when `.lock` is not a regular file or the lock stays busy: the caller then
+    /// keeps appending to `current` instead of rotating.
+    fn lockRotation(l: *Logger) !?i32 {
+        const lock = l.openLock() catch |e| switch (e) {
+            error.NotRegularFile, error.SymLinkLoop, error.IsDir => {
+                l.rotation_off = true;
+                l.warnRotation("{s}/{s} is not a regular file: rotation is off", .{ l.dir, lock_name });
+                return null;
+            },
+            else => return e,
         };
+        var waited: i64 = 0;
+        while (true) {
+            switch (linux.errno(linux.flock(lock, lock_exclusive | lock_nonblock))) {
+                .SUCCESS => return lock,
+                .INTR => continue,
+                .AGAIN => {},
+                else => |e| return errnoError(e),
+            }
+            if (waited >= lock_wait_ms) {
+                l.warnRotation("cannot lock {s}/{s}: rotation is skipped while it is held", .{ l.dir, lock_name });
+                return null;
+            }
+            try l.fs.io.sleep(.fromMilliseconds(lock_poll_ms), .awake);
+            waited += lock_poll_ms;
+        }
+    }
+
+    /// Rotates `current` under the lock of the log directory, unless another logger did it since
+    /// this one opened the file. Returns false when rotation was not possible; `current` stays
+    /// open then. After true the file is closed and the caller opens the new `current`.
+    fn rotate(l: *Logger, unix_secs: i64) !bool {
+        const lock = (try l.lockRotation()) orelse return false;
         defer _ = linux.flock(lock, lock_unlock);
         const done = try l.replaced();
         l.closeFile();
-        if (done) return;
+        if (done) return true;
         const current = try std.fs.path.join(l.gpa, &.{ l.dir, current_name });
         defer l.gpa.free(current);
         var secs = unix_secs;
@@ -247,6 +292,7 @@ pub const Logger = struct {
             break;
         }
         try l.prune();
+        return true;
     }
 
     fn prune(l: *Logger) !void {
@@ -282,9 +328,8 @@ pub const Logger = struct {
         if (l.fd == null) try l.open();
         // Other loggers append to the same file, so the size is read, not counted.
         l.size = seek(l.fd.?, 0, linux.SEEK.END) catch l.size;
-        if (l.size > 0 and l.size + l.line.items.len > l.opts.max_size) {
-            try l.rotate(@divFloor(unix_ms, 1000));
-            try l.open();
+        if (!l.rotation_off and unix_ms >= l.rotation_retry_ms and l.size > 0 and l.size + l.line.items.len > l.opts.max_size) {
+            if (try l.rotate(@divFloor(unix_ms, 1000))) try l.open() else l.rotation_retry_ms = unix_ms + rotation_backoff_ms;
         }
         var rest: []const u8 = l.line.items;
         while (rest.len > 0) {
@@ -336,6 +381,8 @@ fn errnoError(e: linux.E) anyerror {
         .ACCES, .PERM => error.AccessDenied,
         .ROFS => error.ReadOnlyFileSystem,
         .LOOP => error.SymLinkLoop,
+        .ISDIR => error.IsDir,
+        .NXIO => error.NoDevice,
         .NOENT => error.FileNotFound,
         .IO => error.InputOutput,
         .DQUOT => error.DiskQuota,
@@ -641,4 +688,76 @@ test "two loggers of one unit rotate without losing or duplicating a line" {
     }
     try testing.expectEqual(@as(usize, 2 * per_writer), total);
     for (seen) |c| try testing.expectEqual(@as(u8, 1), c);
+}
+
+fn modeOf(t: *TestEnv, path_: []const u8) !u16 {
+    return (try t.fs.stat(path_)).mode;
+}
+
+test "the log directory of a unit is created 0750, files 0640, parents 0755" {
+    var t: TestEnv = undefined;
+    t.init();
+    defer t.deinit();
+    var l: Logger = .init(testing.allocator, t.fs, &t.diag, "/var/log/fake-systemd/u.service", rome, .{ .max_size = 10 });
+    defer l.deinit();
+    l.writeLine(1_000, "first line, long enough to rotate");
+    l.writeLine(2_000, "second line");
+    try testing.expectEqual(@as(u16, 0o755), try modeOf(&t, "/var/log/fake-systemd"));
+    try testing.expectEqual(@as(u16, 0o750), try modeOf(&t, "/var/log/fake-systemd/u.service"));
+    try testing.expectEqual(@as(u16, 0o640), try modeOf(&t, "/var/log/fake-systemd/u.service/current"));
+    try testing.expectEqual(@as(u16, 0o640), try modeOf(&t, "/var/log/fake-systemd/u.service/.lock"));
+}
+
+test "a FIFO in place of the current file does not block the logger" {
+    var t: TestEnv = undefined;
+    t.init();
+    defer t.deinit();
+    try t.fs.makePath("/log/f");
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.mknodat(t.tmp.dir.handle, "log/f/current", linux.S.IFIFO | 0o600, 0)));
+    var l: Logger = .init(testing.allocator, t.fs, &t.diag, "/log/f", rome, .{});
+    defer l.deinit();
+    l.writeLine(0, "one");
+    l.writeLine(0, "two");
+    try testing.expectEqual(@as(u64, 2), l.lost);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, t.err.written(), "warning: log:"));
+}
+
+test "a lock entry that is not a regular file turns rotation off with one warning" {
+    var t: TestEnv = undefined;
+    t.init();
+    defer t.deinit();
+    try t.fs.makePath("/log/d/.lock");
+    var l: Logger = .init(testing.allocator, t.fs, &t.diag, "/log/d", rome, .{ .max_size = 50 });
+    defer l.deinit();
+    var i: i64 = 0;
+    while (i < 6) : (i += 1) l.writeLine(i * 1000, "0123456789012345678901234567890123456789");
+    try testing.expectEqual(@as(u64, 0), l.lost);
+    try testing.expect(l.rotation_off);
+    try testing.expectEqual(@as(usize, 6), std.mem.count(u8, try t.read("/log/d/current"), "\n"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, t.err.written(), "rotation is off"));
+}
+
+test "a held rotation lock is waited for a bounded time and rotation is skipped" {
+    var t: TestEnv = undefined;
+    t.init();
+    defer t.deinit();
+    var l: Logger = .init(testing.allocator, t.fs, &t.diag, "/log/h", rome, .{ .max_size = 50 });
+    defer l.deinit();
+    l.writeLine(0, "0123456789012345678901234567890123456789");
+    const holder = try t.fs.openNoFollow("/log/h/.lock", .{ .access = .read_write, .create = 0o640 });
+    defer holder.close(testing.io);
+    try testing.expect(try holder.tryLock(testing.io, .exclusive));
+    l.writeLine(1_000, "0123456789012345678901234567890123456789");
+    l.writeLine(2_000, "0123456789012345678901234567890123456789");
+    try testing.expectEqual(@as(u64, 0), l.lost);
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, try t.read("/log/h/current"), "\n"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, t.err.written(), "rotation is skipped"));
+    holder.unlock(testing.io);
+    l.writeLine(10_000, "0123456789012345678901234567890123456789");
+    const files = try rotatedFiles(testing.allocator, t.fs, "/log/h");
+    defer {
+        for (files) |f| testing.allocator.free(f);
+        testing.allocator.free(files);
+    }
+    try testing.expectEqual(@as(usize, 1), files.len);
 }

@@ -21,6 +21,7 @@ const rebuild = @import("../index/rebuild.zig");
 const apply = @import("../reconcile/apply.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const runner = @import("runner.zig");
 const shell = @import("shell.zig");
 const render = @import("shepherd/render.zig");
@@ -181,35 +182,20 @@ fn executorResolves(self: *Shepherd, u: *const model.Unit) bool {
     return true;
 }
 
-const command_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
-
-fn findProgram(self: *Shepherd, name: []const u8) !?[]const u8 {
-    for (command_dirs) |dir| {
-        const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, name });
-        if (self.ctx.fs.exists(path)) return path;
-    }
-    return null;
-}
-
-/// An account the executor cannot resolve (LDAP, sssd) is switched through the system libc by
-/// `setpriv` in front of the executor: the `#:user` of Shepherd sets neither the primary group
-/// nor the supplementary ones.
-fn wrapperFor(self: *Shepherd, u: *const model.Unit) !?render.Wrapper {
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that a shell
+/// looks up when Shepherd starts the service; the executor stays root and switches to them itself.
+fn identityFor(self: *Shepherd, u: *const model.Unit) !?shell.Numeric {
     if (u.scope == .user) return null;
     const user = u.user orelse return null;
     if (self.executorResolves(u)) return null;
-    if (!shell.plainAccount(user) or (u.group != null and !shell.plainAccount(u.group.?))) {
-        self.ctx.diag.err("{s}: User= and Group= must be plain names to be switched by the system libc", .{u.name.full});
+    var plain = shell.plainAccount(user);
+    if (u.group) |g| plain = plain and shell.plainAccount(g);
+    for (u.supplementary_groups) |g| plain = plain and shell.plainAccount(g);
+    if (!plain) {
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
         return error.Unsupported;
     }
-    const path = (try self.findProgram("setpriv")) orelse {
-        self.ctx.diag.err("{s}: setpriv is needed to switch to {s}, which the executor cannot resolve", .{ u.name.full, user });
-        return error.Unsupported;
-    };
-    if (u.supplementary_groups.len > 0) {
-        self.ctx.diag.warn("{s}: SupplementaryGroups= is not applied for {s}, whose groups come from the system libc", .{ u.name.full, user });
-    }
-    return .{ .path = path, .user = user, .group = u.group };
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
 }
 
 fn hasDirectories(u: *const model.Unit) bool {
@@ -252,6 +238,12 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const self = me(ptr);
     const u = input.unit;
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
+    // A backslash would close the `#{...}#` form of the symbol that names the service.
+    if (std.mem.findScalar(u8, svc, '\\') != null) {
+        self.ctx.diag.err("{s}: '{s}' is not a name Shepherd can register", .{ u.name.full, svc });
+        return error.Unsupported;
+    }
     const kind = kindFor(u);
     const stops = u.exec_stop.len > 0 or u.exec_stop_post.len > 0 or hasDirectories(u);
     const in: render.Input = .{
@@ -264,7 +256,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         .stop_post = kind == .daemon and (u.exec_stop_post.len > 0 or hasDirectories(u)),
         .remain_stop = kind == .remain and stops,
         .requirements = try self.requirements(svc, u, input.deps),
-        .wrapper = try self.wrapperFor(u),
+        .identity = try self.identityFor(u),
         .user_scope = u.scope == .user,
         .notes = try notesFor(gpa, u, kind),
     };
@@ -272,8 +264,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
 
+    const path = try layout.availablePath(self.ctx, self.dirs, svc);
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try layout.availablePath(self.ctx, self.dirs, svc), .content = content };
+    files[0] = .{ .path = path, .content = content };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -413,23 +407,22 @@ fn sleepMs(env: Env, ms: u64) void {
     env.ctx.io.sleep(.fromMilliseconds(@intCast(ms)), .awake) catch return;
 }
 
-fn readConf(self: *Shepherd, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn readConf(self: *Shepherd, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
 /// Name `herd` takes for `service`: the generated name, or what a native file declares.
-fn identityOf(self: *Shepherd, service: []const u8) []const u8 {
-    const content = self.readConf(service) orelse return service;
+fn identityOf(self: *Shepherd, service: []const u8) ![]const u8 {
+    const content = (try self.readConf(service)) orelse return service;
     if (marker.parse(content) != null) return service;
-    return (native.identityOf(self.ctx.gpa, content) catch null) orelse service;
+    return (try native.identityOf(self.ctx.gpa, content)) orelse service;
 }
 
 /// Unit recorded in the marker of the service file, null for native services.
-fn generatedUnit(self: *Shepherd, service: []const u8) ?[]const u8 {
-    const content = self.readConf(service) orelse return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *Shepherd, service: []const u8) !?[]const u8 {
+    const content = (try self.readConf(service)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
 const Probe = struct {
@@ -439,7 +432,7 @@ const Probe = struct {
 };
 
 fn probe(self: *Shepherd, env: Env, service: []const u8) !Probe {
-    const res = try runStatus(env, self.identityOf(service), .capture);
+    const res = try runStatus(env, try self.identityOf(service), .capture);
     if (res.code != 0) return .{ .loaded = false, .text = "", .parsed = .{} };
     return .{ .loaded = true, .text = res.stdout, .parsed = native.parseStatus(res.stdout) };
 }
@@ -452,10 +445,10 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
 /// Services named in `#:requirement` of `service`, depth first.
 fn requiredBy(self: *Shepherd, service: []const u8, depth: usize, out: *std.ArrayList([]const u8)) !void {
     if (depth >= max_pull_depth) return;
-    const content = self.readConf(service) orelse return;
+    const content = (try self.readConf(service)) orelse return;
     for (try native.requirementsOf(self.ctx.gpa, content)) |dep| {
         if (std.mem.eql(u8, dep, service) or contains(out.items, dep)) continue;
-        if (!try self.serviceExists(dep)) continue;
+        if (!guard.serviceNameOk(dep) or !try self.serviceExists(dep)) continue;
         try out.append(self.ctx.gpa, dep);
         try self.requiredBy(dep, depth + 1, out);
     }
@@ -487,7 +480,7 @@ fn ensureLoaded(self: *Shepherd, env: Env, service: []const u8) !Probe {
 
 fn start(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     const p = try self.ensureLoaded(env, service);
     // A service whose process ended by itself is disabled by Shepherd until it is enabled again.
     if (p.parsed.disabled) try mustRun(env, &.{ "enable", ident });
@@ -498,7 +491,7 @@ fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     const p = try self.probe(env, service);
     if (!p.loaded and !env.ctx.dry_run) return;
-    try mustRun(env, &.{ "stop", self.identityOf(service) });
+    try mustRun(env, &.{ "stop", try self.identityOf(service) });
     if (env.ctx.dry_run) return;
     var waited: u64 = 0;
     while (waited < self.wait_ms) : (waited += poll_ms) {
@@ -512,34 +505,23 @@ fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 /// a service that is stopped.
 fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const ident = self.identityOf(service);
+    const ident = try self.identityOf(service);
     const p = try self.ensureLoaded(env, service);
-    if (self.generatedUnit(service) != null and p.loaded) try self.loadFile(env, service);
+    if ((try self.generatedUnit(service)) != null and p.loaded) try self.loadFile(env, service);
     if (p.parsed.disabled) try mustRun(env, &.{ "enable", ident });
     try mustRun(env, &.{ "restart", ident });
-}
-
-/// The `setpriv` words in front of the executor of an account the executor cannot resolve, with the
-/// group of the account looked up now.
-fn wrapperWords(self: *Shepherd, env: Env, service: []const u8) ![]const []const u8 {
-    const content = self.readConf(service) orelse return &.{};
-    const wr = (try native.wrapperOf(env.ctx.gpa, content)) orelse return &.{};
-    const gpa = env.ctx.gpa;
-    const regid = if (wr.group) |g| try std.fmt.allocPrint(gpa, "--regid={s}", .{g}) else blk: {
-        const res = try env.runner.run(gpa, &.{ "id", "-g", wr.user }, .capture);
-        if (res.code != 0) return error.CommandFailed;
-        break :blk try std.fmt.allocPrint(gpa, "--regid={s}", .{std.mem.trim(u8, res.stdout, " \t\r\n")});
-    };
-    return gpa.dupe([]const u8, &.{ wr.path, try std.fmt.allocPrint(gpa, "--reuid={s}", .{wr.user}), regid, "--init-groups" });
 }
 
 /// A generated service reloads through the executor, which runs `ExecReload=`; a native one has the
 /// action of its own definition.
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const unit_name = self.generatedUnit(service) orelse return mustRun(env, &.{ "reload", self.identityOf(service) });
+    const unit_name = (try self.generatedUnit(service)) orelse return mustRun(env, &.{ "reload", try self.identityOf(service) });
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(env.ctx.gpa, try self.wrapperWords(env, service));
+    // An account the executor cannot resolve: the shell of the service looks its ids up.
+    if (try self.readConf(service)) |content| {
+        if (try native.identityScriptOf(env.ctx.gpa, content)) |script| try argv.appendSlice(env.ctx.gpa, &.{ "/bin/sh", "-c", script });
+    }
     try argv.appendSlice(env.ctx.gpa, &.{ policy.executor_path, "--exec", unit_name });
     if (env.ctx.scope == .user) try argv.append(env.ctx.gpa, "--user");
     try argv.appendSlice(env.ctx.gpa, &.{ "--phase", "reload" });
@@ -551,7 +533,7 @@ fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
     const self = me(ptr);
     const p = try self.probe(env, service);
-    const pid = p.parsed.pid orelse {
+    const pid = guard.accepted(self.ctx, p.parsed.pid, null) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -567,11 +549,11 @@ fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
     if (env.ctx.dry_run) return;
     const dir = try layout.availableDir(self.ctx, self.dirs, self.ctx.scope);
-    const entries = self.ctx.fs.iterateDir(self.ctx.gpa, dir) catch return;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     for (entries) |e| {
         if (e.kind != .file or !std.mem.endsWith(u8, e.name, layout.scm_suffix)) continue;
         const service = layout.serviceOfFile(e.name);
-        if (self.generatedUnit(service) == null) continue;
+        if ((try self.generatedUnit(service)) == null) continue;
         if (!(try self.probe(env, service)).loaded) continue;
         const res = try run(env, &.{ "load", "root", try std.fs.path.join(self.ctx.gpa, &.{ dir, e.name }) }, .quiet);
         if (res.code != 0) env.ctx.diag.warn("{s}: Shepherd could not load the service file again", .{service});

@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:c6f3382bf461908b
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec 2>&1
 exec /usr/bin/hookd
 === finish 0755
@@ -15,7 +15,7 @@ exec /usr/bin/hookd
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6550c9ddc516254e
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -32,7 +32,7 @@ sv down .
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:03b3037d3fd35faa
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log reload-stop.service
 === control/t 0755
 #!/bin/sh
@@ -41,6 +41,6 @@ exec /usr/bin/fake-systemd --log reload-stop.service
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:081d8bc842e89d65
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 MAINPID=$(cat supervise/pid) /usr/bin/fake-systemd --exec reload-stop.service --phase stop-main
 exit 1

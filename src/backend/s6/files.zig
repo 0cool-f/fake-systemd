@@ -21,6 +21,8 @@ pub const Set = struct {
     dir: []const u8,
     files: std.ArrayList(apply.GeneratedFile) = .empty,
     bodies: std.ArrayList(marker.BodyEntry) = .empty,
+    /// Services the generated script starts first, recorded in the meta file.
+    starts: []const []const u8 = &.{},
 
     pub fn init(gpa: Allocator, input: interface.GenerateInput, generator: []const u8, dir: []const u8) Set {
         return .{
@@ -49,9 +51,10 @@ pub const Set = struct {
         try s.bodies.append(s.gpa, .{ .path = rel, .hash = hash.bodyHash(body) });
     }
 
-    /// The files in the order they were added, followed by the meta file when there are data files.
+    /// The files in the order they were added, followed by the meta file when there are data files
+    /// or started services.
     pub fn done(s: *Set) ![]const apply.GeneratedFile {
-        if (s.bodies.items.len > 0) {
+        if (s.bodies.items.len > 0 or s.starts.len > 0) {
             var aw: Io.Writer.Allocating = .init(s.gpa);
             errdefer aw.deinit();
             marker.writeMeta(&aw.writer, .{
@@ -60,6 +63,7 @@ pub const Set = struct {
                 .source_hash = s.src_hash,
                 .generator = s.generator,
                 .bodies = s.bodies.items,
+                .starts = s.starts,
             }) catch return error.OutOfMemory;
             try s.files.append(s.gpa, .{
                 .path = try std.fs.path.join(s.gpa, &.{ s.dir, marker.meta_name }),

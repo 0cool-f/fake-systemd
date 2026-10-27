@@ -19,6 +19,7 @@ const rebuild = @import("../index/rebuild.zig");
 const apply = @import("../reconcile/apply.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const runner = @import("runner.zig");
 const layout = @import("nosh/layout.zig");
 const native = @import("nosh/native.zig");
@@ -122,6 +123,11 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
+    if (guard.hasControl(input.source)) {
+        self.ctx.diag.err("{s}: the path of the unit holds a line break or NUL", .{u.name.full});
+        return error.Unsupported;
+    }
     const body = try std.fmt.allocPrint(
         gpa,
         "# nosh converts the unit itself: system-control convert-systemd-units\ndirectory {s}\nunit {s}\nhash {x:0>16}\n",
@@ -129,8 +135,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     );
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
+    const record_path = try layout.recordPath(gpa, self.dirs, svc);
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, record_path, u.name.full), u.name.full, record_path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try layout.recordPath(gpa, self.dirs, svc), .content = content };
+    files[0] = .{ .path = record_path, .content = content };
     return .{ .service_name = svc, .files = files };
 }
 
@@ -158,25 +166,25 @@ fn inRealRoot(self: *Nosh) bool {
     return own.eql(other);
 }
 
-fn readRecord(self: *Nosh, service: []const u8) ?struct { record: native.Record, hash: u64 } {
-    const path = layout.recordPath(self.ctx.gpa, self.dirs, service) catch return null;
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 16) catch return null;
+fn readRecord(self: *Nosh, service: []const u8) !?struct { record: native.Record, hash: u64 } {
+    const path = try layout.recordPath(self.ctx.gpa, self.dirs, service);
+    const content = (try guard.readOrAbsent(self.ctx, path, 1 << 16)) orelse return null;
     const parsed = marker.parse(content) orelse return null;
     const record = native.parseRecord(parsed.rest) orelse return null;
     return .{ .record = record, .hash = parsed.marker.source_hash };
 }
 
-fn isCurrent(self: *Nosh, service: []const u8, record: native.Record) bool {
-    const path = std.fs.path.join(self.ctx.gpa, &.{ layout.bundlePath(self.ctx.gpa, self.dirs, service) catch return false, hash_file }) catch return false;
-    const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return false;
+fn isCurrent(self: *Nosh, service: []const u8, record: native.Record) !bool {
+    const path = try std.fs.path.join(self.ctx.gpa, &.{ try layout.bundlePath(self.ctx.gpa, self.dirs, service), hash_file });
+    const text = (try guard.readOrAbsent(self.ctx, path, 64)) orelse return false;
     return std.mem.eql(u8, std.mem.trim(u8, text, " \t\r\n"), record.hash);
 }
 
 /// Makes the bundle of a service whose unit changed since the last conversion, or that has none.
 /// A service without a record is native: nothing to convert.
 fn materialize(self: *Nosh, env: Env, service: []const u8) anyerror!void {
-    const found = self.readRecord(service) orelse return;
-    if (!env.ctx.dry_run and self.isCurrent(service, found.record)) return;
+    const found = (try self.readRecord(service)) orelse return;
+    if (!env.ctx.dry_run and try self.isCurrent(service, found.record)) return;
     if (!env.ctx.dry_run and !self.inRealRoot()) {
         env.ctx.diag.err("{s}: nosh converts units where its tools run; run 'systemctl daemon-reload' on the target", .{service});
         return error.Unsupported;
@@ -212,7 +220,7 @@ fn markBundle(self: *Nosh, service: []const u8, record: native.Record, source_ha
 fn wantedBy(self: *Nosh, service: []const u8) ![]const []const u8 {
     const gpa = self.ctx.gpa;
     const dir = try std.fs.path.join(gpa, &.{ try layout.bundlePath(gpa, self.dirs, service), "wanted-by" });
-    const entries = self.ctx.fs.iterateDir(gpa, dir) catch return &.{};
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     var out: std.ArrayList([]const u8) = .empty;
     for (entries) |e| try out.append(gpa, e.name);
     return out.items;
@@ -291,8 +299,8 @@ fn sleepMs(env: Env, ms: u64) void {
 }
 
 /// Unit recorded for the service, null for a native one.
-fn generatedUnit(self: *Nosh, service: []const u8) ?[]const u8 {
-    const found = self.readRecord(service) orelse return null;
+fn generatedUnit(self: *Nosh, service: []const u8) !?[]const u8 {
+    const found = (try self.readRecord(service)) orelse return null;
     return found.record.unit;
 }
 
@@ -326,9 +334,9 @@ fn materializeAll(self: *Nosh, env: Env, service: []const u8, depth: usize) anye
     const gpa = env.ctx.gpa;
     const bundle = try layout.bundlePath(gpa, self.dirs, service);
     for ([_][]const u8{ "wants", "requires" }) |kind| {
-        const entries = self.ctx.fs.iterateDir(gpa, try std.fs.path.join(gpa, &.{ bundle, kind })) catch continue;
+        const entries = try guard.iterateOrEmpty(self.ctx, try std.fs.path.join(gpa, &.{ bundle, kind }));
         for (entries) |e| {
-            if (self.readRecord(e.name) != null) try self.materializeAll(env, e.name, depth + 1);
+            if ((try self.readRecord(e.name)) != null) try self.materializeAll(env, e.name, depth + 1);
         }
     }
 }
@@ -384,15 +392,19 @@ fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 /// the hangup of its main process.
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
-    const unit_name = self.generatedUnit(service) orelse return mustRun(env, &.{ "hangup", service });
-    const res = try env.runner.run(env.ctx.gpa, &.{ policy.executor_path, "--exec", unit_name, "--phase", "reload" }, .inherit);
+    const unit_name = (try self.generatedUnit(service)) orelse return mustRun(env, &.{ "hangup", service });
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(env.ctx.gpa, guard.executorPrefix(env.ctx, unit_name));
+    try argv.appendSlice(env.ctx.gpa, &.{ policy.executor_path, "--exec", unit_name, "--phase", "reload" });
+    const res = try env.runner.run(env.ctx.gpa, argv.items, .inherit);
     if (res.code != 0) return error.CommandFailed;
 }
 
 /// `system-control` sends no signal but the hangup: the main process is signalled directly.
-fn kill(_: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
+fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
+    const self = me(ptr);
     const p = try probe(env, service);
-    const pid = p.parsed.pid orelse {
+    const pid = guard.accepted(self.ctx, p.parsed.pid, null) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -402,27 +414,30 @@ fn kill(_: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerr
     if (res.code != 0) return error.CommandFailed;
 }
 
-/// Converts the bundles whose unit changed, and removes the bundles whose record is gone.
+/// Converts the bundles whose unit changed, and removes the bundles whose record is gone. A
+/// bundle is removed only when it carries both things that `markBundle` leaves in what it
+/// converted: the marker in its `run` and the hash file.
 fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
     const gpa = env.ctx.gpa;
     if (env.ctx.dry_run) return;
     const root = layout.bundleRoot(self.dirs);
-    const entries = self.ctx.fs.iterateDir(gpa, root) catch return;
+    const entries = try guard.iterateOrEmpty(self.ctx, root);
     for (entries) |e| {
         const service = e.name;
-        if (self.readRecord(service) != null) continue;
+        if ((try self.readRecord(service)) != null) continue;
+        if (!self.ctx.fs.exists(try std.fs.path.join(gpa, &.{ root, service, hash_file }))) continue;
         const run_path = try std.fs.path.join(gpa, &.{ root, service, "service", "run" });
-        const content = self.ctx.fs.readFileAlloc(gpa, run_path, 1 << 20) catch continue;
+        const content = (try guard.readOrAbsent(self.ctx, run_path, 1 << 20)) orelse continue;
         if (marker.parse(content) == null) continue;
         self.ctx.fs.deleteTree(try std.fs.path.join(gpa, &.{ root, service })) catch |err| {
             env.ctx.diag.warn("{s}: cannot remove the bundle: {t}", .{ service, err });
         };
     }
-    const records = self.ctx.fs.iterateDir(gpa, try layout.recordDir(gpa, self.dirs)) catch return;
+    const records = try guard.iterateOrEmpty(self.ctx, try layout.recordDir(gpa, self.dirs));
     for (records) |r| {
-        const found = self.readRecord(r.name) orelse continue;
-        if (!self.bundleExists(r.name) or self.isCurrent(r.name, found.record)) continue;
+        const found = (try self.readRecord(r.name)) orelse continue;
+        if (!self.bundleExists(r.name) or try self.isCurrent(r.name, found.record)) continue;
         self.materialize(env, r.name) catch |err| env.ctx.diag.warn("{s}: cannot convert the unit: {t}", .{ r.name, err });
     }
 }

@@ -34,6 +34,14 @@ fn fail(stderr: *Io.Writer, comptime fmt: []const u8, args: anytype) u8 {
     return 1;
 }
 
+/// `--root` names the tree to operate on and must be an absolute path.
+fn rootRejected(stderr: *Io.Writer, root: ?[]const u8) bool {
+    const r = root orelse return false;
+    if (r.len > 0 and r[0] == '/') return false;
+    _ = fail(stderr, "--root must be an absolute path, got '{s}'", .{r});
+    return true;
+}
+
 fn profileFor(rt: *Runtime, os: detect.osrelease.OsRelease, environ: *const std.process.Environ.Map) *const detect.profile.Profile {
     const forced = environ.get("FAKE_SYSTEMD_PROFILE") orelse rt.ctx.config.profile;
     if (forced.len > 0 and !std.mem.eql(u8, forced, "auto")) {
@@ -92,6 +100,7 @@ fn runSystemctl(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.
             return 1;
         },
     };
+    if (rootRejected(stderr, req.options.root)) return 1;
     var rt: Runtime = undefined;
     build(&rt, init, req.options.root, req.options.scope, stdout, stderr) catch |e| {
         return fail(stderr, "cannot initialise: {t}", .{e});
@@ -131,6 +140,7 @@ fn runService(init: std.process.Init, args: []const [:0]const u8, stderr: *Io.Wr
             return 1;
         },
     };
+    if (rootRejected(stderr, req.root)) return 1;
     var fs = core.Fs.initRoot(init.io, req.root orelse "/") catch |e| return fail(stderr, "cannot open the root: {t}", .{e});
     defer fs.deinit();
     var diag: core.Diag = .init(stderr, .notice);
@@ -142,7 +152,7 @@ fn runService(init: std.process.Init, args: []const [:0]const u8, stderr: *Io.Wr
             if (req.daemon) {
                 if (exec.daemon.detach(&ctx, req.unit)) |code| return code;
             }
-            return exec.executor.run(&ctx, .{ .unit = req.unit, .phase = req.phase, .stop_on_signal = req.stop_on_signal, .log = req.log, .record_exit = req.record_exit });
+            return exec.executor.run(&ctx, exec.args.request(req));
         },
         .log => {
             var opts: exec.logger.Options = .{};
@@ -174,6 +184,7 @@ fn runTimerCommand(init: std.process.Init, args: []const [:0]const u8, stdout: *
             return 1;
         },
     };
+    if (rootRejected(stderr, req.root)) return 1;
     var rt: Runtime = undefined;
     build(&rt, init, req.root, req.scope, stdout, stderr) catch |e| return fail(stderr, "cannot initialise: {t}", .{e});
     defer rt.fs.deinit();

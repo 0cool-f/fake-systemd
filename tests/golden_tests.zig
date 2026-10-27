@@ -194,6 +194,12 @@ fn runRunitEntry(e: Entry, golden_dir: []const u8, expected: []const u8) !void {
     try testing.expect(generated.files.len >= 2);
     try testing.expectEqualStrings(try std.fs.path.join(a, &.{ e.dest, "run" }), generated.files[0].path);
     for (generated.files) |file| {
+        if (file.style == .raw) {
+            const meta = (try marker.parseMeta(a, file.content)) orelse return error.MalformedMeta;
+            try testing.expectEqualStrings(loaded.name.full, meta.unit);
+            try testing.expectEqualStrings(be.serviceOfFile(file.path), generated.service_name);
+            continue;
+        }
         try testing.expectEqual(@as(u16, 0o755), file.mode);
         const parsed = marker.parse(file.content) orelse return error.MissingMarker;
         try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);
@@ -675,7 +681,7 @@ fn runFinitEntry(e: Entry, expected: []const u8) !void {
     else
         loaded.name.prefix;
     try testing.expectEqualStrings(service, generated.service_name);
-    try testing.expect(generated.files.len == 1 or generated.files.len == 2);
+    try testing.expect(generated.files.len >= 1 and generated.files.len <= 3);
     const conf = generated.files[0];
     try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.conf", .{service}), conf.path);
     try testing.expectEqual(@as(u16, 0o644), conf.mode);
@@ -686,13 +692,17 @@ fn runFinitEntry(e: Entry, expected: []const u8) !void {
         try testing.expectEqualStrings(service, be.serviceOfFile(file.path));
     }
     try expectKnownFinitSyntax(marker.parse(conf.content).?.rest);
-    if (generated.files.len == 2) {
-        const script = generated.files[1];
+    for (generated.files[1..]) |script| {
         try testing.expectEqual(@as(u16, 0o755), script.mode);
-        try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.stop-post", .{service}), script.path);
         try testing.expectEqualStrings("#!/bin/sh\n", marker.parse(script.content).?.shebang);
         try expectShellSyntax(&t, script.content);
-        try testing.expect(std.mem.find(u8, conf.content, try std.fmt.allocPrint(a, " post:{s} ", .{script.path})) != null);
+        if (std.mem.endsWith(u8, script.path, ".stop-post")) {
+            try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.stop-post", .{service}), script.path);
+            try testing.expect(std.mem.find(u8, conf.content, try std.fmt.allocPrint(a, " post:{s} ", .{script.path})) != null);
+        } else {
+            try testing.expectEqualStrings(try std.fmt.allocPrint(a, "/etc/finit.d/available/{s}.exec", .{service}), script.path);
+            try testing.expect(std.mem.find(u8, conf.content, try std.fmt.allocPrint(a, " {s} --exec ", .{script.path})) != null);
+        }
     }
 
     const text = try composeRunit(a, "/etc/finit.d/available", generated.files);
@@ -964,6 +974,12 @@ fn runBusyboxEntry(setup: busybox_world.Setup, e: Entry, expected: []const u8) !
         service;
     try testing.expectEqualStrings(flat, generated.service_name);
     for (generated.files) |file| {
+        if (file.style == .raw) {
+            const meta = (try marker.parseMeta(a, file.content)) orelse return error.MalformedMeta;
+            try testing.expectEqualStrings(loaded.name.full, meta.unit);
+            try testing.expectEqualStrings(be.serviceOfFile(file.path), generated.service_name);
+            continue;
+        }
         try testing.expectEqualStrings(generated.service_name, be.serviceOfFile(file.path));
         const parsed = marker.parse(file.content) orelse return error.MissingMarker;
         try testing.expectEqualStrings(loaded.name.full, parsed.marker.unit);

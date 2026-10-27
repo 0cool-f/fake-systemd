@@ -225,38 +225,10 @@ pub fn renderBlock(gpa: std.mem.Allocator, exe: []const u8, placed: []const Plac
 }
 
 /// `content` with the block between the markers replaced by `block`, or removed when `block`
-/// is null. Lines outside the markers are kept byte for byte; a missing block is appended.
-pub fn replaceBlock(gpa: std.mem.Allocator, content: []const u8, block: ?[]const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
-    var inside = false;
-    var placed = false;
-    var it = std.mem.splitScalar(u8, content, '\n');
-    while (it.next()) |line| {
-        const last = it.peek() == null;
-        if (inside) {
-            if (std.mem.eql(u8, std.mem.trimEnd(u8, line, " \t\r"), block_end)) inside = false;
-            continue;
-        }
-        if (std.mem.eql(u8, std.mem.trimEnd(u8, line, " \t\r"), block_begin)) {
-            inside = true;
-            if (block) |b| {
-                try out.appendSlice(gpa, b);
-                placed = true;
-            }
-            continue;
-        }
-        if (last and line.len == 0) break;
-        try out.appendSlice(gpa, line);
-        try out.append(gpa, '\n');
-    }
-    if (!placed) {
-        if (block) |b| {
-            if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.append(gpa, '\n');
-            try out.appendSlice(gpa, b);
-        }
-    }
-    return out.toOwnedSlice(gpa);
+/// is null; a missing block is appended. Bytes outside the markers are kept, and a file that
+/// does not hold exactly one block fails with `error.MalformedBlock` and `fault` set.
+pub fn replaceBlock(gpa: std.mem.Allocator, content: []const u8, block: ?[]const u8, fault: *core.block.Fault) ![]u8 {
+    return core.block.replace(gpa, content, block_begin, block_end, block, fault);
 }
 
 fn readOptional(fs: core.Fs, gpa: std.mem.Allocator, path: []const u8) !?[]u8 {
@@ -266,7 +238,8 @@ fn readOptional(fs: core.Fs, gpa: std.mem.Allocator, path: []const u8) !?[]u8 {
     };
 }
 
-fn writeIfChanged(t: Target, path: []const u8, content: []const u8, mode: u16) !bool {
+/// Writes `content` unless the file holds it already; an existing file keeps its mode.
+fn writeIfChanged(t: Target, path: []const u8, content: []const u8, default_mode: u16) !bool {
     const gpa = t.ctx.gpa;
     if (try readOptional(t.ctx.fs.*, gpa, path)) |old| {
         if (std.mem.eql(u8, old, content)) return false;
@@ -275,6 +248,7 @@ fn writeIfChanged(t: Target, path: []const u8, content: []const u8, mode: u16) !
         t.ctx.diag.info("would write {s}", .{path});
         return true;
     }
+    const mode: u16 = if (t.ctx.fs.stat(path)) |st| st.mode else |_| default_mode;
     try t.ctx.fs.makePath(std.fs.path.dirname(path) orelse "/");
     try t.ctx.fs.writeFileAtomic(path, content, mode);
     return true;
@@ -309,6 +283,19 @@ fn crontabDir(fs: core.Fs) []const u8 {
     return crontab_dirs[1];
 }
 
+/// Names `root` in `<crontabs>/cron.update`, keeping the users already waiting there.
+fn requestReload(t: Target, dir: []const u8) !void {
+    const gpa = t.ctx.gpa;
+    const update = try std.fs.path.join(gpa, &.{ dir, "cron.update" });
+    const pending = (try readOptional(t.ctx.fs.*, gpa, update)) orelse "";
+    var users = std.mem.tokenizeAny(u8, pending, "\r\n");
+    while (users.next()) |u| if (std.mem.eql(u8, std.mem.trim(u8, u, " \t"), "root")) return;
+    const sep = if (pending.len > 0 and pending[pending.len - 1] != '\n') "\n" else "";
+    const content = try std.mem.concat(gpa, u8, &.{ pending, sep, "root\n" });
+    const mode: u16 = if (t.ctx.fs.stat(update)) |st| st.mode else |_| 0o644;
+    try t.ctx.fs.writeFileAtomic(update, content, mode);
+}
+
 fn syncCrontab(t: Target, placed: []const Placed) !void {
     const gpa = t.ctx.gpa;
     const dir = crontabDir(t.ctx.fs.*);
@@ -316,10 +303,23 @@ fn syncCrontab(t: Target, placed: []const Placed) !void {
     const existing = try readOptional(t.ctx.fs.*, gpa, path);
     if (existing == null and placed.len == 0) return;
     const block: ?[]const u8 = if (placed.len == 0) null else try renderBlock(gpa, t.exe, placed, false);
-    const content = try replaceBlock(gpa, existing orelse "", block);
+    var fault: core.block.Fault = undefined;
+    const content = replaceBlock(gpa, existing orelse "", block, &fault) catch |e| return reportBlock(t, path, e, fault);
     if (!try writeIfChanged(t, path, content, 0o600) or t.ctx.dry_run) return;
-    const update = try std.fs.path.join(gpa, &.{ dir, "cron.update" });
-    try t.ctx.fs.writeFileAtomic(update, "root\n", 0o644);
+    try requestReload(t, dir);
+}
+
+fn reportBlock(t: Target, path: []const u8, e: anyerror, fault: core.block.Fault) anyerror {
+    if (e == error.MalformedBlock) core.block.report(t.ctx.diag, path, fault);
+    return e;
+}
+
+/// Name of the file the table is staged in before `fcrontab` reads it; unique per run.
+fn stagingPath(t: Target) ![]const u8 {
+    var random: [4]u8 = undefined;
+    t.ctx.fs.io.random(&random);
+    const name = try std.fmt.allocPrint(t.ctx.gpa, "fcrontab.new.{x}", .{std.mem.readInt(u32, &random, .little)});
+    return std.fs.path.join(t.ctx.gpa, &.{ "/var/lib/fake-systemd", name });
 }
 
 fn syncFcron(t: Target, placed: []const Placed) !void {
@@ -331,13 +331,14 @@ fn syncFcron(t: Target, placed: []const Placed) !void {
         return;
     }
     const block: ?[]const u8 = if (placed.len == 0) null else try renderBlock(gpa, t.exe, placed, true);
-    const content = try replaceBlock(gpa, existing orelse "", block);
+    var fault: core.block.Fault = undefined;
+    const content = replaceBlock(gpa, existing orelse "", block, &fault) catch |e| return reportBlock(t, fcron_table, e, fault);
     if (existing) |old| if (std.mem.eql(u8, old, content)) return;
     if (t.ctx.dry_run) {
         t.ctx.diag.info("would install the fcron table of root", .{});
         return;
     }
-    const staging = try std.fs.path.join(gpa, &.{ "/var/lib/fake-systemd", "fcrontab.new" });
+    const staging = try stagingPath(t);
     try t.ctx.fs.makePath(std.fs.path.dirname(staging).?);
     try t.ctx.fs.writeFileAtomic(staging, content, 0o600);
     defer t.ctx.fs.deleteFile(staging) catch |e| t.ctx.diag.warn("cannot remove {s}: {t}", .{ staging, e });
@@ -345,13 +346,22 @@ fn syncFcron(t: Target, placed: []const Placed) !void {
     if (res.code != 0) return error.CommandFailed;
 }
 
-/// Installs the jobs of every family: families without jobs lose what fake-systemd wrote.
+/// Installs the jobs of every family: families without jobs lose what fake-systemd wrote. A
+/// family that fails does not keep the others from being installed; the first error is returned.
 pub fn sync(t: Target, placed: []const Placed) !void {
     var buf: [3]std.ArrayList(Placed) = @splat(.empty);
     for (placed) |p| try buf[@backingInt(p.kind.family())].append(t.ctx.gpa, p);
-    try syncCronD(t, buf[@backingInt(Family.cron_d)].items);
-    try syncCrontab(t, buf[@backingInt(Family.crontab)].items);
-    try syncFcron(t, buf[@backingInt(Family.fcron)].items);
+    var first: ?anyerror = null;
+    syncCronD(t, buf[@backingInt(Family.cron_d)].items) catch |e| {
+        first = first orelse e;
+    };
+    syncCrontab(t, buf[@backingInt(Family.crontab)].items) catch |e| {
+        first = first orelse e;
+    };
+    syncFcron(t, buf[@backingInt(Family.fcron)].items) catch |e| {
+        first = first orelse e;
+    };
+    if (first) |e| return e;
 }
 
 const testing = std.testing;
@@ -367,15 +377,30 @@ test "block replacement keeps the lines around the markers" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    var fault: core.block.Fault = undefined;
     const block = "# BEGIN fake-systemd\n0 3 * * * x\n# END fake-systemd\n";
-    const appended = try replaceBlock(a, "# user line\n* * * * * mine", block);
+    const appended = try replaceBlock(a, "# user line\n* * * * * mine", block, &fault);
     try testing.expectEqualStrings("# user line\n* * * * * mine\n" ++ block, appended);
-    const replaced = try replaceBlock(a, "a\n# BEGIN fake-systemd\nold\n# END fake-systemd\nb\n", block);
+    const replaced = try replaceBlock(a, "a\n# BEGIN fake-systemd\nold\n# END fake-systemd\nb\n", block, &fault);
     try testing.expectEqualStrings("a\n" ++ block ++ "b\n", replaced);
-    const removed = try replaceBlock(a, "a\n# BEGIN fake-systemd\nold\n# END fake-systemd\nb\n", null);
+    const removed = try replaceBlock(a, "a\n# BEGIN fake-systemd\nold\n# END fake-systemd\nb\n", null, &fault);
     try testing.expectEqualStrings("a\nb\n", removed);
-    try testing.expectEqualStrings("", try replaceBlock(a, "", null));
-    try testing.expectEqualStrings(block, try replaceBlock(a, "", block));
+    try testing.expectEqualStrings("", try replaceBlock(a, "", null, &fault));
+    try testing.expectEqualStrings(block, try replaceBlock(a, "", block, &fault));
+}
+
+test "a block without its END marker is not rewritten" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fault: core.block.Fault = undefined;
+    const block = "# BEGIN fake-systemd\n0 3 * * * x\n# END fake-systemd\n";
+    const broken = "* * * * * mine\n# BEGIN fake-systemd\n0 1 * * * user job\n";
+    try testing.expectError(error.MalformedBlock, replaceBlock(arena.allocator(), broken, block, &fault));
+    try testing.expectEqual(@as(usize, 2), fault.line);
+    try testing.expectError(error.MalformedBlock, replaceBlock(arena.allocator(), broken, null, &fault));
+    const twice = "# BEGIN fake-systemd\na\n# END fake-systemd\nuser\n# BEGIN fake-systemd\nb\n# END fake-systemd\n";
+    try testing.expectError(error.MalformedBlock, replaceBlock(arena.allocator(), twice, block, &fault));
+    try testing.expectEqual(@as(usize, 5), fault.line);
 }
 
 test "commands quote words and escape percent signs" {

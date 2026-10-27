@@ -75,3 +75,20 @@ test "aggregate keeps the first failure" {
     a.note(1);
     try std.testing.expectEqual(@as(u8, 5), a.code);
 }
+
+/// Names the requested units whose files are over the size limit, after a verb failed with
+/// `UnitFileTooLarge`; false when none of them is.
+pub fn reportOversized(s: *Session) bool {
+    var found = false;
+    for (s.req.units) |arg| {
+        const name = unit.name.parse(s.ctx.gpa, arg) catch continue;
+        const resolved = unit.resolve.resolve(s.ctx.gpa, s.ctx.fs.*, s.resolveOptions(), name) catch continue;
+        for (resolved.files) |ref| {
+            const st = s.ctx.fs.stat(ref.read_path) catch continue;
+            if (st.size <= unit.resolve.max_unit_file_size) continue;
+            s.ctx.diag.err("{s}: {s} is larger than {d} bytes, the limit for unit files", .{ name.full, ref.path, unit.resolve.max_unit_file_size });
+            found = true;
+        }
+    }
+    return found;
+}

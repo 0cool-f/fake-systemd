@@ -36,8 +36,12 @@ pub const Identity = union(enum) {
 pub const Input = struct {
     unit: *const model.Unit,
     command: Command,
-    /// How `run` switches identity; null when the unit has no user or the executor switches it.
+    /// How `run` switches identity for a native command; null when the unit has no user or the
+    /// executor switches it.
     identity: ?Identity = null,
+    /// An account the executor cannot resolve: the executor stays root and takes the numeric ids
+    /// that the scripts look up, wherever they run it.
+    numeric: ?shell.Numeric = null,
     /// Services started with `sv start` before the command, the first group aborting the
     /// script when a start fails.
     hard: []const []const u8 = &.{},
@@ -71,12 +75,14 @@ fn writeSvStart(w: *Io.Writer, in: Input, name: []const u8) Io.Writer.Error!void
     try writeWord(w, name, false);
 }
 
+/// The executor for `phase`, with the numeric ids of the account last when it cannot resolve it.
 fn writeExecutor(w: *Io.Writer, in: Input, phase: ?[]const u8) Io.Writer.Error!void {
     try writeWord(w, in.executor_path, false);
     try w.writeAll(" --exec ");
     try writeWord(w, in.unit.name.full, false);
     if (in.unit.scope == .user) try w.writeAll(" --user");
     if (phase) |p| try w.print(" --phase {s}", .{p});
+    if (in.numeric) |n| try shell.writeNumericFlags(w, n);
 }
 
 /// True when a oneshot stays `active` after its commands succeeded.
@@ -88,9 +94,9 @@ fn writeSetprivIdentity(w: *Io.Writer, user: []const u8, group: ?[]const u8, sup
     try w.print(" --reuid={s} ", .{user});
     if (group) |g| {
         try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{user});
+    } else try w.print("--regid=\"$(id -g -- {s})\"", .{user});
     if (supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{user});
+    try w.print(" --groups \"$(id -G -- {s} | tr ' ' ,)", .{user});
     for (supplementary) |g| try w.print(",{s}", .{g});
     try w.writeByte('"');
 }

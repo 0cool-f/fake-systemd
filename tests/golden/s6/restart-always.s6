@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:9c41e4700941ac6c
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 exec 2>&1
 exec /usr/bin/worker --queue default
 === finish 0755
@@ -15,7 +15,7 @@ exec /usr/bin/worker --queue default
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:57449c80d0afc2e8
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -31,7 +31,7 @@ printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:d9ffc53de041c36d
-# Generator: fake-systemd 0.1.0 s6/1
+# Generator: fake-systemd 0.1.0 s6/2
 exec /usr/bin/fake-systemd --log restart-always.service
 === timeout-kill 0644
 1500
@@ -44,7 +44,7 @@ SIGUSR1
 Unit: restart-always.service
 Source: /usr/lib/systemd/system/restart-always.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6/1
+Generator: fake-systemd 0.1.0 s6/2
 Body-Hash: timeout-kill xxh3:b521a4f3d6d0ffc6
 Body-Hash: down-signal xxh3:52ba82ecf83dc0c8
 Body-Hash: timeout-finish xxh3:251717d241426ae8

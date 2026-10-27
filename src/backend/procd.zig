@@ -24,6 +24,8 @@ const logpath = @import("../exec/logpath.zig");
 const executor = @import("../exec/executor.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
+const shell = @import("shell.zig");
 const network = @import("network.zig");
 const sysv_native = @import("sysvinit/native.zig");
 const sysv_render = @import("sysvinit/render.zig");
@@ -125,8 +127,8 @@ fn scanDirs(ptr: *anyopaque, gpa: Allocator, scope: core.Scope) anyerror![]const
 
 // ---- generation -------------------------------------------------------------------------
 
-fn contentOf(self: *const Procd, path: []const u8) ?[]const u8 {
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+fn contentOf(self: *const Procd, path: []const u8) !?[]const u8 {
+    return guard.readOrAbsent(self.ctx, path, 1 << 20);
 }
 
 fn serviceExists(self: *Procd, service: []const u8) !bool {
@@ -171,14 +173,14 @@ fn mapDependencies(self: *Procd, own: []const u8, u: *const model.Unit, resoluti
 }
 
 /// `START` of the script of `service`, when it has one.
-fn startOf(self: *Procd, service: []const u8) ?u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    return native.parsePriorities(self.contentOf(path) orelse return null).start;
+fn startOf(self: *Procd, service: []const u8) !?u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    return native.parsePriorities((try self.contentOf(path)) orelse return null).start;
 }
 
 /// `START` of the script a network target stands for.
-fn networkStart(self: *Procd) ?u8 {
-    for (self.dirs.network_online) |svc| if (self.startOf(svc)) |s| return s;
+fn networkStart(self: *Procd) !?u8 {
+    for (self.dirs.network_online) |svc| if (try self.startOf(svc)) |s| return s;
     return null;
 }
 
@@ -186,18 +188,18 @@ fn networkStart(self: *Procd) ?u8 {
 /// precedes, by their `START`; the ones it follows win when both cannot hold, and a script that
 /// is not there yet counts for nothing. A unit that mentions a network target follows the network
 /// script of the profile.
-fn startPriority(self: *Procd, u: *const model.Unit, deps: render.Deps) u8 {
+fn startPriority(self: *Procd, u: *const model.Unit, deps: render.Deps) !u8 {
     var lower: u8 = 0;
-    if (network.mentions(u)) if (self.networkStart()) |s| {
+    if (network.mentions(u)) if (try self.networkStart()) |s| {
         lower = @min(s + 1, 99);
     };
     for ([_][]const []const u8{ deps.requires, deps.wants, deps.after }) |names| {
-        for (names) |n| if (self.startOf(n)) |s| {
+        for (names) |n| if (try self.startOf(n)) |s| {
             lower = @max(lower, @min(s + 1, 99));
         };
     }
     var upper: u8 = 99;
-    for (deps.before) |n| if (self.startOf(n)) |s| {
+    for (deps.before) |n| if (try self.startOf(n)) |s| {
         upper = @min(upper, s -| 1);
     };
     return @max(lower, @min(default_start, upper));
@@ -266,7 +268,7 @@ fn notesFor(self: *Procd, gpa: Allocator, u: *const model.Unit, mode: render.Mod
 }
 
 fn accountKnown(self: *Procd, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -309,9 +311,10 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
     const mode = modeFor(u);
     const deps = try self.mapDependencies(svc, u, input.deps);
-    const start_priority = self.startPriority(u, deps);
+    const start_priority = try self.startPriority(u, deps);
     const exit_file = try executor.execExitPath(self.ctx, u.name.full);
     const in: render.Input = .{
         .unit = u,
@@ -335,15 +338,17 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const body = try render.script(gpa, in);
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
     const content = try marker.compose(gpa, u.name.full, input.source, input.src_hash, generator, body);
+    const path = try std.fs.path.join(gpa, &.{ layout.generationDir(self.dirs), svc });
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const files = try gpa.alloc(apply.GeneratedFile, 1);
-    files[0] = .{ .path = try std.fs.path.join(gpa, &.{ layout.generationDir(self.dirs), svc }), .content = content, .mode = 0o755 };
+    files[0] = .{ .path = path, .content = content, .mode = 0o755 };
     return .{ .service_name = svc, .files = files };
 }
 
 // ---- enablement -------------------------------------------------------------------------
 
-fn isGenerated(self: *Procd, path: []const u8) bool {
-    const content = self.contentOf(path) orelse return false;
+fn isGenerated(self: *Procd, path: []const u8) !bool {
+    const content = (try self.contentOf(path)) orelse return false;
     return marker.parse(content) != null;
 }
 
@@ -377,13 +382,22 @@ fn symlinkIfMissing(self: *Procd, link: []const u8, service: []const u8) !void {
 /// Writes the links as `rc.common` does: `S<START>` and `K<STOP>` of the script.
 fn linkDirect(self: *Procd, service: []const u8, path: []const u8) !void {
     const gpa = self.ctx.gpa;
-    const prio = native.parsePriorities(self.contentOf(path) orelse "");
+    const prio = native.parsePriorities((try self.contentOf(path)) orelse "");
     if (prio.start == null and prio.stop == null) {
         self.ctx.diag.err("{s}: the script sets neither START nor STOP, there is no link to write", .{service});
         return error.Unsupported;
     }
     if (prio.start) |s| try self.symlinkIfMissing(try layout.linkFile(gpa, self.dirs, true, s, service), service);
     if (prio.stop) |s| try self.symlinkIfMissing(try layout.linkFile(gpa, self.dirs, false, s, service), service);
+}
+
+/// True when the link `name` in the link directory is the one `rc.common` writes for `service`.
+fn pointsAtScript(self: *Procd, name: []const u8, service: []const u8) bool {
+    const path = std.fs.path.join(self.ctx.gpa, &.{ layout.linkDir(self.dirs), name }) catch return false;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = self.ctx.fs.readLink(path, &buf) catch return false;
+    const expected = layout.linkTarget(self.ctx.gpa, service) catch return false;
+    return std.mem.eql(u8, target, expected);
 }
 
 /// Every generated script gets its stop link, so that a service that was started by hand or as
@@ -393,22 +407,25 @@ fn syncStopLinks(self: *Procd, env: Env) !void {
     if (env.ctx.dry_run) return;
     const gpa = env.ctx.gpa;
     const dir = layout.generationDir(self.dirs);
-    const scripts = self.ctx.fs.iterateDir(gpa, dir) catch return;
+    const scripts = try guard.iterateOrEmpty(self.ctx, dir);
     for (scripts) |e| {
         if (e.kind != .file) continue;
         const path = try std.fs.path.join(gpa, &.{ dir, e.name });
-        if (!self.isGenerated(path)) continue;
-        const stop_number = native.parsePriorities(self.contentOf(path) orelse continue).stop orelse continue;
+        if (!(try self.isGenerated(path))) continue;
+        const stop_number = native.parsePriorities((try self.contentOf(path)) orelse continue).stop orelse continue;
         self.symlinkIfMissing(try layout.linkFile(gpa, self.dirs, false, stop_number, e.name), e.name) catch |err| {
             env.ctx.diag.warn("{s}: cannot write the stop link: {t}", .{ e.name, err });
         };
     }
-    const links = self.ctx.fs.iterateDir(gpa, layout.linkDir(self.dirs)) catch return;
+    const links = try guard.iterateOrEmpty(self.ctx, layout.linkDir(self.dirs));
+    const owned = guard.indexedPaths(self.ctx, env.owned_paths, backend_name, generator_number);
     for (links) |e| {
         const link = layout.parseLink(e.name) orelse continue;
         if (link.start or e.kind != .sym_link) continue;
         const target = try std.fs.path.join(gpa, &.{ dir, link.name });
         if (self.ctx.fs.exists(target)) continue;
+        // Only the stop links of scripts the index lists as generated are ours to remove.
+        if (!guard.anyUnder(owned, target) or !self.pointsAtScript(e.name, link.name)) continue;
         self.ctx.fs.deleteFile(try std.fs.path.join(gpa, &.{ layout.linkDir(self.dirs), e.name })) catch |err| {
             env.ctx.diag.warn("{s}: cannot remove the stale stop link: {t}", .{ e.name, err });
         };
@@ -440,7 +457,7 @@ fn diffLinks(gpa: Allocator, before: []const layout.Found, after: []const layout
 
 fn predictedLink(self: *Procd, env: Env, service: []const u8, path: []const u8) !?interface.Change {
     const gpa = env.ctx.gpa;
-    const prio = native.parsePriorities(self.contentOf(path) orelse "");
+    const prio = native.parsePriorities((try self.contentOf(path)) orelse "");
     const number = prio.start orelse return null;
     return .{ .created = .{ .link = try layout.linkFile(gpa, self.dirs, true, number, service), .target = try layout.linkTarget(gpa, service) } };
 }
@@ -490,7 +507,7 @@ fn disable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOp
         try runScript(env, path, "disable");
     } else for (before) |l| {
         // The stop link of a generated script stays, as the script may still run.
-        if (l.start or !self.isGenerated(path)) try self.ctx.fs.deleteFile(l.path);
+        if (l.start or !(try self.isGenerated(path))) try self.ctx.fs.deleteFile(l.path);
     }
     try self.syncStopLinks(env);
     try diffLinks(gpa, before, try layout.linksOf(self.ctx, self.dirs, service), service, &changes);
@@ -552,11 +569,10 @@ fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 }
 
 /// Unit recorded in the marker of the script, null for native scripts.
-fn generatedUnit(self: *Procd, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const content = self.contentOf(path) orelse return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *Procd, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const content = (try self.contentOf(path)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
 fn listingArgv(gpa: Allocator, service: []const u8) ![]const []const u8 {
@@ -575,7 +591,10 @@ fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anye
     const self = me(ptr);
     const name = std.mem.cutPrefix(u8, signal, "SIG") orelse signal;
     const path = try self.scriptPath(env, service);
-    const pid: ?u32 = if (native.usesProcd(self.contentOf(path) orelse "")) (try listed(env, service)).state.pid else self.execPid(service);
+    const pid: ?u32 = if (native.usesProcd((try self.contentOf(path)) orelse ""))
+        guard.accepted(self.ctx, (try listed(env, service)).state.pid, null)
+    else
+        try self.execPid(service);
     const target = pid orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
@@ -586,11 +605,10 @@ fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anye
 }
 
 /// Main process of a generated service that runs without procd, from the file its executor writes.
-fn execPid(self: *Procd, service: []const u8) ?u32 {
-    const unit = self.generatedUnit(service) orelse return null;
+fn execPid(self: *Procd, service: []const u8) !?u32 {
+    const unit = (try self.generatedUnit(service)) orelse return null;
     const path = executor.execPidPath(self.ctx, unit) catch return null;
-    const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return null;
-    return bsdrc_native.parsePid(text);
+    return guard.recordedPid(self.ctx, path);
 }
 
 /// A service with an instance is what procd lists. A script without instances answers `status`
@@ -598,14 +616,14 @@ fn execPid(self: *Procd, service: []const u8) ?u32 {
 fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Status {
     const self = me(ptr);
     const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return .{ .state = .inactive };
-    const content = self.contentOf(path) orelse "";
+    const content = (try self.contentOf(path)) orelse "";
     if (native.usesProcd(content)) {
         const l = try listed(env, service);
         return .{ .state = l.state.state, .pid = l.state.pid, .text = l.text };
     }
     const res = try env.runner.run(env.ctx.gpa, &.{ path, "status" }, .capture);
     const state = sysv_native.stateOfStatus(res.code, native.looksLikeHelp(res.stdout));
-    return .{ .state = state, .pid = if (state == .active) self.execPid(service) else null, .text = res.stdout };
+    return .{ .state = state, .pid = if (state == .active) try self.execPid(service) else null, .text = res.stdout };
 }
 
 // ---- manager ----------------------------------------------------------------------------

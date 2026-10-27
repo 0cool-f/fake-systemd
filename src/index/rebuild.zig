@@ -27,15 +27,12 @@ pub fn rebuild(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, opt
     for (opts.dirs) |dir| {
         const entries = fs.iterateDir(arena, dir.path) catch |e| switch (e) {
             error.FileNotFound, error.NotDir => continue,
-            else => {
-                diag.warn("cannot scan {s}: {t}", .{ dir.path, e });
-                continue;
-            },
+            else => return e,
         };
         for (entries) |entry| {
             const path = try std.fs.path.join(arena, &.{ dir.path, entry.name });
             switch (entry.kind) {
-                .file => try addFile(arena, fs, diag, index, opts.scope, dir.tier, path),
+                .file => try addFile(arena, fs, index, opts.scope, dir.tier, path),
                 .directory => if (dir.nested)
                     try addTree(arena, fs, diag, index, opts.scope, dir.tier, path, 0)
                 else
@@ -46,14 +43,11 @@ pub fn rebuild(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, opt
     }
 }
 
-fn readSmall(arena: std.mem.Allocator, fs: Fs, diag: *Diag, path: []const u8) !?[]u8 {
+fn readSmall(arena: std.mem.Allocator, fs: Fs, path: []const u8) !?[]u8 {
     return fs.readFileAlloc(arena, path, hash.max_file_size) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.FileNotFound => return null,
-        else => {
-            diag.info("skipping {s} during rebuild: {t}", .{ path, e });
-            return null;
-        },
+        else => return e,
     };
 }
 
@@ -88,8 +82,8 @@ fn addEntry(
     });
 }
 
-fn addFile(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: types.Scope, tier: types.Tier, path: []const u8) !void {
-    const content = try readSmall(arena, fs, diag, path) orelse return;
+fn addFile(arena: std.mem.Allocator, fs: Fs, index: *Index, scope: types.Scope, tier: types.Tier, path: []const u8) !void {
+    const content = try readSmall(arena, fs, path) orelse return;
     const parsed = marker.parse(content) orelse return;
     const m = parsed.marker;
     try addEntry(arena, index, scope, tier, m.unit, m.source_hash, m.generator, .{ .path = path, .out_hash = m.body_hash, .stat = 0 });
@@ -101,29 +95,37 @@ const max_tree_depth = 2;
 fn addTree(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: types.Scope, tier: types.Tier, dir: []const u8, depth: usize) !void {
     const entries = fs.iterateDir(arena, dir) catch |e| switch (e) {
         error.FileNotFound, error.NotDir => return,
-        else => {
-            diag.warn("cannot scan {s}: {t}", .{ dir, e });
-            return;
-        },
+        else => return e,
     };
     for (entries) |entry| {
         const path = try std.fs.path.join(arena, &.{ dir, entry.name });
         switch (entry.kind) {
-            .file => try addFile(arena, fs, diag, index, scope, tier, path),
+            .file => try addFile(arena, fs, index, scope, tier, path),
             .directory => if (depth + 1 < max_tree_depth and !std.mem.eql(u8, entry.name, "supervise")) try addTree(arena, fs, diag, index, scope, tier, path, depth + 1),
             else => {},
         }
     }
 }
 
+/// A file name that stays inside the directory it is joined to: not empty, not `.` or `..`, no
+/// `/` and no NUL.
+fn plainName(name: []const u8) bool {
+    if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    return std.mem.findAny(u8, name, "/\x00") == null;
+}
+
 fn addMetaDir(arena: std.mem.Allocator, fs: Fs, diag: *Diag, index: *Index, scope: types.Scope, tier: types.Tier, dir: []const u8) !void {
     const meta_path = try std.fs.path.join(arena, &.{ dir, marker.meta_name });
-    const content = try readSmall(arena, fs, diag, meta_path) orelse return;
+    const content = try readSmall(arena, fs, meta_path) orelse return;
     const meta = try marker.parseMeta(arena, content) orelse {
         diag.info("ignoring malformed {s}", .{meta_path});
         return;
     };
     for (meta.bodies) |b| {
+        if (!plainName(b.path)) {
+            diag.warn("{s}: ignoring the body entry '{s}', it is not a plain file name", .{ meta_path, b.path });
+            continue;
+        }
         const path = try std.fs.path.join(arena, &.{ dir, b.path });
         try addEntry(arena, index, scope, tier, meta.unit, meta.source_hash, meta.generator, .{ .path = path, .out_hash = b.hash, .stat = 0 });
     }
@@ -269,4 +271,37 @@ test "rebuild collects the marked files below nested service directories" {
     try testing.expectEqual(@as(usize, 1), idx.units.items.len);
     const u = idx.findUnit("foo.service").?;
     try testing.expectEqual(@as(usize, 2), u.files.len);
+}
+
+test "rebuild ignores body entries of a meta file that leave the service directory" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    try fs.makePath("/etc/s6/foo");
+    var aw: std.Io.Writer.Allocating = .init(a);
+    try marker.writeMeta(&aw.writer, .{
+        .unit = "foo.service",
+        .source = "/s/foo.service",
+        .source_hash = 5,
+        .generator = "fake-systemd 0.1.0 s6-rc/1",
+        .bodies = &.{
+            .{ .path = "../bar/run", .hash = 1 },
+            .{ .path = "/etc/passwd", .hash = 2 },
+            .{ .path = "..", .hash = 3 },
+            .{ .path = "type", .hash = 4 },
+        },
+    });
+    try fs.writeFileAtomic("/etc/s6/foo/fake-systemd.meta", aw.written(), 0o644);
+    var out: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    var diag: Diag = .init(&w, .info);
+    var idx: Index = .init("s6-rc", 1);
+    try rebuild(a, fs, &diag, &idx, .{ .scope = .system, .dirs = &.{.{ .path = "/etc/s6", .tier = .admin }} });
+    const u = idx.findUnit("foo.service").?;
+    try testing.expectEqual(@as(usize, 2), u.files.len);
+    try testing.expectEqualStrings("/etc/s6/foo/type", u.files[0].path);
+    try testing.expectEqualStrings("/etc/s6/foo/fake-systemd.meta", u.files[1].path);
 }

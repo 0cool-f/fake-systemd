@@ -139,7 +139,7 @@ check "the status verb runs: 0" rcstate e2e-sleeper 0
 expect "is-active answers active" 0 "active" systemctl is-active e2e-sleeper
 expect "is-enabled answers enabled" 0 "enabled" systemctl is-enabled e2e-sleeper
 expect "status exits 0 for a running service" 0 "Main PID" systemctl status e2e-sleeper
-check "the main process is the one the executor recorded" sh -c 'grep -q sleep /proc/$(cat /run/fake-systemd/e2e-sleeper.service.pid)/cmdline'
+check "the main process is the one the executor recorded" sh -c 'grep -q sleep /proc/$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)/cmdline'
 expect "stop succeeds" 0 "" systemctl stop e2e-sleeper
 expect "is-active answers inactive after stop" 3 "inactive" systemctl is-active e2e-sleeper
 check "the status verb says not running: 3" rcstate e2e-sleeper 3
@@ -147,9 +147,9 @@ check "stopping an enabled service keeps it enabled" executable /etc/rc.d/rc.e2e
 check "no pid file is left" sh -c 'test ! -e /run/fake-systemd/e2e-sleeper.service.daemon.pid && test ! -e /run/fake-systemd/e2e-sleeper.service.pid'
 expect "restart starts a stopped service" 0 "" systemctl restart e2e-sleeper
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
-first_pid=$(cat /run/fake-systemd/e2e-sleeper.service.pid)
+first_pid=$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)
 expect "restart of a running service succeeds" 0 "" systemctl restart e2e-sleeper
-check "restart started a new process" test "$(cat /run/fake-systemd/e2e-sleeper.service.pid)" != "$first_pid"
+check "restart started a new process" test "$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)" != "$first_pid"
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
 expect "kill sends a signal to the service" 0 "" systemctl kill -s KILL e2e-sleeper
 wait_for "a killed service reads failed: nothing supervises it" 5 active e2e-sleeper failed
@@ -291,14 +291,15 @@ echo "e2eextra:x:1501:svc-directory" >>/etc/group
 printf '#!/bin/sh\nid >/tmp/e2e-ldap-id\necho e2e-ldap-line\nexec sleep 1008\n' >/usr/bin/dirsync
 chmod 755 /usr/bin/dirsync
 cp /corpus/user-ldap.service /usr/lib/systemd/system/user-ldap.service
-check "the golden script for such an account switches with setpriv" grep -q 'setpriv --reuid=svc-directory' /golden/user-ldap.bsdrc
+check "the golden script for such an account gives the executor the numeric ids" grep -q -- '--uid "$(id -u -- svc-directory)"' /golden/user-ldap.bsdrc
 cp /golden/user-ldap.bsdrc /etc/rc.d/rc.user-ldap
 chmod 755 /etc/rc.d/rc.user-ldap
 expect "the script starts as the account" 0 "" /etc/rc.d/rc.user-ldap start
 wait_for "the daemon ran" 5 test -s /tmp/e2e-ldap-id
 check "the account has its primary group" grep -q 'uid=1500(svc-directory) gid=1500(svc-directory)' /tmp/e2e-ldap-id
 check "the account has its supplementary group" grep -q '1501(e2eextra)' /tmp/e2e-ldap-id
-check "the log directory belongs to the account, whose logger writes in it" sh -c 'test "$(stat -c %U /var/log/fake-systemd/user-ldap.service)" = svc-directory'
+check "the executor stays root and owns its state files" sh -c 'test "$(stat -c %U /run/fake-systemd/user-ldap.service.daemon.pid)" = root'
+check "the log directory belongs to root, whose executor starts the logger" sh -c 'test "$(stat -c %U /var/log/fake-systemd/user-ldap.service)" = root'
 wait_for "the logger running as the account wrote the line" 5 grep -q e2e-ldap-line /var/log/fake-systemd/user-ldap.service/current
 check "the status verb says running" rcstate user-ldap 0
 expect "the script stops what runs as the account" 0 "" /etc/rc.d/rc.user-ldap stop

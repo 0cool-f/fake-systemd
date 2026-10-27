@@ -167,7 +167,10 @@ pub fn load(gpa: Allocator, fs: Fs, resolved: resolve.Resolved, opts: Options) !
     }
     var doc: ini.Document = .empty;
     for (resolved.files, 0..) |ref, i| {
-        const content = try fs.readFileAlloc(gpa, ref.read_path, resolve.max_unit_file_size);
+        const content = fs.readFileAlloc(gpa, ref.read_path, resolve.max_unit_file_size) catch |e| switch (e) {
+            error.StreamTooLong => return error.UnitFileTooLarge,
+            else => return e,
+        };
         try ini.parse(gpa, &doc, content, @intCast(i));
     }
     return fromDocument(gpa, resolved.name, resolved.files, doc, opts);
@@ -350,6 +353,14 @@ const Builder = struct {
         return v;
     }
 
+    /// An account or group name. A name that starts with `-` is reported and kept, so that every
+    /// consumer refuses it instead of running the service as root.
+    fn account(b: *Builder, e: ini.Entry) Allocator.Error!?[]const u8 {
+        const v = (try b.scalar(e)) orelse return null;
+        if (v.len > 0 and v[0] == '-') try b.invalid(e, "account name");
+        return v;
+    }
+
     fn scalar(b: *Builder, e: ini.Entry) Allocator.Error!?[]const u8 {
         if (e.value.len == 0) return null;
         return try b.expand(e, e.value);
@@ -386,6 +397,7 @@ const Builder = struct {
             return;
         }
         const ws = (try b.words(e)) orelse return;
+        if (id == .supplementary_groups) for (ws) |w| if (w.len > 0 and w[0] == '-') try b.invalid(e, "group name");
         try list.appendSlice(b.gpa, ws);
     }
 
@@ -508,9 +520,9 @@ const Builder = struct {
         } else if (eq(e.key, "KillSignal")) {
             u.kill_signal = try b.scalar(e);
         } else if (eq(e.key, "User")) {
-            u.user = try b.scalar(e);
+            u.user = try b.account(e);
         } else if (eq(e.key, "Group")) {
-            u.group = try b.scalar(e);
+            u.group = try b.account(e);
         } else if (eq(e.key, "WorkingDirectory")) {
             u.working_directory = try b.scalar(e);
         } else if (eq(e.key, "PIDFile")) {
@@ -1230,4 +1242,14 @@ test "load reads fragment and drop-ins through Fs" {
     try fs.symLink("/dev/null", "/etc/systemd/system/masked.service");
     const masked = try resolve.resolve(a, fs, .{ .scope = .system }, try name_mod.parse(a, "masked"));
     try testing.expectError(error.UnitMasked, load(a, fs, masked, .{ .env = testEnv() }));
+}
+
+test "account names that start with a dash are reported and kept for the consumers to refuse" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const u = try build(arena.allocator(), "foo", &.{"[Service]\nUser=-r\nGroup=--\nSupplementaryGroups=audio -x\nExecStart=/bin/true\n"});
+    try testing.expectEqual(@as(usize, 3), u.countIssues(.invalid_value));
+    try testing.expectEqualStrings("-r", u.user.?);
+    try testing.expectEqualStrings("--", u.group.?);
+    try testing.expectEqual(@as(usize, 2), u.supplementary_groups.len);
 }

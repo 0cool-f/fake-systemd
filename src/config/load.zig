@@ -46,18 +46,26 @@ const Loader = struct {
     config: Config = .{},
     allow: std.ArrayList([]const u8) = .empty,
     deny: std.ArrayList([]const u8) = .empty,
+    load_error: ?[]const u8 = null,
 
     fn finish(l: *Loader) Allocator.Error!Config {
         var c = l.config;
         c.allow = try l.allow.toOwnedSlice(l.gpa);
         c.deny = try l.deny.toOwnedSlice(l.gpa);
+        c.load_error = l.load_error;
         return c;
+    }
+
+    fn fatal(l: *Loader, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+        const text = try std.fmt.allocPrint(l.gpa, fmt, args);
+        l.diag.warn("{s}", .{text});
+        if (l.load_error == null) l.load_error = text;
     }
 
     fn loadDropins(l: *Loader, fs: Fs, dir: []const u8) Allocator.Error!void {
         const entries = fs.iterateDir(l.gpa, dir) catch |e| {
             if (e == error.FileNotFound or e == error.NotDir) return;
-            l.diag.warn("cannot read {s}: {t}", .{ dir, e });
+            try l.fatal("cannot read {s}: {t}", .{ dir, e });
             return;
         };
         defer Fs.freeEntries(l.gpa, entries);
@@ -72,15 +80,12 @@ const Loader = struct {
         const content = fs.readFileAlloc(l.gpa, path, max_file_size) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.FileNotFound, error.NotDir => return,
-            else => {
-                l.diag.warn("cannot read {s}: {t}", .{ path, e });
-                return;
-            },
+            else => return l.fatal("cannot read {s}: {t}", .{ path, e }),
         };
         var doc: ini.Document = .empty;
         try ini.parse(l.gpa, &doc, content, 0);
         for (doc.problems.items) |p| {
-            l.diag.warn("{s}:{d}: syntax error ({t})", .{ path, p.line, p.kind });
+            try l.fatal("{s}:{d}: syntax error ({t})", .{ path, p.line, p.kind });
         }
         for (doc.sections.items, 0..) |s, i| {
             if (isKnownSection(s.name) or sectionSeenBefore(doc, i)) continue;
@@ -148,6 +153,7 @@ const Loader = struct {
         const words = execline.splitWords(l.gpa, e.value) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
+                if (std.mem.eql(u8, e.key, "Deny")) return l.fatal("{s}:{d}: invalid value for Deny= ({t})", .{ path, e.line, err });
                 l.diag.warn("{s}:{d}: invalid value for {s}= ({t})", .{ path, e.line, e.key, err });
                 return;
             },
@@ -481,4 +487,37 @@ test "level names" {
     try testing.expectEqual(@as(?Diag.Level, .warning), parseLevel("warn"));
     try testing.expectEqual(@as(?Diag.Level, .notice), parseLevel("Notice"));
     try testing.expectEqual(@as(?Diag.Level, null), parseLevel("debug"));
+}
+
+test "a malformed Deny= or a syntax error makes the configuration unusable" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try f.put("/etc/fake-systemd/fake-systemd.conf", "[Classify]\nDeny=\"open\n");
+    const c = try f.run(system_opts());
+    try testing.expect(c.load_error != null);
+    try testing.expect(std.mem.indexOf(u8, c.load_error.?, "Deny=") != null);
+    try f.put("/etc/fake-systemd/fake-systemd.conf", "[Classify]\nDeny foo\n");
+    const d = try f.run(system_opts());
+    try testing.expect(d.load_error != null);
+    try f.put("/etc/fake-systemd/fake-systemd.conf", "[Classify]\nDeny=foo\n");
+    const ok = try f.run(system_opts());
+    try testing.expect(ok.load_error == null);
+}
+
+test "an oversized or unreadable file makes the configuration unusable" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const big = try testing.allocator.alloc(u8, max_file_size + 16);
+    defer testing.allocator.free(big);
+    @memset(big, '#');
+    try f.put("/etc/fake-systemd/fake-systemd.conf", big);
+    const c = try f.run(system_opts());
+    try testing.expect(c.load_error != null);
+    try testing.expect(std.mem.indexOf(u8, c.load_error.?, "fake-systemd.conf") != null);
+    try f.put("/etc/fake-systemd/fake-systemd.conf", "[Main]\nInit=x\n");
+    try f.put("/etc/fake-systemd/fake-systemd.conf.d/10.conf", big);
+    const d = try f.run(system_opts());
+    try testing.expect(d.load_error != null);
 }

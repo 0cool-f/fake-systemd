@@ -100,7 +100,9 @@ test "enable writes the pipeline, lists it in the boot bundle, compiles and upda
     try f.expectCall(1, &.{ "s6-rc-update", "-l", live, "/etc/s6-rc/compiled-2" });
     try testing.expectEqual(@as(usize, 2), f.sc.calls.items.len);
     try testing.expectEqualStrings("compiled-2", try f.link("/etc/s6-rc/compiled"));
-    try testing.expect(!t.exists("/etc/s6-rc/compiled-1"));
+    // The previous database was not built by fake-systemd, so it stays.
+    try testing.expect(t.exists("/etc/s6-rc/compiled-1"));
+    try testing.expect(t.exists("/etc/s6-rc/compiled-2/fake-systemd.db"));
 
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     try testing.expectEqualStrings("", t.stderr());
@@ -217,6 +219,41 @@ test "a compiled directory that is not a link is kept under a numbered name" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     try testing.expectEqualStrings("compiled-1", try f.link("/etc/s6-rc/compiled"));
     try testing.expect(t.exists("/etc/s6-rc/compiled-0/db"));
+}
+
+test "a database that is not ours is never removed: compiled-0 and numbered directories of the administrator stay" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try t.fs.deleteFile("/etc/s6-rc/compiled");
+    try t.fs.deleteTree("/etc/s6-rc/compiled-1");
+    try t.write("/etc/s6-rc/compiled/db", "", 0o644);
+    try t.write("/etc/s6-rc/compiled-0/my-notes", "precious\n", 0o644);
+    try t.write("/etc/s6-rc/compiled-7/db", "", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try testing.expectEqualStrings("precious\n", try t.read("/etc/s6-rc/compiled-0/my-notes"));
+    try testing.expect(t.exists("/etc/s6-rc/compiled-7/db"));
+    // The directory that stood for `compiled` was kept under a name that was free.
+    try testing.expect(t.exists("/etc/s6-rc/compiled-9/db"));
+    // A link to a directory of the administrator is not followed by the removal of the old database.
+    try t.fs.deleteFile("/etc/s6-rc/compiled");
+    try t.fs.symLink("compiled-7", "/etc/s6-rc/compiled");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "disable", "foo" }));
+    try testing.expect(t.exists("/etc/s6-rc/compiled-7/db"));
+}
+
+test "the previous database is removed when fake-systemd built it" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try testing.expect(t.exists("/etc/s6-rc/compiled-2"));
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "disable", "foo" }));
+    try testing.expectEqualStrings("compiled-3", try f.link("/etc/s6-rc/compiled"));
+    try testing.expect(!t.exists("/etc/s6-rc/compiled-2"));
+    try testing.expect(t.exists("/etc/s6-rc/compiled-1"));
 }
 
 test "disable takes the service out of the boot bundle and builds the database again" {
@@ -601,7 +638,7 @@ test "an account the executor cannot resolve is switched to by setpriv, and by s
     const t = &f.t;
     try addService(t, "ldap", "", "User=svc-directory");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldap" }));
-    try h.expectContains(try t.read(sources ++ "/ldap-srv/run"), "exec /usr/bin/setpriv --reuid=svc-directory --regid=\"$(id -g svc-directory)\" --init-groups /usr/bin/ldap --go\n");
+    try h.expectContains(try t.read(sources ++ "/ldap-srv/run"), "exec /usr/bin/setpriv --reuid=svc-directory --regid=\"$(id -g -- svc-directory)\" --init-groups /usr/bin/ldap --go\n");
 
     try t.fs.deleteFile("/usr/bin/setpriv");
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
@@ -617,7 +654,7 @@ test "a oneshot of such an account runs setpriv through a shell that gets the co
     try addOneshot(t, "ljob", "User=svc-directory");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ljob" }));
     const up = marker.parse(try t.read(sources ++ "/ljob/up")).?;
-    try h.expectContains(up.rest, "sh -c \"exec /usr/bin/setpriv --reuid=svc-directory --regid=\\\"$(id -g svc-directory)\\\" --init-groups \\\"$@\\\"\" setpriv /usr/bin/ljob --go\n");
+    try h.expectContains(up.rest, "sh -c \"exec /usr/bin/setpriv --reuid=svc-directory --regid=\\\"$(id -g -- svc-directory)\\\" --init-groups \\\"$@\\\"\" setpriv /usr/bin/ljob --go\n");
 }
 
 test "numeric limits become s6-softlimit options and others send the unit through the executor" {
@@ -847,10 +884,14 @@ test "Artix: the services of a collected dependency leave the working set before
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     try testing.expect(!t.exists(artix_sources ++ "/dep-srv"));
-    try f.expectCall(0, &.{ "s6", "set", "disable", "-p", "dep-log", "dep-srv", "main-log", "main-srv" });
-    try f.expectCall(1, &.{ "s6", "repository", "sync" });
-    try f.expectCall(2, &.{ "s6", "set", "commit" });
-    try f.expectCall(3, &.{ "s6", "live", "install" });
+    // The reload may act on the units first; what matters is that the working set is cleaned
+    // right before the repository is synced.
+    var at: usize = 0;
+    while (at < f.sc.calls.items.len and !f.sc.callIs(at, &.{ "s6", "set", "disable", "-p", "dep-log", "dep-srv", "main-log", "main-srv" })) at += 1;
+    try f.expectCall(at, &.{ "s6", "set", "disable", "-p", "dep-log", "dep-srv", "main-log", "main-srv" });
+    try f.expectCall(at + 1, &.{ "s6", "repository", "sync" });
+    try f.expectCall(at + 2, &.{ "s6", "set", "commit" });
+    try f.expectCall(at + 3, &.{ "s6", "live", "install" });
 }
 
 test "Artix: a service whose sources exist stays in the set, so does a package service" {
@@ -876,4 +917,157 @@ test "starting a oneshot whose command failed exits 1" {
     f.sc.rules = &.{.{ .prefix = &.{ "s6-rc", "-l", live, "-u", "change", "job" }, .code = 1, .stdout = "s6-rc: warning: unable to start service job: command exited 1\n" }};
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "job" }));
     try h.expectContains(t.stderr(), "unable to start service job");
+}
+
+// ---- names a unit may not take ------------------------------------------------------------------
+
+test "a source directory that fake-systemd did not write is never generated into" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    // A oneshot of the administrator called foo, and a bundle that is the logger of another pipeline.
+    try t.write(sources ++ "/foo/type", "oneshot\n", 0o644);
+    try t.write(sources ++ "/foo/up", "#!/bin/execlineb -P\ntrue\n", 0o644);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try h.expectContains(t.stderr(), "was not generated by fake-systemd");
+    try testing.expectEqualStrings("oneshot\n", try t.read(sources ++ "/foo/type"));
+    try testing.expect(!t.exists(sources ++ "/foo-srv/run"));
+    try testing.expect(!t.exists(sources ++ "/foo/dependencies"));
+
+    try addService(t, "bar", "", "");
+    try t.write(sources ++ "/bar-log/type", "bundle\n", 0o644);
+    try testing.expect(t.run(&.{ "enable", "bar" }) != 0);
+    try testing.expect(!t.exists(sources ++ "/bar-srv/run"));
+    try testing.expect(!t.exists(sources ++ "/bar-log/run"));
+    try testing.expectEqualStrings("bundle\n", try t.read(sources ++ "/bar-log/type"));
+}
+
+test "the boot bundle and the names s6-rc keeps are not names of a unit" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try addService(t, "default", "", "");
+    try testing.expect(t.run(&.{ "enable", "default" }) != 0);
+    try h.expectContains(t.stderr(), "keeps for itself");
+    try testing.expectEqualStrings("bundle\n", try t.read(sources ++ "/default/type"));
+    try addService(t, "s6rc-oneshot-runner", "", "");
+    try testing.expect(t.run(&.{ "enable", "s6rc-oneshot-runner" }) != 0);
+    try testing.expect(!t.exists(sources ++ "/s6rc-oneshot-runner-srv"));
+}
+
+test "the logger of one pipeline is not taken by a oneshot of another unit" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try addOneshot(t, "foo-log", "");
+    try testing.expect(t.run(&.{ "enable", "foo-log" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+    try h.expectContains(try t.read(sources ++ "/foo-log/consumer-for"), "foo-srv");
+}
+
+test "empty source directories are pruned only when the index lists files below them" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try t.fs.makePath(sources ++ "/placeholder");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!t.exists(sources ++ "/foo-srv/run"));
+    try testing.expect(t.exists(sources ++ "/placeholder"));
+}
+
+test "Artix: a member of the working set that fake-systemd did not generate is not taken out of it" {
+    var f: Fixture = .{};
+    try f.init(true);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try t.fs.symLink("../../.atomics/x", repo_active ++ "/other-srv");
+    f.sc.calls.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!f.sc.called(&.{ "s6", "set", "disable" }));
+}
+
+test "the Environment= of a oneshot with an account is not exported by the execline that root runs" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try addOneshot(t, "envjob", "User=svc-directory\nEnvironment=PATH=/var/lib/svc/bin:/usr/bin");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "envjob" }));
+    const up = try t.read(sources ++ "/envjob/up");
+    try h.expectNotContains(up, "export");
+    try h.expectNotContains(up, "var/lib/svc");
+    try h.expectContains(up, "/usr/bin/fake-systemd --exec envjob.service");
+}
+
+test "an account the executor cannot resolve is given to it as numeric ids by a shell in the execline of a oneshot" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try addOneshot(t, "ldapjob", "User=svc-directory\nExecStartPre=/usr/bin/ldapjob --prep");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldapjob" }));
+    const up = try t.read(sources ++ "/ldapjob/up");
+    try h.expectContains(up, "sh -c \"exec \\\"$@\\\" --uid \\\"$(id -u -- svc-directory)\\\" --gid \\\"$(id -g -- svc-directory)\\\" --groups \\\"$(id -G -- svc-directory | tr ' ' ,)\\\"\" ids /usr/bin/fake-systemd --exec ldapjob.service\n");
+    try h.expectNotContains(up, "setuidgid");
+    try h.expectNotContains(up, "--identity-set");
+}
+
+test "daemon-reload with a lost index prunes our empty source directory and keeps the administrator's" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try t.fs.makePath(sources ++ "/placeholder");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    try t.fs.deleteFile("/var/lib/fake-systemd/s6-rc/index");
+    try t.fs.deleteFile("/var/lib/fake-systemd/s6-rc/owned-sources");
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try testing.expect(!t.exists(sources ++ "/foo-srv/run"));
+    try testing.expect(t.exists(sources ++ "/placeholder"));
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload gives the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "enable", "ldap" });
+    f.sc.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try f.expectCall(1, &.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" });
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "a record of owned source directories that cannot be read is an error and is not rewritten" {
+    var f: Fixture = .{};
+    try f.init(false);
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    const file = try t.fs.root.openFile(testing.io, "var/lib/fake-systemd/s6-rc/owned-sources", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    const len: usize = (1 << 20) + 1;
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(std.os.linux.ftruncate(file.handle, len)));
+    try t.fs.deleteFile("/usr/lib/systemd/system/foo.service");
+    try testing.expect(t.run(&.{"daemon-reload"}) != 0);
+    try testing.expectEqual(@as(u64, len), (try t.fs.stat("/var/lib/fake-systemd/s6-rc/owned-sources")).size);
 }

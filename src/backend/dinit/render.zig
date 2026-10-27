@@ -6,6 +6,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const model = @import("../../unit/model.zig");
 const timespan = @import("../../unit/timespan.zig");
+const shell = @import("../shell.zig");
 
 pub const Kind = enum { process, bgprocess, scripted };
 
@@ -35,8 +36,12 @@ pub const Input = struct {
     command: Command,
     stop: Stop = .none,
     executor_path: []const u8,
-    /// Identity dinit switches to; null when the unit has none or the executor does it.
+    /// Identity dinit switches to for a native command; null when the unit has none or the
+    /// executor does it.
     run_as: ?[]const u8 = null,
+    /// An account the executor cannot resolve: the executor stays root and takes the numeric ids
+    /// that a shell looks up when dinit starts the service.
+    identity: ?shell.Numeric = null,
     deps: Deps = .{},
     log_file: ?[]const u8 = null,
     /// Comment lines that explain a setting dinit cannot honor exactly.
@@ -146,7 +151,18 @@ fn writeCommandLine(w: *Io.Writer, key: []const u8, in: Input, cmd: []const []co
 }
 
 fn writeExecutorLine(w: *Io.Writer, key: []const u8, in: Input, phase: ?[]const u8) Io.Writer.Error!void {
-    try w.print("{s} = {s} --exec ", .{ key, in.executor_path });
+    try w.print("{s} = ", .{key});
+    if (in.identity) |n| {
+        // A shell looks the ids up and runs the executor with them as `exec "$0" "$@" --uid ...`.
+        var buf: [4096]u8 = undefined;
+        var script: Io.Writer = .fixed(&buf);
+        try script.writeAll("exec \"$0\" \"$@\"");
+        try shell.writeNumericFlags(&script, n);
+        try w.writeAll("/bin/sh -c ");
+        try writeWord(w, script.buffered(), true);
+        try w.writeByte(' ');
+    }
+    try w.print("{s} --exec ", .{in.executor_path});
     try writeWord(w, in.unit.name.full, true);
     if (in.unit.scope == .user) try w.writeAll(" --user");
     if (phase) |p| try w.print(" --phase {s}", .{p});

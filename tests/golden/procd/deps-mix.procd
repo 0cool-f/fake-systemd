@@ -3,7 +3,7 @@
 # Unit: deps-mix.service
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:3d54e4783ecae10b
+# Body-Hash: xxh3:3564e8a30284123b
 # Generator: fake-systemd 0.1.0 procd/1
 # Service with many dependency kinds
 # Requires: dbus postgresql
@@ -14,11 +14,11 @@ STOP=50
 
 start_service() {
 	/etc/init.d/dbus start || {
-		echo "deps-mix.service: cannot start dbus" >&2
+		echo "deps-mix.service: cannot start" dbus >&2
 		return 1
 	}
 	/etc/init.d/postgresql start || {
-		echo "deps-mix.service: cannot start postgresql" >&2
+		echo "deps-mix.service: cannot start" postgresql >&2
 		return 1
 	}
 	procd_open_instance

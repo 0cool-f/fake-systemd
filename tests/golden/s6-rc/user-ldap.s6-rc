@@ -6,10 +6,10 @@ longrun
 # Unit: user-ldap.service
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:d1dd80e021ebebfe
+# Body-Hash: xxh3:bebe6b7f27567b1d
 # Generator: fake-systemd 0.1.0 s6-rc/1
 exec 2>&1
-exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --init-groups /usr/bin/dirsync --interval 300
+exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g -- svc-directory)" --init-groups /usr/bin/dirsync --interval 300
 === user-ldap-srv/finish 0755
 #!/bin/sh
 # Generated automatically by fake-systemd. Remove this block to take ownership of the file.

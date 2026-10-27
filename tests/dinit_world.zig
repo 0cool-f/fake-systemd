@@ -73,3 +73,13 @@ pub const Scripted = struct {
         return true;
     }
 };
+
+/// Makes `pid` a live process of the tmp root: the pid checks of the backends read
+/// `/proc/<pid>/status` and its start time, which is `pid`, from `/proc/<pid>/stat`. It is owned by the user running the tests, as the pid files the tests write.
+pub fn liveProcess(t: *h.Harness, pid: u32) !void {
+    const path = try std.fmt.allocPrint(t.a(), "/proc/{d}/status", .{pid});
+    const uid = std.os.linux.getuid();
+    try t.write(path, try std.fmt.allocPrint(t.a(), "Name:\tx\nUid:\t{d}\t{d}\t{d}\t{d}\n", .{ uid, uid, uid, uid }), 0o644);
+    const stat_path = try std.fmt.allocPrint(t.a(), "/proc/{d}/stat", .{pid});
+    try t.write(stat_path, try std.fmt.allocPrint(t.a(), "{d} (x) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 {d} 0 0\n", .{ pid, pid }), 0o644);
+}

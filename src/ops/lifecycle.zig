@@ -10,6 +10,7 @@ const Session = @import("session.zig");
 const pipeline = @import("pipeline.zig");
 const units = @import("units.zig");
 const timers = @import("timers.zig");
+const pending = @import("pending.zig");
 
 const Name = unit.name.Name;
 const Exit = cli.output.Exit;
@@ -80,12 +81,42 @@ fn enableTimer(s: *Session, plan: *const pipeline.Plan) !u8 {
     return timers.arm(s, plan.name);
 }
 
+/// `enable` of a unit that is not translated succeeds, as it does in systemd for units it has
+/// nothing to do for, so package scripts running under `set -e` go on. A unit whose
+/// `ExecStart=` binary is missing is remembered for the next `daemon-reload`.
+fn skipUnsupported(s: *Session, plan: *const pipeline.Plan) !u8 {
+    const class = plan.class.?;
+    s.ctx.diag.notice("{s}: not translated ({s}), nothing to enable", .{ plan.name.full, class.reason });
+    if (class.rule == .missing_executable) try pending.record(s, plan);
+    return Exit.success;
+}
+
+/// The unit named by an `Also=` entry of `parent`: a template is instantiated with the instance
+/// of `parent`. Null for an entry that is not a unit name.
+fn alsoName(gpa: std.mem.Allocator, parent: Name, raw: []const u8) !?Name {
+    const parsed = unit.name.parse(gpa, raw) catch |e| switch (e) {
+        error.InvalidName => return null,
+        else => return e,
+    };
+    if (!parsed.isTemplate() or !parent.isInstance()) return parsed;
+    const instance = try std.fmt.allocPrint(gpa, "{s}@{s}.{s}", .{ parsed.prefix, parent.instance.?, parsed.kind.suffix() });
+    return unit.name.parse(gpa, instance) catch |e| switch (e) {
+        error.InvalidName => null,
+        else => e,
+    };
+}
+
 pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 {
     const gpa = s.ctx.gpa;
     if (visited.contains(name.full)) return Exit.success;
     try visited.put(gpa, name.full, {});
     const plan = try pipeline.prepare(s, name);
     if (plan.outcome == .timer) return enableTimer(s, &plan);
+    if (plan.outcome == .unsupported) return skipUnsupported(s, &plan);
+    if (depth > 0 and plan.outcome == .template) {
+        s.ctx.diag.info("{s}: template unit without DefaultInstance= named by Also=, skipped", .{name.full});
+        return Exit.success;
+    }
     if (try earlyOutcome(s, "enable", &plan)) |code| return code;
     if (!pipeline.hasInstallConfig(plan.unit.?)) {
         try cli.output.writeNoInstallConfig(s.err());
@@ -105,7 +136,7 @@ pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 
     }
     if (depth < max_also_depth) {
         for (plan.unit.?.also) |also| {
-            const also_name = unit.name.parse(gpa, also) catch continue;
+            const also_name = (try alsoName(gpa, name, also)) orelse continue;
             const c = try enableUnit(s, also_name, visited, depth + 1);
             if (c != 0 and code == 0) code = c;
         }
@@ -113,17 +144,41 @@ pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 
     return code;
 }
 
-pub fn disableUnit(s: *Session, name: Name) !u8 {
+pub fn disableUnit(s: *Session, name: Name) anyerror!u8 {
+    var visited: Visited = .empty;
+    return disableRecursive(s, name, &visited, 0);
+}
+
+/// Disables `name`, then the units its `Also=` lists, as `enable` follows them.
+fn disableRecursive(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 {
+    const gpa = s.ctx.gpa;
+    if (visited.contains(name.full)) return Exit.success;
+    try visited.put(gpa, name.full, {});
     const plan = try pipeline.prepare(s, name);
+    if (depth > 0 and (plan.outcome == .not_found or plan.outcome == .template)) return Exit.success;
+    var code = try disableOne(s, name, &plan, depth == 0);
+    const u = plan.unit orelse return code;
+    if (depth >= max_also_depth) return code;
+    for (u.also) |also| {
+        const also_name = (try alsoName(gpa, name, also)) orelse continue;
+        const c = try disableRecursive(s, also_name, visited, depth + 1);
+        if (c != 0 and code == 0) code = c;
+    }
+    return code;
+}
+
+/// `stop_now` honours `--now`, which applies to the named units only, not to their `Also=` units.
+fn disableOne(s: *Session, name: Name, plan: *const pipeline.Plan, stop_now: bool) !u8 {
     switch (plan.outcome) {
         .timer => return timers.disarm(s, name),
         .masked, .unsupported => {
             s.ctx.diag.info("{s}: nothing to disable", .{name.full});
+            if (plan.outcome == .unsupported) try pending.forget(s, name);
             return Exit.success;
         },
         else => {},
     }
-    if (try earlyOutcome(s, "disable", &plan)) |code| return code;
+    if (try earlyOutcome(s, "disable", plan)) |code| return code;
     const service = plan.service().?;
     if (plan.outcome == .generate and !pipeline.hasInstallConfig(plan.unit.?)) {
         try cli.output.writeNoInstallConfig(s.err());
@@ -131,7 +186,7 @@ pub fn disableUnit(s: *Session, name: Name) !u8 {
     }
     const changes = s.deps.backend.disable(s.env(), service, enableOptions(s)) catch |e| return s.backendFailed("disable", name.full, e);
     try s.printChanges(changes);
-    if (s.req.options.now) return stopAfterNow(s, "stop", name.full, service);
+    if (stop_now and s.req.options.now) return stopAfterNow(s, "stop", name.full, service);
     return Exit.success;
 }
 
@@ -288,10 +343,16 @@ fn revertOverrides(s: *Session, name: Name) !void {
     for ([_]bool{ false, true }) |runtime| {
         const dir = try adminDir(s, runtime);
         const dropin = try std.fmt.allocPrint(gpa, "{s}/{s}.d", .{ dir, name.full });
-        if (s.ctx.fs.exists(dropin)) {
-            const entries = try s.ctx.fs.iterateDir(gpa, dropin);
-            for (entries) |e| try removePath(s, try std.fs.path.join(gpa, &.{ dropin, e.name }));
+        if (s.ctx.fs.lstat(dropin)) |st| {
+            // A symlinked drop-in directory is removed as a link; its target is not ours.
+            if (st.kind == .directory) {
+                const entries = try s.ctx.fs.iterateDir(gpa, dropin);
+                for (entries) |e| try removePath(s, try std.fs.path.join(gpa, &.{ dropin, e.name }));
+            }
             try removePath(s, dropin);
+        } else |e| switch (e) {
+            error.FileNotFound, error.NotDir => {},
+            else => return e,
         }
         const fragment = try std.fs.path.join(gpa, &.{ dir, name.full });
         if (isMaskLink(s, fragment)) {

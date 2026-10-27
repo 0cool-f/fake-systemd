@@ -24,10 +24,13 @@ const rebuild = @import("../index/rebuild.zig");
 const apply = @import("../reconcile/apply.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
+const shell = @import("shell.zig");
 const network = @import("network.zig");
 const runner = @import("runner.zig");
 const render = @import("runit/render.zig");
 const layout = @import("runit/layout.zig");
+const files = @import("s6/files.zig");
 const native = @import("runit/native.zig");
 
 const Backend = interface.Backend;
@@ -35,7 +38,7 @@ const Env = interface.Env;
 const Runit = @This();
 
 pub const backend_name = "runit";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.2. `user_services` is set per instance, where a user service manager
 /// is installed.
@@ -169,14 +172,15 @@ fn nativeScan(ptr: *anyopaque, _: Env) anyerror!interface.NativeScan {
     };
 }
 
+/// The generation directory is read twice: for the scripts that carry their own marker, and for
+/// the service directories that list their started services in a meta file.
 fn scanDirs(ptr: *anyopaque, gpa: Allocator, scope: core.Scope) anyerror![]const rebuild.ScanDir {
     const self = me(ptr);
-    const dirs = try gpa.alloc(rebuild.ScanDir, 1);
-    dirs[0] = .{
-        .path = try layout.generationDir(self.ctx, self.dirs, scope),
-        .tier = if (scope == .user) .personal else .admin,
-        .nested = true,
-    };
+    const dirs = try gpa.alloc(rebuild.ScanDir, 2);
+    const path = try layout.generationDir(self.ctx, self.dirs, scope);
+    const tier: core.Tier = if (scope == .user) .personal else .admin;
+    dirs[0] = .{ .path = path, .tier = tier, .nested = true };
+    dirs[1] = .{ .path = path, .tier = tier };
     return dirs;
 }
 
@@ -231,7 +235,7 @@ fn mapList(self: *Runit, own: []const u8, resolutions: []const interface.Dep, de
 }
 
 fn accountKnown(self: *Runit, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -278,16 +282,36 @@ fn executorResolves(self: *Runit, u: *const model.Unit) bool {
     return true;
 }
 
-/// How `run` switches to an account the executor cannot resolve (LDAP, sssd). `setpriv` is
-/// dynamically linked, so the system libc finds the user and `--init-groups` applies its
-/// groups; without `setpriv`, `chpst -u` switches without the supplementary groups of the user.
-fn identityFor(self: *Runit, u: *const model.Unit, have_setpriv: bool) !?render.Identity {
+fn plainAccounts(u: *const model.Unit) bool {
+    var plain = render.plainAccount(u.user.?);
+    if (u.group) |g| plain = plain and render.plainAccount(g);
+    for (u.supplementary_groups) |g| plain = plain and render.plainAccount(g);
+    return plain;
+}
+
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+/// scripts look up, wherever they run it; the executor stays root and switches itself.
+fn numericFor(self: *Runit, u: *const model.Unit, use_executor: bool) !?shell.Numeric {
     if (u.scope == .user) return null;
     const user = u.user orelse return null;
     if (self.executorResolves(u)) return null;
-    var plain = render.plainAccount(user);
-    if (u.group) |g| plain = plain and render.plainAccount(g);
-    for (u.supplementary_groups) |g| plain = plain and render.plainAccount(g);
+    if (!plainAccounts(u)) {
+        if (!use_executor) return null;
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
+        return error.Unsupported;
+    }
+    return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
+}
+
+/// How `run` switches to the account of a native command that the executor cannot resolve (LDAP,
+/// sssd): `setpriv`, which is dynamically linked, so the system libc finds the user and
+/// `--init-groups` applies its groups; without `setpriv`, `chpst -u` switches without the
+/// supplementary groups of the user.
+fn identityFor(self: *Runit, u: *const model.Unit, have_setpriv: bool, use_executor: bool) !?render.Identity {
+    if (u.scope == .user or use_executor) return null;
+    const user = u.user orelse return null;
+    if (self.executorResolves(u)) return null;
+    const plain = plainAccounts(u);
     if (have_setpriv and plain) return .{ .setpriv = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } };
     if (!have_setpriv) {
         self.ctx.diag.warn("{s}: setpriv is not installed, chpst switches to {s} without its supplementary groups", .{ u.name.full, user });
@@ -341,6 +365,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const self = me(ptr);
     const u = input.unit;
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
 
     const have_setpriv = (try self.findProgram("setpriv")) != null;
     const reason = policy.executorReason(u.*, capabilities, native_support);
@@ -364,7 +389,8 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     const in: render.Input = .{
         .unit = u,
         .command = command,
-        .identity = try self.identityFor(u, have_setpriv),
+        .identity = try self.identityFor(u, have_setpriv, use_executor),
+        .numeric = try self.numericFor(u, use_executor),
         .hard = needs.items,
         .soft = wants.items,
         .svdir = try self.svdirFor(u),
@@ -374,26 +400,15 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     };
 
     const dir = try std.fs.path.join(gpa, &.{ try layout.generationDir(self.ctx, self.dirs, u.scope), svc });
+    try guard.requireNotOther(self.ctx, guard.claimDir(self.ctx, dir, u.name.full, &.{"run"}), u.name.full, dir);
     const generator = try interface.generatorLine(gpa, backend_name, generator_number);
-    var files: std.ArrayList(apply.GeneratedFile) = .empty;
-    try addFile(gpa, &files, input, generator, dir, "run", try render.run(gpa, in));
-    if (render.needsFinish(u)) try addFile(gpa, &files, input, generator, dir, "finish", try render.finish(gpa, in));
-    try addFile(gpa, &files, input, generator, dir, "log/run", try render.log(gpa, u.name.full, u.scope, policy.executor_path));
-    if (render.needsStopControl(u)) try addFile(gpa, &files, input, generator, dir, "control/t", try render.stopControl(gpa, in));
-    return .{ .service_name = svc, .files = files.items };
-}
-
-fn addFile(
-    gpa: Allocator,
-    files: *std.ArrayList(apply.GeneratedFile),
-    input: interface.GenerateInput,
-    generator: []const u8,
-    dir: []const u8,
-    rel: []const u8,
-    body: []const u8,
-) !void {
-    const content = try marker.compose(gpa, input.unit.name.full, input.source, input.src_hash, generator, body);
-    try files.append(gpa, .{ .path = try std.fs.path.join(gpa, &.{ dir, rel }), .content = content, .mode = 0o755 });
+    var set: files.Set = .init(gpa, input, generator, dir);
+    set.starts = try std.mem.concat(gpa, []const u8, &.{ needs.items, wants.items });
+    try set.script("run", try render.run(gpa, in), 0o755);
+    if (render.needsFinish(u)) try set.script("finish", try render.finish(gpa, in), 0o755);
+    try set.script("log/run", try render.log(gpa, u.name.full, u.scope, policy.executor_path), 0o755);
+    if (render.needsStopControl(u)) try set.script("control/t", try render.stopControl(gpa, in), 0o755);
+    return .{ .service_name = svc, .files = try set.done() };
 }
 
 // ---- enablement -------------------------------------------------------------------------
@@ -444,18 +459,10 @@ fn linkIdle(self: *Runit, service: []const u8) !bool {
     return try self.makeLink(service, dir);
 }
 
-/// Services the generated `run` of `service` starts, in order.
+/// Services the generated service of `service` starts, in order.
 fn dependencies(self: *Runit, service: []const u8) ![]const []const u8 {
-    const gpa = self.ctx.gpa;
     const dir = (try layout.locate(self.ctx, self.dirs, service)) orelse return &.{};
-    const content = self.ctx.fs.readFileAlloc(gpa, try std.fs.path.join(gpa, &.{ dir, "run" }), 1 << 20) catch return &.{};
-    const parsed = marker.parse(content) orelse return &.{};
-    var out: std.ArrayList([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, parsed.rest, '\n');
-    while (lines.next()) |line| {
-        if (try native.startedService(gpa, line)) |dep| try out.append(gpa, dep);
-    }
-    return out.items;
+    return guard.startedServices(self.ctx, dir);
 }
 
 /// Links the services `service` starts, and those they start in turn, idle. Services that
@@ -524,7 +531,7 @@ fn isEnabled(ptr: *anyopaque, _: Env, service: []const u8) anyerror!output.Enabl
     return if (self.hasDown(service)) .disabled else .enabled;
 }
 
-fn serviceEnabled(ptr: *anyopaque, service: []const u8) bool {
+fn serviceEnabled(ptr: *anyopaque, service: []const u8) anyerror!bool {
     const self = me(ptr);
     const link = self.linkPath(service) catch return false;
     return self.linked(link) and !self.hasDown(service);
@@ -686,12 +693,11 @@ fn waitsOf(self: *Runit, service: []const u8) render.Waits {
 }
 
 /// Unit recorded in the marker of the `run` script, null for native services.
-fn generatedUnit(self: *Runit, service: []const u8) ?[]const u8 {
-    const dir = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const path = std.fs.path.join(self.ctx.gpa, &.{ dir, "run" }) catch return null;
-    const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch return null;
-    const parsed = marker.parse(content) orelse return null;
-    return parsed.marker.unit;
+fn generatedUnit(self: *Runit, service: []const u8) !?[]const u8 {
+    const dir = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, "run" });
+    const content = (try guard.readOrAbsent(self.ctx, path, 1 << 20)) orelse return null;
+    return guard.unitOfMarked(content);
 }
 
 /// `ExecReload=` runs through the executor, which gets the pid `runsv` supervises as
@@ -700,11 +706,12 @@ fn generatedUnit(self: *Runit, service: []const u8) ?[]const u8 {
 fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
     const self = me(ptr);
     const gpa = env.ctx.gpa;
-    if (self.generatedUnit(service)) |unit_name| {
+    if (try self.generatedUnit(service)) |unit_name| {
         var argv: std.ArrayList([]const u8) = .empty;
         if ((try self.statusOf(env, service)).pid) |pid| {
             try argv.appendSlice(gpa, &.{ "env", try std.fmt.allocPrint(gpa, "MAINPID={d}", .{pid}) });
         }
+        try argv.appendSlice(gpa, guard.executorPrefix(env.ctx, unit_name));
         try argv.appendSlice(gpa, &.{ policy.executor_path, "--exec", unit_name });
         if (env.ctx.scope == .user) try argv.append(gpa, "--user");
         try argv.appendSlice(gpa, &.{ "--phase", "reload" });
@@ -749,7 +756,7 @@ fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anye
         return;
     }
     const st = try self.statusOf(env, service);
-    const pid = st.pid orelse {
+    const pid = guard.accepted(self.ctx, st.pid, null) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -762,24 +769,31 @@ fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Sta
     return me(ptr).statusOf(env, service);
 }
 
+/// True when `target` is a service directory of the generation directory that has nothing left
+/// but what runit and the generation leave behind, which is what a removed unit looks like.
+fn generatedLeftover(self: *Runit, target: []const u8) bool {
+    const gen = layout.generationDir(self.ctx, self.dirs, self.ctx.scope) catch return false;
+    const parent = std.fs.path.dirname(target) orelse return false;
+    if (!std.mem.eql(u8, parent, gen)) return false;
+    return guard.abandonedServiceDir(self.ctx, target);
+}
+
 /// `runsvdir` rescans its directory every five seconds and `runsv` reads `run` at each start,
-/// so there is nothing to reload; links to a service directory of ours that has no `run` any
-/// more are removed, as generated dependencies are collected without a call to `disable`.
+/// so there is nothing to reload; links to a service directory of the generation directory
+/// that holds nothing but leftovers of a removed unit are removed, as generated dependencies
+/// are collected without a call to `disable`.
 fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
     if (env.ctx.dry_run) return;
     const dir = try self.enableDirPath();
-    const entries = self.ctx.fs.iterateDir(env.ctx.gpa, dir) catch return;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     for (entries) |entry| {
         if (entry.kind != .sym_link) continue;
         const link = try std.fs.path.join(env.ctx.gpa, &.{ dir, entry.name });
         if (self.ctx.fs.exists(try std.fs.path.join(env.ctx.gpa, &.{ link, "run" }))) continue;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const target = self.ctx.fs.readLink(link, &buf) catch continue;
-        const ours = for (try layout.lookupDirs(self.ctx, self.dirs, self.ctx.scope)) |d| {
-            if (std.mem.startsWith(u8, target, d) and target.len > d.len and target[d.len] == '/') break true;
-        } else false;
-        if (!ours) continue;
+        if (!self.generatedLeftover(target)) continue;
         self.ctx.fs.deleteFile(link) catch |e| env.ctx.diag.warn("cannot remove {s}: {t}", .{ link, e });
     }
 }

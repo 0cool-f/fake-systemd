@@ -261,7 +261,7 @@ pub fn isCrashed(code: u8) bool {
 pub fn parsePid(text: []const u8) ?u32 {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     const pid = std.fmt.parseInt(u32, trimmed, 10) catch return null;
-    return if (pid == 0) null else pid;
+    return if (pid <= 1) null else pid;
 }
 
 /// `pidfile=` line of an entry in `daemons/<service>/`.
@@ -406,6 +406,7 @@ test "exit statuses observed from rc-service status map to systemd states" {
 test "pids and pid files" {
     try testing.expectEqual(@as(?u32, 120), parsePid("120\n"));
     try testing.expectEqual(@as(?u32, null), parsePid("0\n"));
+    try testing.expectEqual(@as(?u32, null), parsePid("1\n"));
     try testing.expectEqual(@as(?u32, null), parsePid("x"));
     try testing.expectEqualStrings("/run/plain.pid", pidfileOfDaemon("exec=/bin/sleep\nargv_0=/bin/sleep\npidfile=/run/plain.pid\n").?);
     try testing.expect(pidfileOfDaemon("exec=/bin/sleep\n") == null);

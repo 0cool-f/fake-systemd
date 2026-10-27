@@ -15,7 +15,6 @@ const shell = @import("../shell.zig");
 const sysv = @import("../sysvinit/render.zig");
 
 pub const Mode = sysv.Mode;
-pub const Wrapper = sysv.Wrapper;
 pub const Identity = sysv.Identity;
 
 pub const Deps = struct {
@@ -85,47 +84,13 @@ fn writeHeader(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     for (in.notes) |note| try w.print("# {s}\n", .{note});
 }
 
-/// The flags of `setpriv` that set the account, behind a space.
-fn setprivFlags(w: *Io.Writer, s: anytype) Io.Writer.Error!void {
-    try w.print(" --reuid={s} ", .{s.user});
-    if (s.group) |g| {
-        try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{s.user});
-    if (s.supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{s.user});
-    for (s.supplementary) |g| try w.print(",{s}", .{g});
-    try w.writeByte('"');
-}
-
-/// The executor with `args`, behind a wrapper when the account needs one.
-fn writeExecutor(w: *Io.Writer, gpa: Allocator, in: Input, wrapper: ?Wrapper, args: []const []const u8) Io.Writer.Error!void {
-    const wrap = wrapper orelse {
-        try writeWord(w, in.executor_path);
-        try w.writeByte(' ');
-        return writeWords(w, args);
-    };
-    switch (wrap) {
-        .setpriv => |s| {
-            try writeWord(w, s.path);
-            try setprivFlags(w, s);
-            try w.writeByte(' ');
-            try writeWord(w, in.executor_path);
-            try w.writeByte(' ');
-            try writeWords(w, args);
-        },
-        .su => |user| {
-            var inner: Io.Writer.Allocating = .init(gpa);
-            defer inner.deinit();
-            try inner.writer.writeAll("exec ");
-            try writeWord(&inner.writer, in.executor_path);
-            try inner.writer.writeByte(' ');
-            try writeWords(&inner.writer, args);
-            try w.writeAll("su -s /bin/sh -c ");
-            try writeWord(w, inner.written());
-            try w.writeByte(' ');
-            try writeWord(w, user);
-        },
-    }
+/// The executor with `args`, and the numeric ids of the account after them when the executor cannot
+/// resolve it.
+fn writeExecutor(w: *Io.Writer, in: Input, args: []const []const u8) Io.Writer.Error!void {
+    try writeWord(w, in.executor_path);
+    try w.writeByte(' ');
+    try writeWords(w, args);
+    if (in.identity.numeric) |n| try shell.writeNumericFlags(w, n);
 }
 
 fn execArgs(gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const u8) Allocator.Error![]const []const u8 {
@@ -136,10 +101,10 @@ fn execArgs(gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const
     return args.items;
 }
 
-/// A call of the executor that runs to the end, behind the wrapper of the account.
+/// A call of the executor that runs to the end.
 fn writeCall(w: *Io.Writer, gpa: Allocator, in: Input, phase: ?[]const u8, tail: []const []const u8) Io.Writer.Error!void {
     const args = execArgs(gpa, in, phase, tail) catch return error.WriteFailed;
-    return writeExecutor(w, gpa, in, in.identity.call, args);
+    return writeExecutor(w, in, args);
 }
 
 fn writeVariables(w: *Io.Writer, in: Input) Io.Writer.Error!void {
@@ -180,7 +145,9 @@ fn writeDepStarts(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     for (in.deps.requires) |dep| {
         try w.writeAll("\tstart_dep ");
         try writeWord(w, dep);
-        try w.print(" || {{\n\t\techo \"{s}: cannot start {s}\" >&2\n\t\treturn 1\n\t}}\n", .{ in.unit.name.full, dep });
+        try w.print(" || {{\n\t\techo \"{s}: cannot start\" ", .{in.unit.name.full});
+        try writeWord(w, dep);
+        try w.writeAll(" >&2\n\t\treturn 1\n\t}\n");
     }
     for (in.deps.wants) |dep| {
         try w.writeAll("\tstart_dep ");
@@ -189,21 +156,12 @@ fn writeDepStarts(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     }
 }
 
-/// `chown` of the files and the log directory the executor writes as another account.
-fn writeOwnership(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    const owner = in.identity.owner orelse return;
-    try w.writeAll("\tfor _f in \"$log_dir\" \"$main_pid\" \"$exit_file\"");
-    if (in.mode == .daemon) try w.writeAll(" \"$daemon_pid\"");
-    try w.writeAll("; do\n\t\t[ -d \"$_f\" ] || : >> \"$_f\"\n\t\tchown ");
-    try writeWord(w, owner);
-    try w.writeAll(" \"$_f\"\n\tdone\n");
-}
-
 fn writeRunning(w: *Io.Writer) Io.Writer.Error!void {
     try w.writeAll(
         "\nrunning() {\n" ++
             "\t_pid=$(cat \"$daemon_pid\" 2>/dev/null)\n" ++
-            "\t[ -n \"$_pid\" ] && [ \"$(cat \"/proc/$_pid/comm\" 2>/dev/null)\" = fake-systemd ]\n" ++
+            "\tcase $_pid in ''|*[!0-9]*) return 1 ;; esac\n" ++
+            "\t[ \"$_pid\" -gt 1 ] && [ \"$(cat \"/proc/$_pid/comm\" 2>/dev/null)\" = fake-systemd ]\n" ++
             "}\n",
     );
 }
@@ -218,9 +176,8 @@ fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!vo
     try w.writeAll("\ndo_start() {\n\trunning && return 0\n");
     try writeDepStarts(w, in);
     try w.writeAll("\tmkdir -p \"$state_dir\" \"$log_dir\" || return 1\n\trm -f \"$exit_file\" \"$main_pid\"\n");
-    try writeOwnership(w, in);
     try w.print("\techo \"Starting {s}\"\n\t", .{u.name.full});
-    try writeExecutor(w, gpa, in, in.identity.daemon, args.items);
+    try writeExecutor(w, in, args.items);
     try w.writeAll("\n}\n");
 }
 
@@ -230,7 +187,6 @@ fn writeStopDaemon(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll(
         "\nstop_daemon() {\n" ++
             "\trunning || return 0\n" ++
-            "\t_pid=$(cat \"$daemon_pid\")\n" ++
             "\tkill -TERM \"$_pid\" 2>/dev/null\n" ++
             "\t_n=0\n" ++
             "\twhile running && [ \"$_n\" -lt $((stop_wait * 10)) ]; do\n" ++
@@ -292,7 +248,6 @@ fn writeOneshotStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!v
     }
     try writeDepStarts(w, in);
     try w.writeAll("\tmkdir -p \"$state_dir\" \"$log_dir\" || return 1\n");
-    try writeOwnership(w, in);
     try w.print("\techo \"Starting {s}\"\n\t", .{u.name.full});
     try writeCall(w, gpa, in, null, &.{ "--log", "--record-exit" });
     try w.writeAll(" > /dev/null\n\t_rc=$?\n\trm -f \"$main_pid\"\n\treturn \"$_rc\"\n}\n");
@@ -388,4 +343,29 @@ fn writeScript(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
     }
     if (sysv.hasReload(in.unit)) try writeReload(w, gpa, in);
     try writeDispatch(w, in);
+}
+
+const testing = std.testing;
+const name_mod = @import("../../unit/name.zig");
+
+test "the name of a required script is quoted in the message of the start" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const u: model.Unit = .{ .name = try name_mod.parse(a, "foo.service"), .scope = .system };
+    const text = try script(a, .{
+        .unit = &u,
+        .service = "foo",
+        .script_dir = "/etc/rc.d",
+        .mode = .daemon,
+        .deps = .{ .requires = &.{"dep\\"} },
+        .executor_path = "/usr/bin/fake-systemd",
+        .state_dir = "/run/fake-systemd",
+        .log_dir = "/var/log/fake-systemd/foo.service",
+        .daemon_pid_file = "/run/fake-systemd/foo.service.daemon.pid",
+        .main_pid_file = "/run/fake-systemd/foo.service.pid",
+        .exit_file = "/run/fake-systemd/foo.service.exit",
+    });
+    try testing.expect(std.mem.find(u8, text, "echo \"foo.service: cannot start\" 'dep\\' >&2") != null);
+    try testing.expect(std.mem.find(u8, text, "cannot start dep\\\"") == null);
 }

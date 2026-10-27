@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:efcb7d4d5138c419
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 # sv waits: stop=45
 exec 2>&1
 exec /usr/bin/fake-systemd --exec notify-service.service
@@ -16,7 +16,7 @@ exec /usr/bin/fake-systemd --exec notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:8ac4c4ed95f8311e
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -32,7 +32,7 @@ sv down .
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:f044e17008c891d5
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 exec /usr/bin/fake-systemd --log notify-service.service
 === control/t 0755
 #!/bin/sh
@@ -41,5 +41,5 @@ exec /usr/bin/fake-systemd --log notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:913aacd07b28c335
-# Generator: fake-systemd 0.1.0 runit/1
+# Generator: fake-systemd 0.1.0 runit/2
 kill -s INT "$(cat supervise/pid)"

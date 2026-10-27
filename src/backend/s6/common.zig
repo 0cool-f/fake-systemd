@@ -14,6 +14,7 @@ const policy = @import("../policy.zig");
 const network = @import("../network.zig");
 const layout = @import("layout.zig");
 const render = @import("render.zig");
+const shell = @import("../shell.zig");
 
 /// What `run`, `up` and `down` express without the executor: `Environment=` and `UMask=` as
 /// shell or execline lines, `Limit*=` with plain numbers as `s6-softlimit`. `Group=` and
@@ -103,17 +104,37 @@ pub const Base = struct {
         return false;
     }
 
-    /// How a script switches to an account the executor cannot resolve (LDAP, sssd). `setpriv`
-    /// is dynamically linked, so the system libc finds the user and `--init-groups` applies its
-    /// groups; `s6-setuidgid` finds the user the same way but takes the supplementary groups
-    /// from an enumeration of the group database, which such a directory may not offer.
-    pub fn identityFor(self: Base, u: *const model.Unit, have_setpriv: bool) !?render.Identity {
+    fn plainAccounts(u: *const model.Unit) bool {
+        var plain = render.plainAccount(u.user.?);
+        if (u.group) |g| plain = plain and render.plainAccount(g);
+        for (u.supplementary_groups) |g| plain = plain and render.plainAccount(g);
+        return plain;
+    }
+
+    /// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+    /// scripts look up, wherever they run it; the executor stays root and switches itself.
+    pub fn numericFor(self: Base, u: *const model.Unit, use_executor: bool) !?shell.Numeric {
         if (u.scope == .user) return null;
         const user = u.user orelse return null;
         if (self.executorResolves(u)) return null;
-        var plain = render.plainAccount(user);
-        if (u.group) |g| plain = plain and render.plainAccount(g);
-        for (u.supplementary_groups) |g| plain = plain and render.plainAccount(g);
+        if (!plainAccounts(u)) {
+            if (!use_executor) return null;
+            self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
+            return error.Unsupported;
+        }
+        return .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups };
+    }
+
+    /// How a script switches to the account of a native command that the executor cannot resolve
+    /// (LDAP, sssd). `setpriv` is dynamically linked, so the system libc finds the user and
+    /// `--init-groups` applies its groups; `s6-setuidgid` finds the user the same way but takes
+    /// the supplementary groups from an enumeration of the group database, which such a
+    /// directory may not offer.
+    pub fn identityFor(self: Base, u: *const model.Unit, have_setpriv: bool, use_executor: bool) !?render.Identity {
+        if (u.scope == .user or use_executor) return null;
+        const user = u.user orelse return null;
+        if (self.executorResolves(u)) return null;
+        const plain = plainAccounts(u);
         if (have_setpriv and plain) return .{ .setpriv = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } };
         if (!have_setpriv) {
             self.ctx.diag.warn("{s}: setpriv is not installed, s6-setuidgid switches to {s} with the supplementary groups the system enumerates", .{ u.name.full, user });

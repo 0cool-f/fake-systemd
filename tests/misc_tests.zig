@@ -88,7 +88,7 @@ test "Deny= in the configuration excludes a unit" {
     defer t.deinit();
     const deny = try t.a().dupe([]const u8, &.{"foo*"});
     t.ctx.config.deny = deny;
-    try testing.expectEqual(@as(u8, 1), t.run(&.{ "enable", "foo" }));
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     try h.expectContains(t.stderr(), "excluded by Deny=");
 }
 

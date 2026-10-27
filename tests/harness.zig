@@ -172,3 +172,15 @@ pub fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
         return error.TestUnexpectedContains;
     }
 }
+
+/// A unit whose literal settings hold a line break is refused by the backend of `h`, with the
+/// reason, and nothing it controls reaches a generated file.
+pub fn expectControlRefused(t: *Harness) !void {
+    inline for ([_][]const u8{ "SupplementaryGroups=\"audio\\nINJECT\"", "SuccessExitStatus=\"1\\nINJECT\"" }) |setting| {
+        const text = "[Unit]\nDescription=x\n[Service]\nExecStart=/usr/bin/foo --run\n" ++ setting ++ "\n[Install]\nWantedBy=multi-user.target\n";
+        try t.write("/usr/lib/systemd/system/foo.service", text, 0o644);
+        try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+        try expectContains(t.stderr(), "holds a line break or NUL");
+        try expectNotContains(try t.snapshot(), "\nINJECT");
+    }
+}

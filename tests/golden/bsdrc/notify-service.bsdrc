@@ -3,7 +3,7 @@
 # Unit: notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:3c1ac3753084e65b
+# Body-Hash: xxh3:22002677c5e6d34b
 # Generator: fake-systemd 0.1.0 bsd-rc/1
 # Notify-style database
 # network.target: rc.local runs after rc.inet1 and rc.inet2, which bring the network up
@@ -18,7 +18,8 @@ stop_wait=55
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
-	[ -n "$_pid" ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+	case $_pid in ''|*[!0-9]*) return 1 ;; esac
+	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
 }
 
 do_start() {
@@ -31,7 +32,6 @@ do_start() {
 
 stop_daemon() {
 	running || return 0
-	_pid=$(cat "$daemon_pid")
 	kill -TERM "$_pid" 2>/dev/null
 	_n=0
 	while running && [ "$_n" -lt $((stop_wait * 10)) ]; do

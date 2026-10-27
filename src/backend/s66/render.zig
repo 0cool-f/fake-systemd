@@ -12,30 +12,16 @@ const model = @import("../../unit/model.zig");
 const shell = @import("../shell.zig");
 const s6render = @import("../s6/render.zig");
 
-pub const Identity = union(enum) {
-    /// `setpriv`, which resolves the user and its groups through the system libc. Without a
-    /// group the primary group of the user is taken at run time; with supplementary groups
-    /// those are added to the groups of the user.
-    setpriv: struct {
-        user: []const u8,
-        group: ?[]const u8 = null,
-        supplementary: []const []const u8 = &.{},
-    },
-    /// `execl-runas`, which sets the groups of the account from the system group database.
-    runas: []const u8,
-};
-
 pub const Input = struct {
     unit: *const model.Unit,
     /// Name of the service in 66, which `finish` asks for the way the process ended.
     service: []const u8,
     /// Services the service depends on; 66 starts them first and stops the service before them.
     depends: []const []const u8 = &.{},
-    /// How the start script switches to an account the executor cannot resolve (LDAP, sssd).
-    identity: ?Identity = null,
+    /// An account the executor cannot resolve (LDAP, sssd): the executor stays root and takes the
+    /// numeric ids that the scripts look up.
+    identity: ?shell.Numeric = null,
     executor_path: []const u8,
-    setpriv_path: []const u8 = "/usr/bin/setpriv",
-    runas_path: []const u8 = "/usr/bin/execl-runas",
     /// Absolute path of `66`, which `finish` calls.
     ctl_path: []const u8 = "/usr/bin/66",
     /// Directory of the uniform log of the unit, created for the account the logger runs as.
@@ -87,17 +73,6 @@ fn wordsNeedAt(words: []const []const u8) bool {
     return false;
 }
 
-fn writeSetprivIdentity(w: *Io.Writer, user: []const u8, group: ?[]const u8, supplementary: []const []const u8) Io.Writer.Error!void {
-    try w.print(" --reuid={s} ", .{user});
-    if (group) |g| {
-        try w.print("--regid={s}", .{g});
-    } else try w.print("--regid=\"$(id -g {s})\"", .{user});
-    if (supplementary.len == 0) return w.writeAll(" --init-groups");
-    try w.print(" --groups \"$(id -G {s} | tr ' ' ,)", .{user});
-    for (supplementary) |g| try w.print(",{s}", .{g});
-    try w.writeByte('"');
-}
-
 /// True when the unit is a 66 oneshot: it runs its commands once.
 pub fn isOneshot(u: *const model.Unit) bool {
     return u.service_type == .oneshot;
@@ -113,30 +88,7 @@ pub fn stopsOnSignal(u: *const model.Unit) bool {
     return !isOneshot(u) and u.exec_stop.len > 0;
 }
 
-fn identityOwner(in: Input) ?[]const u8 {
-    const ident = in.identity orelse return null;
-    return switch (ident) {
-        .setpriv => |s| s.user,
-        .runas => |user| user,
-    };
-}
-
-fn writeIdentityPrefix(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    const ident = in.identity orelse return;
-    switch (ident) {
-        .setpriv => |s| {
-            try writeWord(w, in.setpriv_path);
-            try writeSetprivIdentity(w, s.user, s.group, s.supplementary);
-        },
-        .runas => |user| {
-            try writeWord(w, in.runas_path);
-            try w.writeByte(' ');
-            try writeWord(w, user);
-        },
-    }
-    try w.writeByte(' ');
-}
-
+/// Words of the executor.
 fn executorWords(gpa: Allocator, in: Input, phase: ?[]const u8, log: bool, stop_on_signal: bool) Allocator.Error![]const []const u8 {
     var words: std.ArrayList([]const u8) = .empty;
     try words.appendSlice(gpa, &.{ in.executor_path, "--exec", in.unit.name.full });
@@ -154,29 +106,15 @@ fn writeWords(w: *Io.Writer, words: []const []const u8) Io.Writer.Error!void {
     }
 }
 
-/// Lines that make the log directory writable for the account the executor switches to, which
-/// only applies to an account switched by the script.
-fn writeLogDirectory(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    const owner = identityOwner(in) orelse return;
-    if (in.unit.scope != .system) return;
-    try w.writeAll("mkdir -p ");
-    try writeWord(w, in.log_dir);
-    try w.writeAll(" && chown ");
-    try writeWord(w, owner);
-    try w.writeByte(' ');
-    try writeWord(w, in.log_dir);
-    try w.writeByte('\n');
-}
-
-/// Body of a script that runs `words` as the executor, preceded by what the identity needs.
+/// Body of a script that runs the executor, with the numeric ids of its account when it cannot
+/// resolve it.
 fn writeExecutorScript(w: *Io.Writer, gpa: Allocator, in: Input, phase: ?[]const u8, stop_on_signal: bool) (Io.Writer.Error || Allocator.Error)!void {
     const words = try executorWords(gpa, in, phase, true, stop_on_signal);
     try w.writeAll(shebang);
     if (wordsNeedAt(words)) try w.writeAll("at=@\n");
-    try writeLogDirectory(w, in);
     try w.writeAll("exec ");
-    try writeIdentityPrefix(w, in);
     try writeWords(w, words);
+    if (in.identity) |n| try shell.writeNumericFlags(w, n);
     try w.writeByte('\n');
 }
 
@@ -284,6 +222,7 @@ fn writeFinish(w: *Io.Writer, gpa: Allocator, in: Input) (Io.Writer.Error || All
         const words = try executorWords(gpa, in, "stop-post", false, false);
         if (wordsNeedAt(words)) try w.writeAll("at=@\n");
         try writeWords(w, words);
+        if (in.identity) |n| try shell.writeNumericFlags(w, n);
         try w.writeByte('\n');
     }
     switch (u.restart) {

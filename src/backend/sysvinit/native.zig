@@ -406,8 +406,6 @@ pub const Header = struct {
     provides: []const []const u8 = &.{},
     required_start: []const []const u8 = &.{},
     should_start: []const []const u8 = &.{},
-    /// Scripts a generated script requires and `enable` enables with it (`# Pulls-In:`).
-    pulls_in: []const []const u8 = &.{},
     /// Runlevels of `Default-Start:`, one character each; `chkconfig:` levels when the LSB header has none.
     default_start: []const u8 = "",
     default_stop: []const u8 = "",
@@ -475,8 +473,6 @@ pub fn parseHeader(gpa: Allocator, content: []const u8) Allocator.Error!Header {
             if (std.ascii.eqlIgnoreCase(key, "Should-Start")) h.should_start = try splitFields(gpa, value);
             if (std.ascii.eqlIgnoreCase(key, "Default-Start")) lsb_start = try levelsOf(gpa, value);
             if (std.ascii.eqlIgnoreCase(key, "Default-Stop")) lsb_stop = try levelsOf(gpa, value);
-        } else if (std.mem.eql(u8, key, "Pulls-In")) {
-            h.pulls_in = try splitFields(gpa, value);
         } else if (std.mem.eql(u8, key, "chkconfig") and !h.has_chkconfig) {
             var it = std.mem.tokenizeAny(u8, value, " \t");
             const levels = it.next() orelse continue;
@@ -550,7 +546,7 @@ pub fn looksLikeUsage(text: []const u8) bool {
 pub fn parsePid(text: []const u8) ?u32 {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     const pid = std.fmt.parseInt(u32, trimmed, 10) catch return null;
-    return if (pid == 0) null else pid;
+    return if (pid <= 1) null else pid;
 }
 
 const testing = std.testing;
@@ -742,6 +738,7 @@ test "status codes map to states and a usage text is no failure" {
     try testing.expect(!looksLikeUsage("foo is dead"));
     try testing.expectEqual(@as(?u32, 77), parsePid("77\n"));
     try testing.expectEqual(@as(?u32, null), parsePid("0"));
+    try testing.expectEqual(@as(?u32, null), parsePid("1"));
 }
 
 test "a script that only stops its program, or runs it itself, still names it, and a start wins" {

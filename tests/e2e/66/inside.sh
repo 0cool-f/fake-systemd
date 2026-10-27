@@ -324,9 +324,9 @@ for f in /golden/*.66; do
     check "golden $n is a frontend file 66 parses" 66 parse "e2e-golden-$n"
     check "66 reads it as a service with the command of the executor" sh -c "66 resolve -f run_user e2e-golden-$n | grep -q 'fake-systemd --exec'"
 done
-check "golden user-ldap switches the account with setpriv" grep -q '^exec /usr/bin/setpriv --reuid=svc-directory --regid="$(id -g svc-directory)" --init-groups /usr/bin/fake-systemd' /golden/user-ldap.66
+check "golden user-ldap gives the executor the numeric ids of the account" grep -q -- '^exec /usr/bin/fake-systemd --exec user-ldap.service --log --uid "$(id -u -- svc-directory)"' /golden/user-ldap.66
 
-# --- An account only the system libc resolves: the start script switches with setpriv ------------------
+# --- An account only the system libc resolves: the start script gives the executor numeric ids ---------
 printf '#!/bin/sh\nid >/tmp/e2e-ldap-id\nexec sleep 1000\n' >/usr/local/bin/dirsync
 chmod 755 /usr/local/bin/dirsync
 unit e2e-ldap 'ExecStart=/usr/local/bin/dirsync
@@ -334,11 +334,10 @@ User=svc-directory
 Group=svc-directory
 SupplementaryGroups=e2eextra'
 expect "a unit for an account nobody lists is translated" 0 "" systemctl enable e2e-ldap
-cat >/tmp/e2e-want-setpriv.in <<'X'
-exec SETPRIV --reuid=svc-directory --regid=svc-directory --groups "$(id -G svc-directory | tr ' ' ,),e2eextra" /usr/bin/fake-systemd --exec e2e-ldap.service --log
+cat >/tmp/e2e-want-ids <<'X'
+exec /usr/bin/fake-systemd --exec e2e-ldap.service --log --uid "$(id -u -- svc-directory)" --gid "$(getent group svc-directory | cut -d: -f3)" --groups "$(id -G -- svc-directory | tr ' ' ,),$(getent group e2eextra | cut -d: -f3)"
 X
-sed "s|SETPRIV|$(command -v setpriv)|" /tmp/e2e-want-setpriv.in >/tmp/e2e-want-setpriv
-check "the frontend file uses setpriv" grep -qxFf /tmp/e2e-want-setpriv /usr/share/66/service/e2e-ldap
+check "the frontend file gives the executor the numeric ids" grep -qxFf /tmp/e2e-want-ids /usr/share/66/service/e2e-ldap
 echo "svc-directory:x:1500:1500::/home/svc:/bin/sh" >>/etc/passwd
 echo "svc-directory:x:1500:" >>/etc/group
 echo "e2eextra:x:1501:svc-directory" >>/etc/group
@@ -347,7 +346,7 @@ expect "the generated file starts the service as the account" 0 "" 66 start e2e-
 wait_for "it runs" 10 test -s /tmp/e2e-ldap-id
 check "the account has its primary group" grep -q 'uid=1500(svc-directory) gid=1500(svc-directory)' /tmp/e2e-ldap-id
 check "the account has its supplementary group" grep -q '1501(e2eextra)' /tmp/e2e-ldap-id
-wait_for "its log is written by the account" 5 sh -c 'ls -ld /var/log/fake-systemd/e2e-ldap.service | grep -q svc-directory'
+wait_for "its log directory exists, root's" 5 sh -c 'test "$(stat -c %U /var/log/fake-systemd/e2e-ldap.service)" = root'
 expect "stop succeeds" 0 "" 66 stop e2e-ldap
 expect "disable succeeds" 0 "" systemctl disable e2e-ldap
 

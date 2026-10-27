@@ -46,6 +46,8 @@ layout: index_pkg.Layout,
 dry_runner: backend_pkg.runner.Dry,
 runtime_verb: bool = true,
 idx: ?Index = null,
+/// Paths of the generated files the index listed when it was loaded, before this command changed it.
+owned_paths: ?[]const []const u8 = null,
 persist: bool = true,
 lock: ?index_pkg.lock.Lock = null,
 lock_mode: index_pkg.lock.Mode = .shared,
@@ -66,6 +68,8 @@ activators: ?Activators = null,
 /// Units whose entry changed during this `daemon-reload`; units that depend on them are not skipped.
 changed: std.StringHashMapUnmanaged(void) = .empty,
 spec_env: ?unit.specifier.Env = null,
+/// Accounts of the root in use, read on first use.
+accounts: ?*const unit.specifier.Accounts = null,
 timer_adapter: ?TimerAdapter = null,
 
 pub fn init(ctx: *Context, deps: Deps, req: cli.systemctl.Request) !Session {
@@ -97,7 +101,7 @@ pub fn runner(s: *Session) backend_pkg.Runner {
 }
 
 pub fn env(s: *Session) backend_pkg.interface.Env {
-    return .{ .ctx = s.ctx, .runner = s.runner(), .online = !s.ctx.offline };
+    return .{ .ctx = s.ctx, .runner = s.runner(), .online = !s.ctx.offline, .owned_paths = s.owned_paths };
 }
 
 pub fn resolveOptions(s: Session) unit.resolve.Options {
@@ -142,13 +146,71 @@ pub fn index(s: *Session, intent: Intent) !*Index {
     }
     const gpa = s.ctx.gpa;
     s.lock = try index_pkg.lock.acquire(s.ctx.fs.*, s.ctx.diag, try s.layout.lockPath(gpa), want, .{});
-    const loaded = try Index.load(gpa, s.ctx.fs.*, s.ctx.diag, try s.layout.indexPath(gpa), s.deps.backend.name(), s.deps.backend.generator());
+    const index_path = try s.layout.indexPath(gpa);
+    const loaded = try Index.load(gpa, s.ctx.fs.*, s.ctx.diag, index_path, s.deps.backend.name(), s.deps.backend.generator());
+    if (loaded.status == .newer and intent == .write) {
+        s.ctx.diag.err("the index {s} was written by a newer fake-systemd; refusing to change anything, upgrade fake-systemd or move the file away", .{index_path});
+        return error.IndexTooNew;
+    }
+    if (loaded.status == .corrupt and s.lock_mode == .exclusive) try s.setAsideIndex(index_path);
     s.idx = loaded.index;
     s.generator_changed = loaded.status == .generator_changed;
     s.config_changed = loaded.index.config_hash != try index_pkg.hash.configHash(gpa, s.ctx.config);
-    if (loaded.status == .rebuild_needed) try s.rebuildIndex();
+    if (loaded.status.needsRebuild()) try s.rebuildIndex() else s.ignoreForeignPaths();
+    s.owned_paths = backend_pkg.guard.pathsOfIndex(gpa, &s.idx.?) catch |e| blk: {
+        s.ctx.diag.warn("cannot list the generated files of the index: {t}", .{e});
+        break :blk null;
+    };
     s.storeNatives();
     return &s.idx.?;
+}
+
+/// Renames an index that cannot be used to `index.bak.<unix seconds>`, so that rebuilding does
+/// not destroy it.
+fn setAsideIndex(s: *Session, index_path: []const u8) !void {
+    const gpa = s.ctx.gpa;
+    const secs = @divFloor(Io.Timestamp.now(s.ctx.io, .real).toNanoseconds(), std.time.ns_per_s);
+    var n: usize = 0;
+    while (true) : (n += 1) {
+        const name = if (n == 0)
+            try std.fmt.allocPrint(gpa, "{s}.bak.{d}", .{ index_path, secs })
+        else
+            try std.fmt.allocPrint(gpa, "{s}.bak.{d}.{d}", .{ index_path, secs, n });
+        if (s.ctx.fs.exists(name)) continue;
+        s.ctx.fs.rename(index_path, name) catch |e| {
+            s.ctx.diag.err("cannot set aside the unusable index {s}: {t}", .{ index_path, e });
+            return e;
+        };
+        s.ctx.diag.warn("the index {s} is unusable and was moved to {s}; entries are rebuilt from the markers", .{ index_path, name });
+        return;
+    }
+}
+
+/// True when `path` lies below `root`.
+fn isBelow(path: []const u8, root: []const u8) bool {
+    const rest = std.mem.cutPrefix(u8, path, root) orelse return false;
+    return rest.len > 0 and rest[0] == '/';
+}
+
+/// Units whose files lie outside the directories of the backend and the state directory are
+/// reported and taken out of the index: no action ever reaches such a path, and the entry is
+/// kept as it is in the file.
+fn ignoreForeignPaths(s: *Session) void {
+    const gpa = s.ctx.gpa;
+    const idx = &s.idx.?;
+    const dirs = s.deps.backend.scanDirs(gpa, s.ctx.scope) catch return;
+    var foreign: std.ArrayList([]const u8) = .empty;
+    for (idx.units.items) |u| {
+        for (u.files) |f| {
+            var allowed = isBelow(f.path, s.layout.state_dir);
+            for (dirs) |d| allowed = allowed or isBelow(f.path, d.path);
+            if (allowed) continue;
+            s.ctx.diag.warn("{s}: the index names {s}, which is outside the directories of the {s} backend; the entry is ignored", .{ u.name, f.path, s.deps.backend.name() });
+            foreign.append(gpa, u.name) catch return;
+            break;
+        }
+    }
+    for (foreign.items) |name| idx.quarantineUnit(gpa, name) catch |e| s.ctx.diag.warn("cannot set aside the entry of {s}: {t}", .{ name, e });
 }
 
 fn rebuildIndex(s: *Session) !void {

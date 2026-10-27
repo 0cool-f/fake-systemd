@@ -136,15 +136,33 @@ pub const Meta = struct {
     generator: []const u8,
     /// One entry per generated file, path relative to the service directory.
     bodies: []const BodyEntry,
+    /// Services the generated service starts before its own command, in order.
+    starts: []const []const u8 = &.{},
 };
 
 pub fn writeMeta(w: *Io.Writer, m: Meta) (Io.Writer.Error || error{InvalidField})!void {
     if (!plainField(m.unit) or !plainField(m.source) or !plainField(m.generator)) return error.InvalidField;
     for (m.bodies) |b| if (!plainField(b.path)) return error.InvalidField;
+    for (m.starts) |s| if (!plainField(s)) return error.InvalidField;
     try w.print("{s}\nUnit: {s}\nSource: {s}\nSource-Hash: {f}\nGenerator: {s}\n", .{
         header_line, m.unit, m.source, hash.str(m.source_hash), m.generator,
     });
     for (m.bodies) |b| try w.print("Body-Hash: {s} {f}\n", .{ b.path, hash.str(b.hash) });
+    for (m.starts) |s| try w.print("Starts: {s}\n", .{s});
+}
+
+/// The services a generated service starts first, from the `Starts:` lines of its meta file;
+/// empty when `content` is not a meta file. The names point into `content`.
+pub fn metaStarts(gpa: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const []const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    const first = lines.next() orelse return &.{};
+    if (!std.mem.eql(u8, first, header_line)) return &.{};
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "Starts: ")) try out.append(gpa, line["Starts: ".len..]);
+    }
+    return out.toOwnedSlice(gpa);
 }
 
 /// Parses a meta file; slices point into `content`, `bodies` is allocated from `gpa`.
@@ -299,4 +317,25 @@ test "meta round-trip with several body hashes" {
     try testing.expectEqual(@as(u64, 2), m.bodies[1].hash);
     try testing.expect(try parseMeta(testing.allocator, "Source: x\n") == null);
     try testing.expectError(error.InvalidField, writeMeta(&aw.writer, .{ .unit = "a\nb", .source = "s", .source_hash = 1, .generator = "g", .bodies = &.{} }));
+}
+
+test "the services a meta file says are started are read back in order" {
+    var aw: Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try writeMeta(&aw.writer, .{
+        .unit = "foo.service",
+        .source = "/s",
+        .source_hash = 1,
+        .generator = "g",
+        .bodies = &.{},
+        .starts = &.{ "b", "c@x" },
+    });
+    const starts = try metaStarts(testing.allocator, aw.written());
+    defer testing.allocator.free(starts);
+    try testing.expectEqual(@as(usize, 2), starts.len);
+    try testing.expectEqualStrings("b", starts[0]);
+    try testing.expectEqualStrings("c@x", starts[1]);
+    const none = try metaStarts(testing.allocator, "Starts: a\n");
+    try testing.expectEqual(@as(usize, 0), none.len);
+    try testing.expectError(error.InvalidField, writeMeta(&aw.writer, .{ .unit = "u", .source = "s", .source_hash = 1, .generator = "g", .bodies = &.{}, .starts = &.{"a\nb"} }));
 }

@@ -95,7 +95,9 @@ fn decideAbsent(in: Input) Decision {
     if (in.new == null) return .{ .action = .remove };
     return switch (in.verb) {
         .explicit => .{ .action = .write },
-        .daemon_reload => .{
+        // A file the index never listed cannot have been removed by hand: a generator that writes a
+        // new file for a service is not held back by the verb.
+        .daemon_reload => if (in.original == null) .{ .action = .write } else .{
             .action = .mark_missing,
             .notice = if (in.already_missing) null else .file_missing,
         },
@@ -173,5 +175,6 @@ test "no index entry: unknown original is treated conservatively" {
     try expectDecision(.none, null, .{ .original = null, .current = present(N), .new = N, .verb = .explicit });
     try expectDecision(.keep_local_save_fsnew, .local_changes_kept, .{ .original = null, .current = present(U), .new = N, .verb = .explicit });
     try expectDecision(.write, null, .{ .original = null, .current = .absent, .new = N, .verb = .explicit });
+    try expectDecision(.write, null, .{ .original = null, .current = .absent, .new = N, .verb = .daemon_reload });
     try expectDecision(.move_fssave, .source_removed_modified_saved, .{ .original = null, .current = present(U), .new = null, .verb = .daemon_reload });
 }

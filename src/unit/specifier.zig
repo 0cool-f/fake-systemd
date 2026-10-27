@@ -22,6 +22,80 @@ pub const UserInfo = struct {
     home: ?[]const u8 = null,
 };
 
+const Fs = @import("../core/Fs.zig");
+const account_db = @import("../exec/accounts.zig");
+
+/// Accounts read from the contents of `/etc/passwd` and `/etc/group` of the root in use; the
+/// process environment is never consulted.
+pub const Accounts = struct {
+    passwd: []const u8 = "",
+    group: []const u8 = "",
+
+    /// A missing file reads as empty; a file that cannot be read or is larger than the limit of the
+    /// executor's account database is an error.
+    pub fn read(gpa: Allocator, fs: Fs) !Accounts {
+        return .{
+            .passwd = try account_db.readFile(gpa, fs, "/etc/passwd"),
+            .group = try account_db.readFile(gpa, fs, "/etc/group"),
+        };
+    }
+
+    fn groupName(a: Accounts, gid: u32) ?[]const u8 {
+        var lines = std.mem.splitScalar(u8, a.group, '\n');
+        while (lines.next()) |line| {
+            var f = std.mem.splitScalar(u8, line, ':');
+            const name = f.next() orelse continue;
+            _ = f.next() orelse continue;
+            const id = std.fmt.parseInt(u32, f.next() orelse continue, 10) catch continue;
+            if (id == gid) return name;
+        }
+        return null;
+    }
+
+    fn entry(a: Accounts, line: []const u8) ?UserInfo {
+        var f = std.mem.splitScalar(u8, line, ':');
+        const name = f.next() orelse return null;
+        _ = f.next() orelse return null;
+        const uid = std.fmt.parseInt(u32, f.next() orelse return null, 10) catch return null;
+        const gid = std.fmt.parseInt(u32, f.next() orelse return null, 10) catch return null;
+        _ = f.next() orelse return null;
+        const home = f.next() orelse return null;
+        if (name.len == 0) return null;
+        return .{ .name = name, .uid = uid, .group = a.groupName(gid), .gid = gid, .home = if (home.len > 0) home else null };
+    }
+
+    pub fn byUid(a: Accounts, uid: u32) ?UserInfo {
+        var lines = std.mem.splitScalar(u8, a.passwd, '\n');
+        while (lines.next()) |line| {
+            const e = a.entry(line) orelse continue;
+            if (e.uid == uid) return e;
+        }
+        return null;
+    }
+
+    pub fn byName(a: Accounts, name: []const u8) ?UserInfo {
+        var lines = std.mem.splitScalar(u8, a.passwd, '\n');
+        while (lines.next()) |line| {
+            const e = a.entry(line) orelse continue;
+            if (std.mem.eql(u8, e.name, name)) return e;
+        }
+        return null;
+    }
+
+    /// The user running the manager: its passwd entry, else root, else a nameless numeric account.
+    pub fn manager(a: Accounts, gpa: Allocator, uid: u32) Allocator.Error!UserInfo {
+        if (a.byUid(uid)) |u| return u;
+        if (uid == 0) return .{ .name = "root", .uid = 0, .group = "root", .gid = 0, .home = "/root" };
+        return .{ .name = try std.fmt.allocPrint(gpa, "{d}", .{uid}), .uid = uid };
+    }
+
+    /// Callback for `model.UserLookup`; `context` is a `*const Accounts`.
+    pub fn lookup(context: ?*anyopaque, name: []const u8) ?UserInfo {
+        const a: *const Accounts = @ptrCast(@alignCast(context.?));
+        return a.byName(name);
+    }
+};
+
 pub const XdgDirs = struct {
     runtime: []const u8,
     state: []const u8,
@@ -333,4 +407,47 @@ test "unknown specifier and trailing percent name the culprit" {
     try testing.expectEqual(@as(u8, 'z'), failure.specifier);
     try testing.expectError(error.TrailingPercent, expand(a, ctx, "abc%", &failure));
     try testing.expectError(error.TrailingPercent, expand(a, ctx, "%", null));
+}
+
+test "accounts come from passwd and group, not from the environment" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a: Accounts = .{
+        .passwd = "root:x:0:0:r:/root:/bin/sh\nsvc:x:994:993::/var/lib/svc:/sbin/nologin\n",
+        .group = "root:x:0:\nsvcgrp:x:993:\n",
+    };
+    const svc = a.byName("svc").?;
+    try testing.expectEqual(@as(?u32, 994), svc.uid);
+    try testing.expectEqualStrings("svcgrp", svc.group.?);
+    try testing.expectEqualStrings("/var/lib/svc", svc.home.?);
+    try testing.expectEqualStrings("svc", (try a.manager(arena.allocator(), 994)).name);
+    try testing.expectEqualStrings("root", (try (Accounts{}).manager(arena.allocator(), 0)).name);
+    const unknown = try (Accounts{}).manager(arena.allocator(), 4242);
+    try testing.expectEqualStrings("4242", unknown.name);
+    try testing.expect(unknown.home == null);
+    try testing.expect(a.byName("nobody") == null);
+}
+
+test "accounts are read above 1 MiB and an unreadable file is an error" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fs: Fs = .initDir(testing.io, tmp.dir);
+    const none = try Accounts.read(arena.allocator(), fs);
+    try testing.expectEqualStrings("", none.passwd);
+    try fs.makePath("/etc");
+    var big: std.ArrayList(u8) = .empty;
+    var n: usize = 0;
+    while (big.items.len < (2 << 20)) : (n += 1) {
+        try big.print(arena.allocator(), "filler{d}:x:{d}:{d}::/h:/s\n", .{ n, 100000 + n, 100000 + n });
+    }
+    try big.appendSlice(arena.allocator(), "late:x:4242:4242::/home/late:/s\n");
+    try fs.writeFileAtomic("/etc/passwd", big.items, 0o644);
+    const acc = try Accounts.read(arena.allocator(), fs);
+    try testing.expectEqual(@as(u32, 4242), acc.byName("late").?.uid);
+
+    try fs.deleteFile("/etc/passwd");
+    try fs.makePath("/etc/passwd");
+    try testing.expectError(error.IsDir, Accounts.read(arena.allocator(), fs));
 }

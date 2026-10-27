@@ -106,6 +106,9 @@ pub const Env = struct {
     ctx: *core.Context,
     runner: Runner,
     online: bool,
+    /// Paths of the generated files the index listed when the command started, as the caller that
+    /// holds the index gives them; null makes the backends read the index on disk.
+    owned_paths: ?[]const []const u8 = null,
 };
 
 pub const Error = error{
@@ -137,6 +140,19 @@ pub const VTable = struct {
     /// Name of the service a generated file belongs to; null when it is the file name.
     service_of_file: ?*const fn (path: []const u8) []const u8 = null,
 };
+
+/// True when `service` can be handed to a tool as an argument: it is not empty, does not start
+/// with `-` (which the tool would read as an option) and holds no NUL or line break.
+pub fn argSafe(service: []const u8) bool {
+    if (service.len == 0 or service[0] == '-') return false;
+    return std.mem.findAny(u8, service, "\x00\n\r") == null;
+}
+
+fn checkedService(env: Env, service: []const u8) error{Unsupported}!void {
+    if (argSafe(service)) return;
+    env.ctx.diag.err("'{s}' is not a service name the init tools can take", .{service});
+    return error.Unsupported;
+}
 
 pub const Backend = struct {
     ptr: *anyopaque,
@@ -170,38 +186,47 @@ pub const Backend = struct {
     }
 
     pub fn enable(b: Backend, env: Env, service: []const u8, opts: EnableOptions) anyerror![]const Change {
+        try checkedService(env, service);
         return b.vtable.enable(b.ptr, env, service, opts);
     }
 
     pub fn disable(b: Backend, env: Env, service: []const u8, opts: EnableOptions) anyerror![]const Change {
+        try checkedService(env, service);
         return b.vtable.disable(b.ptr, env, service, opts);
     }
 
     pub fn start(b: Backend, env: Env, service: []const u8) anyerror!void {
+        try checkedService(env, service);
         return b.vtable.start(b.ptr, env, service);
     }
 
     pub fn stop(b: Backend, env: Env, service: []const u8) anyerror!void {
+        try checkedService(env, service);
         return b.vtable.stop(b.ptr, env, service);
     }
 
     pub fn restart(b: Backend, env: Env, service: []const u8) anyerror!void {
+        try checkedService(env, service);
         return b.vtable.restart(b.ptr, env, service);
     }
 
     pub fn reload(b: Backend, env: Env, service: []const u8) anyerror!void {
+        try checkedService(env, service);
         return b.vtable.reload(b.ptr, env, service);
     }
 
     pub fn kill(b: Backend, env: Env, service: []const u8, signal: []const u8) anyerror!void {
+        try checkedService(env, service);
         return b.vtable.kill(b.ptr, env, service, signal);
     }
 
     pub fn status(b: Backend, env: Env, service: []const u8) anyerror!Status {
+        try checkedService(env, service);
         return b.vtable.status(b.ptr, env, service);
     }
 
     pub fn isEnabled(b: Backend, env: Env, service: []const u8) anyerror!output.EnabledState {
+        try checkedService(env, service);
         return b.vtable.is_enabled(b.ptr, env, service);
     }
 
@@ -223,4 +248,15 @@ pub const Backend = struct {
 /// `fake-systemd <version> <backend>/<generator>`, the `Generator` marker field.
 pub fn generatorLine(gpa: std.mem.Allocator, backend_name: []const u8, generator: u32) std.mem.Allocator.Error![]u8 {
     return std.fmt.allocPrint(gpa, "fake-systemd {s} {s}/{d}", .{ version, backend_name, generator });
+}
+
+test "a service name that a tool would read as an option, or that cannot be one, is not an argument" {
+    try std.testing.expect(argSafe("sshd"));
+    try std.testing.expect(argSafe("getty@tty1"));
+    try std.testing.expect(!argSafe(""));
+    try std.testing.expect(!argSafe("-x"));
+    try std.testing.expect(!argSafe("--force"));
+    try std.testing.expect(!argSafe("a\nb"));
+    try std.testing.expect(!argSafe("a\rb"));
+    try std.testing.expect(!argSafe("a\x00b"));
 }

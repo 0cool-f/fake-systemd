@@ -403,3 +403,82 @@ test "dry-run enable changes nothing" {
     try testing.expect(!t.exists(runner_unit));
     try testing.expect(!t.exists("/var/lib/fake-systemd/fake/index"));
 }
+
+test "a crontab whose block is not closed is left untouched and the error names the line" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try installBusybox(&t);
+    const broken = "# mine\n# BEGIN fake-systemd\n0 1 * * * user job\n";
+    try t.write("/etc/crontabs/root", broken, 0o600);
+    try t.expectRun(0, &.{ "enable", "foo.timer" });
+    try testing.expectEqualStrings(broken, try t.read("/etc/crontabs/root"));
+    try h.expectContains(t.stderr(), "/etc/crontabs/root:2: BEGIN marker without an END marker");
+    try testing.expect(!t.exists("/etc/crontabs/cron.update"));
+}
+
+test "a crontab with two blocks is left untouched" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try installBusybox(&t);
+    const twice = "# BEGIN fake-systemd\na\n# END fake-systemd\nuser\n# BEGIN fake-systemd\nb\n# END fake-systemd\n";
+    try t.write("/etc/crontabs/root", twice, 0o600);
+    try t.expectRun(0, &.{ "enable", "foo.timer" });
+    try testing.expectEqualStrings(twice, try t.read("/etc/crontabs/root"));
+    try h.expectContains(t.stderr(), "/etc/crontabs/root:5: second BEGIN marker");
+}
+
+test "cron.update keeps the users that were already waiting there" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try installBusybox(&t);
+    try t.write("/etc/crontabs/cron.update", "alice\nbob", 0o644);
+    try t.expectRun(0, &.{ "enable", "foo.timer" });
+    try testing.expectEqualStrings("alice\nbob\nroot\n", try t.read("/etc/crontabs/cron.update"));
+}
+
+test "the mode of an existing crontab is kept" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try installBusybox(&t);
+    try t.write("/etc/crontabs/root", "# mine\n", 0o640);
+    try t.expectRun(0, &.{ "enable", "foo.timer" });
+    try testing.expectEqual(@as(u16, 0o640), (try t.fs.stat("/etc/crontabs/root")).mode);
+}
+
+test "an fcron table with a broken block is not handed to fcrontab" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try t.write("/usr/sbin/fcron", "x", 0o755);
+    try t.write("/usr/bin/fcrontab", "x", 0o755);
+    try t.fake.setService("fcron", .{ .enabled = true });
+    const broken = "# mine\n# BEGIN fake-systemd\nold\n";
+    try t.write("/var/spool/fcron/root.orig", broken, 0o600);
+    try addTimer(&t, "daily", "OnCalendar=daily\nPersistent=true");
+    var cap: Capture = .{ .t = &t };
+    t.runner_override = cap.runner();
+    try t.expectRun(0, &.{ "enable", "daily.timer" });
+    try testing.expectEqual(@as(usize, 0), cap.calls.items.len);
+    try testing.expectEqualStrings(broken, try t.read("/var/spool/fcron/root.orig"));
+    try h.expectContains(t.stderr(), "/var/spool/fcron/root.orig:2");
+}
+
+test "the fcron table is staged under a name of its own" {
+    var t: h.Harness = undefined;
+    try setup(&t);
+    defer t.deinit();
+    try t.write("/usr/sbin/fcron", "x", 0o755);
+    try t.write("/usr/bin/fcrontab", "x", 0o755);
+    try t.fake.setService("fcron", .{ .enabled = true });
+    try addTimer(&t, "daily", "OnCalendar=daily\nPersistent=true");
+    var cap: Capture = .{ .t = &t };
+    t.runner_override = cap.runner();
+    try t.expectRun(0, &.{ "enable", "daily.timer" });
+    const staging = cap.calls.items[0][1];
+    try testing.expect(std.mem.startsWith(u8, staging, "/var/lib/fake-systemd/fcrontab.new."));
+    try testing.expect(!t.exists(staging));
+}

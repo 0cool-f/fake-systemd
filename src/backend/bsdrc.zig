@@ -26,6 +26,7 @@ const executor = @import("../exec/executor.zig");
 const daemon = @import("../exec/daemon.zig");
 const interface = @import("interface.zig");
 const policy = @import("policy.zig");
+const guard = @import("guard.zig");
 const network = @import("network.zig");
 const shell = @import("shell.zig");
 const sysv_native = @import("sysvinit/native.zig");
@@ -49,7 +50,6 @@ pub const capabilities: interface.Capabilities = .{
     .shutdown_hooks = true,
 };
 
-const command_dirs = [_][]const u8{ "/usr/local/bin", "/usr/bin", "/bin" };
 /// Files whose mention of a script means the boot already starts it, for a native script that is
 /// enabled.
 const boot_files = [_][]const u8{ "rc.M", "rc.inet2", "rc.S", "rc.local" };
@@ -58,8 +58,6 @@ const pid_dirs = [_][]const u8{ "/run", "/var/run" };
 ctx: *core.Context,
 dirs: *const profile.BackendDirs,
 vt: interface.VTable = vtable,
-/// Replaces the check of which programs are installed; for tests.
-tools_override: ?[]const []const u8 = null,
 
 pub fn init(ctx: *core.Context, dirs: *const profile.BackendDirs) BsdRc {
     return .{ .ctx = ctx, .dirs = dirs };
@@ -165,7 +163,7 @@ fn mapDependencies(self: *BsdRc, own: []const u8, u: *const model.Unit, resoluti
 }
 
 fn accountKnown(self: *BsdRc, file: []const u8, account: []const u8) bool {
-    if (account.len > 0 and std.ascii.isDigit(account[0])) return true;
+    if (shell.allDigits(account)) return true;
     const content = self.ctx.fs.readFileAlloc(self.ctx.gpa, file, 1 << 20) catch return false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -185,40 +183,23 @@ fn executorResolves(self: *BsdRc, u: *const model.Unit) bool {
     return true;
 }
 
-fn findProgram(self: *BsdRc, name: []const u8) !?[]const u8 {
-    if (self.tools_override) |tools| return if (contains(tools, name)) name else null;
-    for (command_dirs) |dir| {
-        const path = try std.fs.path.join(self.ctx.gpa, &.{ dir, name });
-        if (self.ctx.fs.exists(path)) return path;
-    }
-    return null;
-}
-
 fn plainGroups(u: *const model.Unit) bool {
     if (u.group) |g| if (!shell.plainAccount(g)) return false;
     for (u.supplementary_groups) |g| if (!shell.plainAccount(g)) return false;
     return true;
 }
 
-/// An account the executor cannot resolve (LDAP, sssd) is switched through the system libc, by
-/// `setpriv` or `su` in front of the executor.
+/// An account the executor cannot resolve (LDAP, sssd) is passed to it as numeric ids that the
+/// script looks up with `id` and `getent`; the executor stays root and switches to them itself.
 fn identityFor(self: *BsdRc, u: *const model.Unit) !render.Identity {
     if (u.scope == .user) return .{};
     const user = u.user orelse return .{};
     if (self.executorResolves(u)) return .{};
     if (!shell.plainAccount(user) or !plainGroups(u)) {
-        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be switched by the system libc", .{u.name.full});
+        self.ctx.diag.err("{s}: User=, Group= and SupplementaryGroups= must be plain names to be looked up by the system libc", .{u.name.full});
         return error.Unsupported;
     }
-    const setpriv_path = try self.findProgram("setpriv");
-    const wrapper: render.Wrapper = if (setpriv_path) |path|
-        .{ .setpriv = .{ .path = path, .user = user, .group = u.group, .supplementary = u.supplementary_groups } }
-    else
-        .{ .su = user };
-    if (setpriv_path == null and (u.group != null or u.supplementary_groups.len > 0)) {
-        self.ctx.diag.warn("{s}: setpriv is not installed, the groups of {s} come from the group database only", .{ u.name.full, user });
-    }
-    return .{ .call = wrapper, .daemon = wrapper, .owner = user };
+    return .{ .numeric = .{ .user = user, .group = u.group, .supplementary = u.supplementary_groups } };
 }
 
 fn modeFor(u: *const model.Unit) render.Mode {
@@ -268,6 +249,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
         return error.Unsupported;
     }
     const svc = try layout.serviceName(gpa, u.name);
+    try guard.checkUnit(self.ctx, u, svc);
     if (layout.isReserved(svc)) {
         self.ctx.diag.err("{s}: rc.{s} is a boot script of the system, not a service", .{ u.name.full, svc });
         return error.Unsupported;
@@ -276,6 +258,7 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
     if (network.mentions(u)) self.ctx.diag.info("{s}: the network targets map to nothing, rc.local runs after the network scripts", .{u.name.full});
     const exit_file = try executor.execExitPath(self.ctx, u.name.full);
     const path = try layout.scriptPath(gpa, self.dirs, svc);
+    try guard.requireNotOther(self.ctx, guard.claimFile(self.ctx, path, u.name.full), u.name.full, path);
     const in: render.Input = .{
         .unit = u,
         .service = svc,
@@ -303,8 +286,16 @@ fn generate(ptr: *anyopaque, gpa: Allocator, input: interface.GenerateInput) any
 
 // ---- enablement -------------------------------------------------------------------------
 
-fn contentOf(self: *const BsdRc, path: []const u8) ?[]const u8 {
-    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 1 << 20) catch null;
+/// Upper bound for a script read whole; a larger one is an error, not an absent file.
+const max_script_bytes = 64 << 20;
+
+/// Content of the file at `path`, null when it does not exist. Any other failure is an error, so
+/// a file that cannot be read in full is never taken for an absent one and rewritten.
+fn contentOf(self: *const BsdRc, path: []const u8) !?[]const u8 {
+    return self.ctx.fs.readFileAlloc(self.ctx.gpa, path, max_script_bytes) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => e,
+    };
 }
 
 /// A script fake-systemd generated, with what it says about its order.
@@ -312,24 +303,35 @@ const Generated = struct {
     service: []const u8,
     path: []const u8,
     executable: bool,
-    rel: native.Relations,
+    rel: render.Deps,
 };
+
+/// What the unit of a generated script says about its order, derived from the unit itself rather
+/// than read back from the script; none when the unit cannot be loaded any more.
+fn relationsOf(self: *BsdRc, service: []const u8, unit_name: []const u8) !render.Deps {
+    var u = executor.loadUnit(self.ctx, unit_name) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return .{},
+    };
+    return self.mapDependencies(service, &u, &.{});
+}
 
 fn generatedScripts(self: *BsdRc) ![]const Generated {
     const gpa = self.ctx.gpa;
     var out: std.ArrayList(Generated) = .empty;
     const dir = layout.generationDir(self.dirs);
-    const entries = self.ctx.fs.iterateDir(gpa, dir) catch return out.items;
+    const entries = try guard.iterateOrEmpty(self.ctx, dir);
     for (entries) |e| {
         if (e.kind != .file or !std.mem.startsWith(u8, e.name, layout.prefix)) continue;
         const path = try std.fs.path.join(gpa, &.{ dir, e.name });
-        const content = self.contentOf(path) orelse continue;
-        if (marker.parse(content) == null) continue;
+        const content = (try self.contentOf(path)) orelse continue;
+        const parsed = marker.parse(content) orelse continue;
+        const service = layout.serviceOfFile(path);
         try out.append(gpa, .{
-            .service = layout.serviceOfFile(path),
+            .service = service,
             .path = path,
             .executable = self.isExecutablePath(path),
-            .rel = try native.parseRelations(gpa, content),
+            .rel = try self.relationsOf(service, parsed.marker.unit),
         });
     }
     std.mem.sort(Generated, out.items, {}, struct {
@@ -426,39 +428,47 @@ fn syncHooks(self: *BsdRc, env: Env) !void {
 fn writeHook(self: *BsdRc, hook: []const u8, commands: []const []const u8, mode: u16) !void {
     const gpa = self.ctx.gpa;
     const path = try layout.hookPath(gpa, self.dirs, hook);
-    const current = self.contentOf(path);
-    const text = try native.withBlock(gpa, current, commands);
-    if (text == null) {
-        if (current != null) try self.ctx.fs.deleteFile(path);
-        return;
-    }
-    if (current != null and std.mem.eql(u8, current.?, text.?)) return;
+    const current = try self.contentOf(path);
     const old_mode = if (self.ctx.fs.stat(path)) |st| st.mode else |_| mode;
+    const rewritten = native.withBlock(gpa, current, commands) catch |e| switch (e) {
+        error.MalformedBlock => {
+            if (native.blockFault(current orelse "")) |fault| {
+                self.ctx.diag.err("{s}:{d}: {s}; the script is left as it is", .{ path, fault.line, fault.reason.text() });
+            }
+            return error.Unsupported;
+        },
+        else => |other| return other,
+    };
+    // A script that holds nothing but the block is never deleted: it may be the system's own.
+    const text = rewritten orelse blk: {
+        const had_block = current != null and std.mem.find(u8, current.?, native.block_begin) != null;
+        if (!had_block) return;
+        break :blk native.hook_shebang;
+    };
+    if (current != null and std.mem.eql(u8, current.?, text)) return;
     try self.ctx.fs.makePath(layout.generationDir(self.dirs));
-    try self.ctx.fs.writeFileAtomic(path, text.?, if (current == null) mode else old_mode);
+    try self.ctx.fs.writeFileAtomic(path, text, if (current == null) mode else old_mode);
 }
 
 /// Sets or clears the execute permission of a script, as `chmod +x` and `chmod -x` do.
 fn setExecutable(self: *BsdRc, path: []const u8, on: bool) !void {
-    const gpa = self.ctx.gpa;
     const st = try self.ctx.fs.stat(path);
-    const content = try self.ctx.fs.readFileAlloc(gpa, path, 1 << 22);
     const bits: u16 = if (on) st.mode | ((st.mode & 0o444) >> 2) else st.mode & ~@as(u16, 0o111);
-    try self.ctx.fs.writeFileAtomic(path, content, bits);
+    try guard.chmodInPlace(self.ctx, path, bits);
 }
 
-fn isGenerated(self: *BsdRc, path: []const u8) bool {
-    const content = self.contentOf(path) orelse return false;
+fn isGenerated(self: *BsdRc, path: []const u8) !bool {
+    const content = (try self.contentOf(path)) orelse return false;
     return marker.parse(content) != null;
 }
 
 /// True when the boot scripts of the system mention the script, so that it starts without a
 /// block of ours.
-fn bootStarts(self: *BsdRc, service: []const u8) bool {
-    const needle = std.fmt.allocPrint(self.ctx.gpa, "{s}{s}", .{ layout.prefix, service }) catch return false;
+fn bootStarts(self: *BsdRc, service: []const u8) !bool {
+    const needle = try std.fmt.allocPrint(self.ctx.gpa, "{s}{s}", .{ layout.prefix, service });
     for (boot_files) |file| {
-        const path = layout.hookPath(self.ctx.gpa, self.dirs, file) catch continue;
-        const text = self.contentOf(path) orelse continue;
+        const path = try layout.hookPath(self.ctx.gpa, self.dirs, file);
+        const text = (try self.contentOf(path)) orelse continue;
         var lines = std.mem.splitScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const t = std.mem.trimStart(u8, line, " \t");
@@ -488,9 +498,9 @@ fn enable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOpt
         try self.setExecutable(path, true);
     }
     if (env.ctx.dry_run) return changes.items;
-    if (self.isGenerated(path)) {
+    if (try self.isGenerated(path)) {
         try self.syncHooks(env);
-    } else if (!self.bootStarts(service)) {
+    } else if (!try self.bootStarts(service)) {
         env.ctx.diag.warn("{s}: no boot script starts rc.{s}; start it from rc.local", .{ service, service });
     }
     return changes.items;
@@ -505,7 +515,7 @@ fn disable(ptr: *anyopaque, env: Env, service: []const u8, _: interface.EnableOp
     changes[0] = .{ .mode_set = .{ .path = path, .executable = false } };
     if (env.ctx.dry_run) return changes;
     try self.setExecutable(path, false);
-    if (self.isGenerated(path)) try self.syncHooks(env);
+    if (try self.isGenerated(path)) try self.syncHooks(env);
     return changes;
 }
 
@@ -573,27 +583,23 @@ fn reload(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 }
 
 /// Unit recorded in the marker of the script, null for native scripts.
-fn generatedUnit(self: *BsdRc, service: []const u8) ?[]const u8 {
-    const path = (layout.locate(self.ctx, self.dirs, service) catch return null) orelse return null;
-    const content = self.contentOf(path) orelse return null;
+fn generatedUnit(self: *BsdRc, service: []const u8) !?[]const u8 {
+    const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return null;
+    const content = (try self.contentOf(path)) orelse return null;
     const parsed = marker.parse(content) orelse return null;
     return parsed.marker.unit;
 }
 
-fn aliveProcess(self: *BsdRc, pid: u32) bool {
-    const proc = std.fmt.allocPrint(self.ctx.gpa, "/proc/{d}", .{pid}) catch return false;
-    return self.ctx.fs.exists(proc);
-}
-
-/// The process of a native script from the pid files such scripts commonly keep.
+/// The process of a native script from the pid files such scripts commonly keep, when
+/// `guard.acceptPid` allows signaling it.
 fn pidFileOf(self: *BsdRc, service: []const u8) ?u32 {
     const gpa = self.ctx.gpa;
+    if (!guard.serviceNameOk(service)) return null;
     for (pid_dirs) |dir| {
         const flat = std.fmt.allocPrint(gpa, "{s}/{s}.pid", .{ dir, service }) catch return null;
         const nested = std.fmt.allocPrint(gpa, "{s}/{s}/{s}.pid", .{ dir, service, service }) catch return null;
         for ([_][]const u8{ flat, nested }) |path| {
-            const text = self.ctx.fs.readFileAlloc(gpa, path, 64) catch continue;
-            if (native.parsePid(text)) |pid| if (self.aliveProcess(pid)) return pid;
+            if (guard.pidFromFile(self.ctx, path)) |pid| return pid;
         }
     }
     return null;
@@ -601,11 +607,10 @@ fn pidFileOf(self: *BsdRc, service: []const u8) ?u32 {
 
 /// Main process of a generated service from the file its executor writes, else the pid file a
 /// native script commonly keeps.
-fn pidOf(self: *BsdRc, service: []const u8) ?u32 {
-    if (self.generatedUnit(service)) |unit| {
+fn pidOf(self: *BsdRc, service: []const u8) !?u32 {
+    if (try self.generatedUnit(service)) |unit| {
         const path = executor.execPidPath(self.ctx, unit) catch return null;
-        const text = self.ctx.fs.readFileAlloc(self.ctx.gpa, path, 64) catch return null;
-        return native.parsePid(text);
+        return guard.recordedPid(self.ctx, path);
     }
     return self.pidFileOf(service);
 }
@@ -613,7 +618,7 @@ fn pidOf(self: *BsdRc, service: []const u8) ?u32 {
 fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anyerror!void {
     const self = me(ptr);
     const name = std.mem.cutPrefix(u8, signal, "SIG") orelse signal;
-    const pid = self.pidOf(service) orelse {
+    const pid = (try self.pidOf(service)) orelse {
         env.ctx.diag.err("{s}: no process to signal", .{service});
         return error.CommandFailed;
     };
@@ -623,8 +628,8 @@ fn kill(ptr: *anyopaque, env: Env, service: []const u8, signal: []const u8) anye
 }
 
 /// The program a native script starts, as the name of its process.
-fn processOf(self: *BsdRc, path: []const u8) ?[]const u8 {
-    const content = self.contentOf(path) orelse return null;
+fn processOf(self: *BsdRc, path: []const u8) !?[]const u8 {
+    const content = (try self.contentOf(path)) orelse return null;
     const words = native.extractCommand(self.ctx.gpa, content) catch return null;
     const exe = (words orelse return null)[0];
     return native.processName(exe);
@@ -636,13 +641,13 @@ fn processOf(self: *BsdRc, path: []const u8) ?[]const u8 {
 fn status(ptr: *anyopaque, env: Env, service: []const u8) anyerror!interface.Status {
     const self = me(ptr);
     const path = (try layout.locate(self.ctx, self.dirs, service)) orelse return .{ .state = .inactive };
-    if (self.isGenerated(path)) {
+    if (try self.isGenerated(path)) {
         const res = try env.runner.run(env.ctx.gpa, try self.scriptArgv(env.ctx.gpa, path, "status"), .capture);
         const state = sysv_native.stateOfStatus(res.code, sysv_native.looksLikeUsage(res.stdout));
-        return .{ .state = state, .pid = if (state == .active) self.pidOf(service) else null, .text = res.stdout };
+        return .{ .state = state, .pid = if (state == .active) try self.pidOf(service) else null, .text = res.stdout };
     }
     if (self.pidFileOf(service)) |pid| return .{ .state = .active, .pid = pid };
-    const name = self.processOf(path) orelse return .{ .state = .inactive };
+    const name = (try self.processOf(path)) orelse return .{ .state = .inactive };
     const res = try env.runner.run(env.ctx.gpa, &.{ "pgrep", "-x", name }, .capture);
     if (res.code != 0) return .{ .state = .inactive };
     return .{ .state = .active, .pid = native.parsePid(res.stdout) };

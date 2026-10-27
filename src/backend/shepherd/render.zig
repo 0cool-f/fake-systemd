@@ -7,6 +7,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const model = @import("../../unit/model.zig");
 const timespan = @import("../../unit/timespan.zig");
+const shell = @import("../shell.zig");
 
 pub const Kind = enum {
     /// A process that Shepherd supervises.
@@ -15,16 +16,6 @@ pub const Kind = enum {
     oneshot,
     /// A command that runs to the end when the service starts; the service stays started.
     remain,
-};
-
-/// `setpriv` switches to the account through the system libc, with its supplementary groups.
-/// Shepherd's own `#:user` sets neither the primary group nor the supplementary ones.
-pub const Wrapper = struct {
-    path: []const u8,
-    /// A plain account name.
-    user: []const u8,
-    /// A plain group name; the primary group of `user`, looked up at registration, when null.
-    group: ?[]const u8 = null,
 };
 
 pub const Input = struct {
@@ -42,7 +33,9 @@ pub const Input = struct {
     /// A started unit that stays started runs the stop phase of the executor when it stops.
     remain_stop: bool = false,
     requirements: []const []const u8 = &.{},
-    wrapper: ?Wrapper = null,
+    /// An account the executor cannot resolve: the executor stays root and takes the numeric ids
+    /// that a shell looks up when Shepherd starts the service.
+    identity: ?shell.Numeric = null,
     /// The unit runs for a user; its executor takes `--user`.
     user_scope: bool = false,
     /// Comment lines that explain a setting Shepherd cannot honor exactly.
@@ -110,28 +103,24 @@ fn writeStringList(w: *Io.Writer, words: []const []const u8) Io.Writer.Error!voi
     }
 }
 
-/// The list of command words: a quoted literal, or a `list` when the primary group of the account
-/// is looked up when the service is registered. `extra` words follow the executor arguments.
+/// Script of the shell that adds the numeric ids of the account to the command line of the executor.
+pub const identity_script_prefix = "exec \"$0\" \"$@\"";
+
+/// The list of command words. An account the executor cannot resolve makes a shell the program:
+/// it looks the numeric ids up and runs the executor with them. `extra` words follow the executor
+/// arguments.
 fn writeCommand(w: *Io.Writer, in: Input, extra: []const []const u8) Io.Writer.Error!void {
-    const exec = [_][]const u8{ in.executor_path, "--exec", in.unit.name.full };
-    if (in.wrapper) |wr| {
-        try w.writeAll("(list ");
-        try writeString(w, wr.path);
+    try w.writeAll("'(");
+    if (in.identity) |n| {
+        var buf: [4096]u8 = undefined;
+        var script: Io.Writer = .fixed(&buf);
+        try script.writeAll(identity_script_prefix);
+        try shell.writeNumericFlags(&script, n);
+        try w.writeAll("\"/bin/sh\" \"-c\" ");
+        try writeString(w, script.buffered());
         try w.writeByte(' ');
-        try writePrefixed(w, "--reuid=", wr.user);
-        try w.writeByte(' ');
-        if (wr.group) |g| {
-            try writePrefixed(w, "--regid=", g);
-        } else {
-            try w.writeAll("(string-append \"--regid=\" (number->string (passwd:gid (getpw ");
-            try writeString(w, wr.user);
-            try w.writeAll("))))");
-        }
-        try w.writeAll(" \"--init-groups\" ");
-    } else {
-        try w.writeAll("'(");
     }
-    try writeStringList(w, &exec);
+    try writeStringList(w, &.{ in.executor_path, "--exec", in.unit.name.full });
     if (in.user_scope) try w.writeAll(" \"--user\"");
     if (extra.len > 0) {
         try w.writeByte(' ');
@@ -209,17 +198,9 @@ fn writeService(w: *Io.Writer, in: Input) Io.Writer.Error!void {
                 }
             }
             const extra: []const []const u8 = if (in.stop_on_signal) &.{ "--log", "--stop-on-signal" } else &.{"--log"};
-            if (in.wrapper != null) {
-                // The group of the account is looked up when the service starts, not when it is registered.
-                try w.print("{s}#:start (lambda args\n{s}           (apply (make-forkexec-constructor\n{s}                   ", .{ pad, pad, pad });
-                try writeCommand(w, in, extra);
-                try w.writeAll(")\n");
-                try w.print("{s}                  args))\n", .{pad});
-            } else {
-                try w.print("{s}#:start (make-forkexec-constructor\n{s}         ", .{ pad, pad });
-                try writeCommand(w, in, extra);
-                try w.writeAll(")\n");
-            }
+            try w.print("{s}#:start (make-forkexec-constructor\n{s}         ", .{ pad, pad });
+            try writeCommand(w, in, extra);
+            try w.writeAll(")\n");
             try w.print("{s}", .{pad});
             try writeStop(w, in);
         },
@@ -315,15 +296,15 @@ test "a resident executor is stopped alone, and the stop-post phase follows" {
     try testing.expect(std.mem.find(u8, post_only, "(apply (make-kill-destructor SIGTERM #:grace-period 90) process args)") != null);
 }
 
-test "an account the executor cannot resolve is switched by setpriv with its group looked up" {
+test "an account the executor cannot resolve is given to it as numeric ids that a shell looks up" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const u = try testUnit(a);
-    const text = try renderAlloc(a, .{ .unit = &u, .kind = .daemon, .service = "foo", .executor_path = "/x", .wrapper = .{ .path = "/usr/bin/setpriv", .user = "ldap" } });
-    try testing.expect(std.mem.find(u8, text, "(list \"/usr/bin/setpriv\" \"--reuid=ldap\" (string-append \"--regid=\" (number->string (passwd:gid (getpw \"ldap\")))) \"--init-groups\" \"/x\" \"--exec\" \"foo.service\" \"--log\")") != null);
-    const named = try renderAlloc(a, .{ .unit = &u, .kind = .daemon, .service = "foo", .executor_path = "/x", .wrapper = .{ .path = "/usr/bin/setpriv", .user = "ldap", .group = "staff" } });
-    try testing.expect(std.mem.find(u8, named, "\"--reuid=ldap\" \"--regid=staff\" \"--init-groups\"") != null);
+    const text = try renderAlloc(a, .{ .unit = &u, .kind = .daemon, .service = "foo", .executor_path = "/x", .identity = .{ .user = "ldap" } });
+    try testing.expect(std.mem.find(u8, text, "'(\"/bin/sh\" \"-c\" \"exec \\\"$0\\\" \\\"$@\\\" --uid \\\"$(id -u -- ldap)\\\" --gid \\\"$(id -g -- ldap)\\\" --groups \\\"$(id -G -- ldap | tr ' ' ,)\\\"\" \"/x\" \"--exec\" \"foo.service\" \"--log\")") != null);
+    const named = try renderAlloc(a, .{ .unit = &u, .kind = .daemon, .service = "foo", .executor_path = "/x", .identity = .{ .user = "ldap", .group = "staff" } });
+    try testing.expect(std.mem.find(u8, named, "--gid \\\"$(getent group staff | cut -d: -f3)\\\"") != null);
 }
 
 test "a oneshot waits for the executor and a remaining one stays started" {

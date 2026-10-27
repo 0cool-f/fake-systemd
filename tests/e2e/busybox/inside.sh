@@ -80,7 +80,7 @@ if [ "$setup" = runsv ]; then
 else
     # svrun NAME  (the script says the service runs)
     svrun() { /etc/init.d/"$1" status >/dev/null 2>&1; }
-    svpid() { cat "/run/fake-systemd/$1.service.pid" 2>/dev/null; }
+    svpid() { cut -d" " -f1 "/run/fake-systemd/$1.service.pid" 2>/dev/null; }
 fi
 
 if [ "$phase" = offline ]; then

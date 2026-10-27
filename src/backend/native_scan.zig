@@ -152,8 +152,8 @@ fn probePath(gpa: Allocator, scan: interface.NativeScan, path: []const u8) Alloc
 
 fn readEntry(gpa: Allocator, fs: Fs, extractor: Extractor, name: []const u8, path: []const u8, probe: []const u8, fingerprint: u64) !?Index.Native {
     const content = fs.readFileAlloc(gpa, probe, hash.max_file_size) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        else => return null,
+        error.FileNotFound, error.NotDir => return null,
+        else => return e,
     };
     var exec: []const u8 = "";
     if (!isOwned(content)) {

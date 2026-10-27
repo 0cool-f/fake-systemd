@@ -34,6 +34,8 @@ pub const Environment = struct {
     now_ms: ?i64 = null,
     /// Follow polls to run before returning; unlimited when null.
     max_follow_cycles: ?u32 = null,
+    /// Standard output is a terminal: `cat` lines are then escaped too.
+    tty: bool = false,
 };
 
 const Source = struct {
@@ -276,17 +278,22 @@ const Printer = struct {
     host: ?[]const u8,
     tz: tz_mod.Tz,
     sources: []const Source,
+    tty: bool = false,
 
+    /// Log text is escaped in `short` output and for native logs, which people read; `cat` is
+    /// the raw-data format and is escaped only when it goes to a terminal.
     fn print(p: Printer, e: Entry) Io.Writer.Error!void {
         if (e.raw or p.format == .cat) {
-            try p.out.writeAll(e.text);
+            if (e.raw or p.tty) try cli.output.writeSafe(p.out, e.text, true) else try p.out.writeAll(e.text);
             return p.out.writeByte('\n');
         }
         const secs = @divFloor(e.ts_ms, 1000);
         const c = tz_mod.civilFromUnix(secs, p.tz.offsetAt(secs));
         try p.out.print("{s} {d:0>2} {d:0>2}:{d:0>2}:{d:0>2} ", .{ month_names[c.month - 1], c.day, c.hour, c.minute, c.second });
         if (p.host) |h| try p.out.print("{s} ", .{h});
-        try p.out.print("{s}: {s}\n", .{ p.sources[e.source].ident, e.text });
+        try p.out.print("{f}: ", .{cli.output.safe(p.sources[e.source].ident)});
+        try cli.output.writeSafe(p.out, e.text, true);
+        try p.out.writeByte('\n');
     }
 };
 
@@ -494,6 +501,7 @@ fn showInner(ctx: *core.Context, env: Environment, req: cli.journalctl.Request) 
         .host = if (o.no_hostname) null else hostname(ctx),
         .tz = zone,
         .sources = sources.items,
+        .tty = env.tty,
     };
     if (shown.len == 0 and !o.quiet and !o.follow) try env.out.writeAll("-- No entries --\n");
     for (shown) |e| try printer.print(e);
@@ -786,4 +794,26 @@ test "follow discovers units that appear later" {
     const fresh = try follower.poll();
     try testing.expectEqual(@as(usize, 1), fresh.len);
     try testing.expectEqualStrings("hello", fresh[0].text);
+}
+
+test "control bytes in log lines are escaped in short output, and in cat output only on a terminal" {
+    var t: Harness = undefined;
+    try t.init();
+    defer t.deinit();
+    try t.log("a.service", "current", "2026-10-24T10:00:01.000+00:00 \x1b]0;pwned\x07red\x1b[31m\x00\r\n");
+    try testing.expectEqual(@as(u8, 0), try t.run(&.{ "-u", "a", "--no-hostname" }));
+    try testing.expectEqualStrings("Oct 24 10:00:01 a: \\x1b]0;pwned\\x07red\\x1b[31m\\x00\n", t.output());
+    try testing.expectEqual(@as(u8, 0), try t.run(&.{ "-u", "a", "-o", "cat" }));
+    try testing.expect(std.mem.indexOfScalar(u8, t.output(), 0x1b) != null);
+
+    const req = (try cli.journalctl.parse(t.h.arena.allocator(), &.{ "-u", "a", "-o", "cat" })).ok;
+    t.h.out.writer.end = 0;
+    try testing.expectEqual(@as(u8, 0), show(&t.h.ctx, .{
+        .out = &t.h.out.writer,
+        .runner = t.h.rec.runner(),
+        .now_ms = test_now_ms,
+        .max_follow_cycles = 0,
+        .tty = true,
+    }, req));
+    try testing.expectEqualStrings("\\x1b]0;pwned\\x07red\\x1b[31m\\x00\n", t.output());
 }

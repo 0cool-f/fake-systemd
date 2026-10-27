@@ -59,7 +59,7 @@ test "enable generates the service directory, links it and never calls sv" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read("/etc/sv/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expect(t.exists("/etc/sv/foo/finish"));
     try testing.expect(t.exists("/etc/sv/foo/log/run"));
@@ -583,7 +583,6 @@ test "an account the executor cannot resolve is switched with setpriv in run, wi
         \\User=svc-directory
         \\Group=app
         \\SupplementaryGroups=audio
-        \\Environment="A=1" "B=it's"
         \\UMask=0027
         \\WorkingDirectory=/var/lib/app
         \\Nice=5
@@ -595,13 +594,13 @@ test "an account the executor cannot resolve is switched with setpriv in run, wi
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "nativecmd" }));
     const run_text = try generatedFile(t, "/etc/sv/nativecmd/run");
     try testing.expectEqualStrings(
-        "exec 2>&1\nexport A=1\nexport B='it'\\''s'\numask 0027\ncd /var/lib/app || exit 200\n" ++
-            "exec chpst -n 5 /usr/bin/setpriv --reuid=svc-directory --regid=app --groups \"$(id -G svc-directory | tr ' ' ,),audio\" --no-new-privs /usr/bin/nativecmd --flag 'a b' 'price$5'\n",
+        "exec 2>&1\numask 0027\ncd /var/lib/app || exit 200\n" ++
+            "exec chpst -n 5 /usr/bin/setpriv --reuid=svc-directory --regid=app --groups \"$(id -G -- svc-directory | tr ' ' ,),audio\" --no-new-privs /usr/bin/nativecmd --flag 'a b' 'price$5'\n",
         run_text,
     );
 }
 
-test "numeric accounts and accounts the executor resolves go through the executor, an LDAP account through setpriv" {
+test "numeric accounts and accounts the executor resolves go through the executor, an LDAP account gives it numeric ids" {
     var f: Fixture = .{};
     try f.init();
     defer f.deinit();
@@ -609,12 +608,57 @@ test "numeric accounts and accounts the executor resolves go through the executo
     try t.write("/usr/lib/systemd/system/numeric.service", "[Service]\nExecStart=/usr/bin/n\nUser=1000\n[Install]\nWantedBy=multi-user.target\n", 0o644);
     try t.write("/usr/lib/systemd/system/prep.service", "[Service]\nExecStartPre=/usr/bin/p\nExecStart=/usr/bin/n\nUser=app\n[Install]\nWantedBy=multi-user.target\n", 0o644);
     try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStartPre=/usr/bin/p\nExecStart=/usr/bin/n\nUser=svc-directory\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
     try t.write("/usr/bin/n", "#!/bin/sh\n", 0o755);
     try t.write("/usr/bin/p", "#!/bin/sh\n", 0o755);
     for ([_][]const u8{ "numeric", "prep", "ldap" }) |n| try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", n }));
     try h.expectContains(try t.read("/etc/sv/numeric/run"), "\nexec /usr/bin/fake-systemd --exec numeric.service\n");
     try h.expectContains(try t.read("/etc/sv/prep/run"), "\nexec /usr/bin/fake-systemd --exec prep.service\n");
-    try h.expectContains(try t.read("/etc/sv/ldap/run"), "\nexec /usr/bin/setpriv --reuid=svc-directory --regid=\"$(id -g svc-directory)\" --init-groups /usr/bin/fake-systemd --exec ldap.service\n");
+    try h.expectContains(try t.read("/etc/sv/ldap/run"), "\nexec /usr/bin/fake-systemd --exec ldap.service --uid \"$(id -u -- svc-directory)\" --gid \"$(id -g -- svc-directory)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"\n");
+}
+
+test "the Environment= of a unit with an account is applied by the executor, never exported by the part of run that root executes" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/nativecmd", "#!/bin/sh\n", 0o755);
+    for ([_][]const u8{ "svc-directory", "app" }) |user| {
+        const text = try std.fmt.allocPrint(t.a(), "[Service]\nExecStart=/usr/bin/nativecmd\nUser={s}\nEnvironment=PATH=/var/lib/svc/bin:/usr/bin\nEnvironment=LD_PRELOAD=/var/lib/svc/x.so\n[Install]\nWantedBy=multi-user.target\n", .{user});
+        const name = try std.fmt.allocPrint(t.a(), "env-{s}", .{user});
+        try t.write(try std.fmt.allocPrint(t.a(), "/usr/lib/systemd/system/{s}.service", .{name}), text, 0o644);
+        try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", name }));
+        const run_text = try generatedFile(t, try std.fmt.allocPrint(t.a(), "/etc/sv/{s}/run", .{name}));
+        try h.expectNotContains(run_text, "export");
+        try h.expectNotContains(run_text, "LD_PRELOAD");
+        try h.expectContains(run_text, "/usr/bin/fake-systemd --exec env-");
+    }
+}
+
+test "a unit without an account keeps Environment= in run" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/nativecmd", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/plainenv.service", "[Service]\nExecStart=/usr/bin/nativecmd\nEnvironment=A=1\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "plainenv" }));
+    try h.expectContains(try generatedFile(t, "/etc/sv/plainenv/run"), "\nexport A=1\n");
+}
+
+test "an Environment= value with a line break goes to the executor and cannot add a dependency to run" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/nativecmd", "#!/bin/sh\n", 0o755);
+    try t.write("/etc/sv/sshd/run", "#!/bin/sh\nexec sshd\n", 0o755);
+    try t.write("/usr/lib/systemd/system/inject.service", "[Service]\nExecStart=/usr/bin/nativecmd\nEnvironment=\"A=1\\nsv start ../sv/sshd\\n\"\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "inject" }));
+    const run_text = try generatedFile(t, "/etc/sv/inject/run");
+    try h.expectNotContains(run_text, "sv start");
+    try h.expectContains(run_text, "/usr/bin/fake-systemd --exec inject.service");
+    try testing.expect(!t.exists("/etc/sv/sshd/down"));
 }
 
 test "a oneshot with RemainAfterExit keeps a process so that it stays active and stops through runsv" {
@@ -814,4 +858,118 @@ test "network targets become soft dependencies on the enabled network providers"
     try t.write("/usr/lib/systemd/system/netd2.service", "[Unit]\nAfter=network-online.target\nRequires=network.target\n[Service]\nExecStart=/usr/bin/netd2\n[Install]\nWantedBy=multi-user.target\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "netd2" }));
     try h.expectContains(try t.read("/etc/sv/netd2/run"), "\nsv start dhcpcd\nsv start NetworkManager\nexec /usr/bin/netd2\n");
+}
+
+test "daemon-reload removes only the links of generated services that left nothing but supervision files" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/etc/sv/mine/conf", "x\n", 0o644);
+    try t.fs.symLink("/etc/sv/mine", enable_dir ++ "/mine");
+    try t.write("/etc/sv/left/down", "", 0o644);
+    try t.write("/etc/sv/left/supervise/lock", "", 0o644);
+    try t.fs.symLink("/etc/sv/left", enable_dir ++ "/left");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    _ = try t.fs.lstat(enable_dir ++ "/mine");
+    try testing.expectError(error.FileNotFound, t.fs.lstat(enable_dir ++ "/left"));
+}
+
+test "a pid that sv reports for a kill is never init" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    t.rec.stdout = "run: foo: (pid 1) 5s\n";
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "kill", "-s", "SIGWINCH", "foo" }));
+    try h.expectContains(t.stderr(), "no process to signal");
+}
+
+test "two units that map to the same service directory are not both generated" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/other", "#!/bin/sh\n", 0o755);
+    try t.write("/etc/sv/foo/run", "#!/bin/sh\n# Generated automatically by fake-systemd. Remove this block to take ownership of the file.\n# Unit: bar.service\n# Source: /x\n# Source-Hash: xxh3:0000000000000001\n# Body-Hash: xxh3:0000000000000001\n# Generator: fake-systemd 0.1.0 runit/1\nexec x\n", 0o755);
+    try testing.expect(t.run(&.{ "enable", "foo" }) != 0);
+    try h.expectContains(t.stderr(), "already generated for another unit");
+}
+
+test "the stop phases of a unit whose account the executor cannot resolve carry the numeric ids too" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/bin/ldaphook", "#!/bin/sh\n", 0o755);
+    try t.write("/usr/lib/systemd/system/ldaphook.service", "[Service]\nExecStart=/usr/bin/ldaphook\nExecStop=/usr/bin/ldaphook --stop\nExecStopPost=/usr/bin/ldaphook --clean\nUser=svc-directory\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "ldaphook" }));
+    const ids = " --uid \"$(id -u -- svc-directory)\" --gid \"$(id -g -- svc-directory)\" --groups \"$(id -G -- svc-directory | tr ' ' ,)\"";
+    try h.expectContains(try generatedFile(t, "/etc/sv/ldaphook/finish"), "/usr/bin/fake-systemd --exec ldaphook.service --phase stop-post" ++ ids ++ "\n");
+    try h.expectContains(try generatedFile(t, "/etc/sv/ldaphook/control/t"), "/usr/bin/fake-systemd --exec ldaphook.service --phase stop-main" ++ ids ++ "\n");
+}
+
+const ldap_script = "exec \"$0\" \"$@\" --uid \"$(id -u -- ldapuser)\" --gid \"$(id -g -- ldapuser)\" --groups \"$(id -G -- ldapuser | tr ' ' ,)\"";
+
+test "reload gives the executor the numeric ids of an account only the system libc resolves" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/ldap.service", "[Service]\nExecStart=/usr/bin/ldap --run\nExecReload=/usr/bin/ldap --reload\nUser=ldapuser\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try t.write("/usr/bin/ldap", "#!/bin/sh\n", 0o755);
+    try t.expectRun(0, &.{ "enable", "ldap" });
+    t.rec.calls.clearRetainingCapacity();
+    try t.expectRun(0, &.{ "reload", "ldap" });
+    try testing.expect(t.rec.callIs(1, &.{ "/bin/sh", "-c", ldap_script, "/usr/bin/fake-systemd", "--exec", "ldap.service", "--phase", "reload" }));
+}
+
+test "the services linked with a service are those its meta file lists, not those its run script names" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service");
+    try addSvc(t, "b", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    try h.expectContains(try t.read("/etc/sv/a/fake-systemd.meta"), "\nStarts: b\n");
+    try t.write("/etc/sv/evil/run", "#!/bin/sh\nexec /usr/bin/evil\n", 0o755);
+    try t.fs.deleteFile(enable_dir ++ "/b");
+    const edited = try std.mem.replaceOwned(u8, t.a(), try t.read("/etc/sv/a/run"), "\nsv start b || exit 1\n", "\nsv start evil\n");
+    try t.write("/etc/sv/a/run", edited, 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    _ = try f.link("b");
+    try testing.expectError(error.FileNotFound, f.link("evil"));
+}
+
+test "a line break in a literal setting is refused and reaches no generated file" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    try h.expectControlRefused(&f.t);
+}
+
+test "a service generated before the meta file existed is generated again at daemon-reload and then links its dependencies" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service");
+    try addSvc(t, "b", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    // What an older generator left: no meta file, and an index that names the older generator.
+    try t.fs.deleteFile("/etc/sv/a/fake-systemd.meta");
+    try t.fs.deleteFile(enable_dir ++ "/b");
+    const index_path = "/var/lib/fake-systemd/runit/index";
+    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=2", "generator=1");
+    const at = std.mem.find(u8, old, ",/etc/sv/a/fake-systemd.meta=").?;
+    const end = std.mem.findAnyPos(u8, old, at + 1, ",\t\n").?;
+    old = try std.mem.concat(t.a(), u8, &.{ old[0..at], old[end..] });
+    try t.write(index_path, old, 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
+    try h.expectContains(try t.read("/etc/sv/a/fake-systemd.meta"), "\nStarts: b\n");
+    try h.expectContains(try t.read(index_path), "generator=2");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
+    _ = try f.link("b");
 }

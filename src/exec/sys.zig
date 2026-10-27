@@ -168,3 +168,8 @@ pub fn reapOthers(keep: i32) void {
         _ = linux.wait4(pid, &status, 0, null);
     }
 }
+
+/// Signals the process that `pidfd` refers to; unlike a pid it cannot reach a recycled one.
+pub fn pidfdKill(pidfd: i32, sig: linux.SIG) E {
+    return err(linux.pidfd_send_signal(pidfd, sig, null, 0));
+}
