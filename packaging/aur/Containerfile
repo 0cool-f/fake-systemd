@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-FROM docker.io/library/archlinux:base-20261004.0.606936@sha256:4e77cf2ea5f410e6f8be5abf93ccf17ce2436e87a138c167208356711a405dbd
+FROM docker.io/library/archlinux:base-20261018.0.612668@sha256:52dfbd5afb23a220d5ee92dafcb4c788d96c026ed04179890c23adef4c897fa0
 
 RUN pacman -Syu --noconfirm --disable-sandbox base-devel namcap \
     && useradd -m builder
