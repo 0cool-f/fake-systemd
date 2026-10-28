@@ -1,4 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 FROM ghcr.io/void-linux/void-musl:20261001R1@sha256:a4e444236a08c5b2419e9a6f653c8427f59a04d31ea1aa93b36caca9ed68eafd
 
-RUN xbps-install -Syu xbps && xbps-install -Sy runit util-linux procps-ng && xbps-remove -O
+# Uses the first Void mirror that answers, so one unreachable mirror does not fail the build.
+RUN set -eu; \
+    for m in repo-default.voidlinux.org repo-fastly.voidlinux.org repo-de.voidlinux.org repo-fi.voidlinux.org mirrors.servercentral.com/voidlinux; do \
+        echo "repository=https://$m/current/musl" > /etc/xbps.d/00-repository-main.conf; \
+        if xbps-install -Syu xbps && xbps-install -Sy runit util-linux procps-ng; then \
+            xbps-remove -O; exit 0; \
+        fi; \
+    done; \
+    exit 1
