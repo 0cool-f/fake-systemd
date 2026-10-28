@@ -4,14 +4,15 @@ A `systemctl` and `journalctl` compatibility layer for Linux systems that do not
 
 ## The problem
 
-On Artix, Void, Devuan, Alpine, Gentoo, Chimera and similar distributions, third-party packages and
-scripts still call systemd tools:
+On **Artix**, **Void**, **Devuan**, **Alpine**, **Gentoo**, **Chimera** and similar distributions, third-party packages and
+scripts, from **AUR** for example, still call systemd tools while installing/upgrading packages, and you
+get into your terminal something like this:
 
 ```text
 /tmp/alpm_jKVKZ5/.INSTALL: line 58: systemctl: command not found
 ```
 
-fake-systemd is a single static, multi-call binary written in Zig. Invoked as `systemctl` or
+**fake-systemd** is a single static, multi-call binary written in **Zig**. Invoked as `systemctl` or
 `journalctl`, it follows the systemd command-line contract (verbs, options, output, exit codes) and
 drives the init that is actually running. systemd units are translated into the init's native service
 format on first use, so `systemctl enable --now foo` ends up as a real service of your init.
@@ -21,21 +22,21 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 
 ## Supported init systems
 
-| Init | Status |
-|---|---|
-| dinit | supported |
-| runit (Void, Artix) | supported |
-| s6-rc (Artix with the `s6` frontend; elsewhere compiled from source directories) | supported |
-| s6 (scan directory without s6-rc) | supported |
-| OpenRC (Alpine, Gentoo, Artix) | supported |
-| sysvinit (Devuan, Debian, Red Hat family) | supported |
-| BSD-style rc (Slackware) | supported |
-| procd (OpenWrt) | supported |
-| 66 (Obarun; 0.9 and later) | supported |
-| BusyBox init (with `runsvdir` in the inittab, or with init scripts) | supported |
-| finit (4.x) | supported |
-| GNU Shepherd (outside Guix System; on Guix System `enable` and `disable` only warn) | supported |
-| nosh (delegates to its unit converter; no user services) | experimental |
+| Init | Status | User services |
+|---|---|---|
+| [dinit](#dinit) | supported | yes (`dinit --user`) |
+| [runit](#runit) (Void, Artix) | supported | with turnstile |
+| [s6-rc](#s6-and-s6-rc) (Artix with the `s6` frontend; elsewhere compiled from source directories) | supported | no |
+| [s6](#s6-and-s6-rc) (scan directory without s6-rc) | supported | no |
+| [OpenRC](#openrc) (Alpine, Gentoo, Artix) | supported | 0.60 or later with `openrc-user` |
+| [sysvinit](#sysvinit) (Devuan, Debian, Red Hat family) | supported | no |
+| [BSD-style rc](#bsd-style-rc-slackware) (Slackware) | supported | no |
+| [procd](#procd-openwrt) (OpenWrt) | supported | no |
+| [66](#66-obarun) (Obarun; 0.9 and later) | supported | yes |
+| [BusyBox init](#busybox-init) (with `runsvdir` in the inittab, or with init scripts) | supported | no |
+| [finit](#finit) (4.x) | supported | no |
+| [GNU Shepherd](#gnu-shepherd) (outside Guix System; on Guix System `enable` and `disable` only warn) | supported | yes |
+| [nosh](#nosh-experimental) (delegates to its unit converter) | experimental | no |
 
 ## Installation
 
@@ -50,6 +51,7 @@ The package provides `systemctl` and conflicts with `systemd`.
 
 ### Release tarball
 
+The AUR package above is the recommended path; it installs into `/usr/bin`.
 Each release at `https://github.com/0cool-f/fake-systemd/releases` ships static tarballs
 `fake-systemd-<version>-<target>.tar.gz` for `x86_64-linux-musl`, `aarch64-linux-musl`,
 `arm-linux-musleabihf`, `riscv64-linux-musl` and `x86-linux-musl`, plus `SHA256SUMS` signed with
@@ -71,11 +73,22 @@ cosign verify-blob \
 sha256sum --check --ignore-missing SHA256SUMS
 
 tar -xzf "fake-systemd-$version-$target.tar.gz"
-doas cp -P "fake-systemd-$version-$target"/{fake-systemd,systemctl,journalctl} /usr/local/bin/
+doas cp -P "fake-systemd-$version-$target"/{fake-systemd,systemctl,journalctl} /usr/bin/
 ```
 
 The tarball also contains `LICENSE` and this `README.md`. `systemctl` and `journalctl` are symlinks
 to `fake-systemd`.
+
+Install into `/usr/bin`, not `/usr/local/bin`, for two reasons:
+
+- The generated services run the executor as `/usr/bin/fake-systemd`, a path that is fixed in the
+  generated files, so a copy only in `/usr/local/bin` leaves them without their executor.
+- The caller of `systemctl` may not have `/usr/local/bin` in its `PATH`. Package managers do not agree
+  on the `PATH` of their scripts. apk runs package scripts with `PATH=/usr/sbin:/usr/bin:/sbin:/bin`
+  unless `--preserve-env` is given (`src/context.c` of apk-tools). The sources of libalpm (pacman
+  scriptlets, 7.1.0), dpkg (maintainer scripts) and xbps (INSTALL and REMOVE scripts) do not set
+  `PATH`, so those scripts get the one of the process that runs the package manager, which may leave
+  out `/usr/local/bin`. Init scripts may run with a reduced `PATH` as well; that was not checked.
 
 ## Usage
 
@@ -100,12 +113,19 @@ systemctl --root=/mnt/target enable foo
 
 `--version` prints the fake-systemd version and the detected backend.
 
+`start` and `restart` of a `Type=forking` unit with `PIDFile=` return once the daemon named in the pid
+file is recorded as the main process, as they do in systemd, and fail when `TimeoutStartSec=` runs out
+first. The init scripts and procd wait in their own scripts; for the supervisors that run the
+executor (runit, s6, shepherd, ...) fake-systemd waits itself.
+
 ### Translation
 
 A unit is translated to the init's native format only when a verb needs it (`Translate=lazy`);
 `daemon-reload` translates every candidate with `Translate=eager`. A native service that already
-provides the same functionality always wins over a translated one. Units that cannot be translated
-are reported as `unsupported` in `list-unit-files`.
+provides the same functionality (same name or alias, and the same executable) is used instead of
+generating one. A native service that has the name of the unit but runs another program is a conflict:
+`enable` fails and asks for an entry in `[Aliases]`. Units that cannot be translated are reported as
+`unsupported` in `list-unit-files`.
 
 ### Markers, local edits and backups
 
@@ -137,6 +157,166 @@ through the root crontab, fcron) when the schedule translates exactly, otherwise
 (`fake-systemd-timers`, a service supervised by the init). Both run the same job, so logs,
 `journalctl -u` and `list-timers` behave identically. `--user` timers always use the built-in runner.
 
+### Logging and journalctl
+
+Services that fake-systemd generates log to one place whatever the init is, and `journalctl` reads it.
+There is no binary journal.
+
+- System services log to `/var/log/fake-systemd/<unit>/current`, user services to
+  `$XDG_STATE_HOME/fake-systemd/log/<unit>/` (`~/.local/state` when unset).
+- A line is plain text, `2026-10-24T12:05:01.123+02:00 <message>`: ISO 8601 with milliseconds and the
+  local offset (`TZ`, else `/etc/localtime`, else UTC).
+- `fake-systemd --log <unit>` does the writing and the rotation. When `current` plus the next line would
+  exceed 1 MiB, `current` becomes `@<unix seconds>.log` in the same directory, and at most 10 files are
+  kept, `current` included. A `flock` on `.lock` keeps concurrent loggers from rotating twice.
+- The directory of a unit is created with mode 0750 and `current` and `.lock` with 0640, both subject to
+  the umask; there is no `chown`.
+- `fake-systemd --log` is the logger of the runit and s6 services (`log/run`, the logger service of
+  s6-rc), and OpenRC passes it to `supervise-daemon` as `output_logger` and `error_logger`. Where nothing
+  supervises a logger (sysvinit, BSD-style rc, BusyBox with an inittab, procd, 66, finit, Shepherd), the
+  executor started with `fake-systemd --exec <unit> --log` starts it.
+- Two backends write the raw output of the service to `current` instead, with no timestamp and no
+  rotation: the `logfile` of dinit, and `output_log` and `error_log` of OpenRC before 0.51. `journalctl`
+  gives such a line the timestamp of the one before it. The services of nosh log where nosh sends them,
+  so `journalctl -u` shows nothing for them.
+
+`journalctl` merges the logs of the selected units by timestamp, in the `short` format (`Oct 24 12:05:01
+host unit: message`) or `cat`. It supports:
+
+- `-u`/`--unit` and `--user-unit` (repeatable, globs allowed) and the matches `_SYSTEMD_UNIT=` and
+  `_SYSTEMD_USER_UNIT=`; without a selection, the logs of every system unit. Other matches are ignored
+  with a warning.
+- `-n` (a number or `all`), `-e` (the last 1000 lines), `-f` (shows 10 lines unless `-n` says otherwise,
+  then follows new lines and rotation), `-o short|cat`, `-q`, `--no-hostname`, `--no-pager` (nothing
+  is paged anyway), and `-k`, which runs `dmesg`.
+- `--since` and `--until` with `now`, `today`, `yesterday`, `tomorrow`, `@<unix seconds>`, relative
+  times (`-1h`, `+5min`, `5 min ago`, `1h left`), and `YYYY-MM-DD[ HH:MM[:SS[.fff]]]` or `HH:MM[:SS]`
+  (the current day), in the local zone unless followed by `UTC`.
+- `-b`, which means the entries since the boot time that `/proc/stat` reports. `-b <id>` for any other
+  boot says that only the current boot is kept and shows nothing.
+- For a unit named with `-u` that has no uniform log, the native log files of the init's profile: a file
+  per service is shown whole, a shared file only for its lines that mention the service. Those lines are
+  printed as they are and dated by the modification time of the file. When nothing is found, a notice
+  lists the locations that were checked.
+
+It does not read `/run/log` or any journal file, has no pager, knows no boot ids, and rejects other
+options (`--user`, `-p`, `-o json`, ...) as unknown or invalid.
+
+### dinit
+
+A unit becomes one service description file, named after the unit (`foo.service` becomes `foo`), in the
+directory of its tier: `/etc/dinit.d` for administrator units, `/usr/lib/dinit.d` for vendor units
+(`/usr/local/lib/dinit.d` when the unit comes from `/usr/local`), and `/run/dinit.d` for runtime units
+when it exists. User services go to `$XDG_CONFIG_HOME/dinit.d`, or to `/etc/dinit.d/user`,
+`/usr/lib/dinit.d/user` and `/usr/local/lib/dinit.d/user` for the units of those tiers.
+`enable` does not run `dinitctl enable`, which also starts the service. It writes the link that
+command writes, `<name>` in the directory that the `waits-for.d` setting of the `boot` service names
+(`/etc/dinit.d/boot.d` when the boot service cannot be read, `~/.config/dinit.d/boot.d` for a user): a
+relative link `../<name>` when the file sits next to that directory, otherwise the path of the file.
+This is the same online and offline. `enable --runtime` with dinit running uses
+`dinitctl --quiet add-dep waits-for boot <name>` (`disable --runtime` uses `rm-dep`); without a running
+dinit it warns and enables persistently. `disable` does not stop the service, and `is-enabled` is
+whether the link exists. Verified with a real dinit (not PID 1) in a Chimera container, where
+`dinit-check` accepts the generated files; the states of `dinitctl status` that the unit tests map were
+observed with dinit 0.22. The image installs the package of Chimera without a pinned version.
+
+- `Type=simple` is `type = process`, `Type=oneshot` is `scripted`, and `Type=forking` is `bgprocess` with
+  `pid-file` when it has `PIDFile=`, `scripted` when it does not (the daemon is started and not
+  supervised, which the file says in a comment), and `process` under the executor. `Type=notify`
+  readiness is not emitted. `Requires=` and `BindsTo=` become `depends-on`, `Wants=` `waits-for`, and
+  `After=` and `Before=` `after` and `before`. Units that a unit requires or wants are translated with it.
+  `network.target` becomes the first service that exists of `network.target` and `network`, and
+  `network-online.target` the first of `network-online.target`, `network-online`, `network` and
+  `network.target`. The enabled network providers (`dhcpcd`, `NetworkManager`, `connmand`, `iwd`,
+  `wpa_supplicant`, `netctl`) are added as `waits-for`. Other targets are dropped.
+- The command is `ExecStart=` when dinit can run it as it stands, else the executor
+  (`fake-systemd --exec <unit>`). `Environment=` becomes `/usr/bin/env NAME=VALUE ...`. Settings that
+  need the executor include `ExecStartPre=`, `ExecStartPost=`, `EnvironmentFile=`, `Group=`,
+  `SupplementaryGroups=`, `UMask=`, the `*Directory=` settings, most `Limit*=` and variable expansion;
+  `LimitNOFILE=`, `LimitCORE=`, `LimitDATA=` and `LimitAS=` become `rlimit-*`.
+- Logging: every file has `logfile = <log directory>/current` with `logfile-permissions = 640`, so dinit
+  writes the raw output of the service there, even under the executor: no timestamps and no rotation, and
+  `journalctl` gives each line the timestamp of the one before it. The log directory of a service and of
+  the services it pulls in is created by `start`, `restart` and by `enable` when it writes a new link,
+  since dinit does not create it.
+- Identity: for a native command with `User=` in system scope, `run-as` and
+  `load-options = export-passwd-vars`, so dinit looks the account up with its libc. When the executor
+  runs the unit it does the switch itself: from `/etc/passwd` and `/etc/group` for an account it can read,
+  otherwise (LDAP, sssd) with numeric ids that a `/bin/sh -c` wrapper looks up with `id` when dinit starts
+  the service, the executor staying root. User services have no `run-as`.
+- `Restart=` becomes `restart = false`, `true` (`always`, and `on-success` approximated, which the file
+  says in a comment) or `on-failure` (the other variants), with `smooth-recovery = true` and
+  `restart-delay` from `RestartSec=`. A `scripted` service always has `restart = false`. `ExecStop=` of a
+  oneshot is `stop-command` when it is one plain command, and every other `ExecStop=` or `ExecStopPost=`
+  runs through `stop-command` with the executor (`--phase stop`). `TimeoutStartSec=` and `TimeoutStopSec=`
+  become `start-timeout` and `stop-timeout`; `KillSignal=`, `Nice=` and `NoNewPrivileges=` become
+  `term-signal`, `nice` and `options: no-new-privs`.
+- Templates: dinit reads `name@arg` as an instance of the file `name@`, so `getty@tty1.service` becomes
+  the service `getty-tty1` with a file of its own, and characters outside letters, digits, `.`, `-`
+  and `_` in the instance become `_`.
+- `stop` uses `dinitctl stop --force`. `restart` starts a service that is stopped, which `dinitctl restart`
+  refuses. dinit has no reload action: `reload` runs the executor with `--phase reload` for a generated
+  service and fails for a native one. `daemon-reload` runs `dinitctl reload` on the loaded services that
+  fake-systemd generated. Power verbs run `shutdown -r`, `-p` and `-h`.
+- User services run in `dinit --user` (`dinitctl --user`). They are covered by the unit and golden
+  tests, not by the end-to-end test, which has no user instance of dinit.
+- Not emitted: `Conflicts=`, `PartOf=`, socket activation, `env-file` and `ready-notification`.
+  `KillMode=none` and `mixed` are handled like `control-group`.
+
+### runit
+
+A unit becomes a service directory with `run`, `log/run`, and when the unit needs them `finish`,
+`control/t` and `fake-systemd.meta`: in `/etc/sv` on Void and in `/etc/runit/sv` on Artix, or in
+`~/.config/sv` for a user (the other distributions use the layout of Void). `enable` links the directory
+into `/etc/runit/runsvdir/default`, which `/var/service` (Void) and `/run/runit/service` (Artix) point to
+through `runsvdir/current`, and which also exists in a chroot. `runsvdir` starts everything it finds, so
+the service is enabled when the link exists and the directory has no `down` file: `enable` creates the
+link and removes `down`. `start` of a service that is not enabled links it with a `down` file, so it does
+not start at boot, and the link stays after `stop`; the services that `run` starts (`Requires=`,
+`BindsTo=`, `Wants=`) are linked with `down` as well, since `runsvdir` supervises them but does not start
+them. `disable` of a running service writes `down` and keeps the link, because removing the link makes
+`runsvdir` stop the service; otherwise it removes the link and waits up to 8 s for the `runsv` to go.
+`is-enabled` is a link without `down`. `enable` never calls `sv`, and `--runtime` is not supported: it warns
+and enables persistently. Verified with a real `runsvdir` (not PID 1) in a Void musl container; the Artix
+layout is covered by the profile tests only, and the version of runit is that of the Void repository.
+
+- Dependencies are lines at the top of `run`. `Requires=` and `BindsTo=` become `sv start <dep> || exit 1`,
+  and `Wants=` and the enabled network providers `sv start <dep>` whose result is ignored
+  (`SVDIR=<dir> sv start` for a user). `After=` and `Before=` are not expressed, and the network targets
+  map to nothing but those providers. `start` and `stop` give `TimeoutStartSec=` and `TimeoutStopSec=`
+  (90 s for a stop without it) to `sv -w`.
+- Logging: `log/run` is `exec /usr/bin/fake-systemd --log <unit>`, and `run` starts with `exec 2>&1`, so
+  the uniform log has timestamps and rotation. The native logs that `journalctl` falls back to are
+  `/var/log/<name>/current`.
+- Identity: an account that the executor can read from `/etc/passwd` and `/etc/group` runs under the
+  executor, which switches itself. For an account only the system libc knows (LDAP, sssd), a native
+  command is run with `setpriv --init-groups`, or with `chpst -u` and a warning when `setpriv` is not
+  installed, since `chpst` applies no supplementary groups; under the executor the scripts look up numeric
+  ids with `id` and pass them as `--uid`, `--gid` and `--groups`. The executor also runs every oneshot,
+  every `Type=forking`, and every unit with `Limit*=`, `*Directory=`, `ExecStartPre=` or `ExecStartPost=`.
+  A oneshot with `RemainAfterExit=yes` runs its command and then `exec sleep 2147483647`.
+- `Restart=`: `runsv` restarts a service after every exit, so `Restart=always` needs no `finish`. The
+  others, a oneshot, `ExecStopPost=` and a `RestartSec=` of 2 s or more (up to 24 h) get a `finish` that
+  records how the process ended in `supervise/exit-status` (`status` reads `failed` from it), runs
+  `ExecStopPost=` through the executor, sleeps for `RestartSec=`, and keeps the service down
+  (`sv once .`) after the exits that `Restart=` does not restart on. It sends `sv once .` only while the service is wanted up, since a
+  control byte still queued after a stop would start it again. `restart` is a stop and a start, because
+  `sv restart` would ignore what `finish` decided.
+- `ExecStop=` is `control/t`: it runs the executor with `--phase stop-main` and the pid of the main process
+  as `MAINPID`. Without `ExecStop=`, a `KillSignal=` other than `SIGTERM` is a `control/t` that sends it
+  to the pid in `supervise/pid`. `reload` runs `ExecReload=` through the executor, or `sv reload` for a
+  service that was not generated. Power verbs run `runit-init 6` (reboot) and `runit-init 0` (poweroff
+  and halt).
+- Templates keep their name: `foo@bar.service` is the directory `foo@bar`, which `runsvdir` and `sv`
+  accept.
+- User services need turnstile with its runit backend, detected from `/usr/libexec/turnstile/runit` and
+  `backend = runit` in `/etc/turnstile/turnstiled.conf`. Services are generated in `~/.config/sv` and
+  linked into `~/.config/service`, or into the `services_dir` of `/etc/turnstile/backend/runit.conf`, and
+  `sv` is given the path of the link. The end-to-end test runs a `runsvdir` per user by hand with a stub
+  of the turnstile files, not turnstile itself.
+- Limits: no ordering without a dependency (`After=`, `Before=`), no `--runtime`, and user services only
+  with turnstile.
+
 ### s6 and s6-rc
 
 A unit becomes the source directories of an s6-rc longrun `foo-srv` whose output feeds the logger
@@ -147,6 +327,9 @@ frontend does the work: `enable` runs `s6 repository sync`, `s6 set enable -p`, 
 database with `s6-rc-compile`, which `s6-rc-update` moves the running system to; `daemon-reload`
 builds it again.
 
+- On plain s6, `start` rescans the scan directory and waits, up to `TimeoutStartSec=`, until
+  `s6-supervise` of the service and of its linked dependencies is ready, and fails when it never
+  appears. `stop` waits for `finish` to end (`s6-svc -wD`, `s6-svwait -D` on s6-rc).
 - s6-rc has one kind of dependency, so `Wants=` and the network providers become dependencies like
   `Requires=`. With the Artix sets an enabled service pulls its dependencies into the set, so they are
   enabled too.
@@ -240,8 +423,8 @@ initscripts 9.03.61) was read for the lock files, not run.
 - `policy-rc.d` is consulted by `invoke-rc.d` and by the maintainer scripts of packages, not by
   `systemctl`, which does not consult it with systemd either. `systemctl start` starts the service where
   `invoke-rc.d` is denied; offline, nothing starts in any case.
-- A socket `/run/initctl` is no running init unless PID 1 is an `init`: container images keep one where
-  nothing runs, and systemd offers a socket of that name.
+- The presence of a `/run/initctl` socket does not mean an init is running unless PID 1 is an `init`:
+  container images keep one where nothing runs, and systemd offers a socket of that name.
 - Power verbs run `shutdown -r now`, `shutdown -h -P now` and `shutdown -h -H now`, which go through the
   stop links of runlevel 6 and 0.
 - There are no user services.
@@ -377,8 +560,11 @@ the system runs next to init:
   and before it. Nothing supervises the services: `Restart=` is not honored and a service that dies
   reads `failed`.
 - The mode is read from the inittab when the backend is built. Power verbs run the `reboot`, `poweroff`
-  and `halt` applets, which make init run the `shutdown` entries (or send SIGTERM to the services of
-  `runsvdir`, which the executor turns into `ExecStop=`).
+  and `halt` applets, which make init run the `shutdown` entries. With `runsvdir`, init would signal
+  every process at once, and a `runsv` that sees its service die first never runs `ExecStop=`, so the
+  backend keeps a `# BEGIN fake-systemd` block in the inittab with `::shutdown:sv -w 90 force-stop
+  <scan directory>/*` while a service is linked: `sv` stops the services, `ExecStop=` included, before
+  init signals anything.
 - Verified with BusyBox 1.37.0 built from the release tarball, as PID 1 in a container, after a restart,
   at shutdown and offline, in both modes.
 - There are no user services, and a native `respawn` entry of the inittab is not seen as a native service.
@@ -390,8 +576,8 @@ A unit becomes `/etc/finit.d/available/<name>.conf` (`foo@bar.service` becomes `
 finit loads at boot. Dependencies are start conditions: `Requires=` and `BindsTo=` become
 `<service/dep/running>` (`<task/dep/success>` for a oneshot), enabling a service also enables the
 services its conditions name, and `network-online.target` becomes `<net/route/default>`. Finit loads a
-service only from a file it read at a reload, so `start` of a service that is not enabled links it into
-`/run/finit/system` and reloads, and `stop` takes the link away again. Verified with finit 4.12 (Debian
+service only from a file it read at a reload, so `systemctl start` on a service that is not enabled links
+it into `/run/finit/system` and reloads, and `systemctl stop` removes the link again. Verified with finit 4.12 (Debian
 13) as PID 1 in a rootless container.
 
 - The command of every stanza is the executor, which logs to the uniform location and applies the unit
@@ -449,6 +635,8 @@ by `local-datagram-socket-listen` and not under `system-manager`; the control gr
   directory, and refuses what nosh cannot run: `Type=notify`, `Type=idle`, and a stop mechanism it has no
   name for. It ignores `ExecStop=`, `ExecReload=` and the sandboxing settings, and maps `Restart=` to
   a `restart` script. `reload` runs `ExecReload=` through the executor.
+- `Type=forking` is handled by the converter itself: nosh does not follow the daemon or read `PIDFile=`,
+  so `start` does not wait for it and `stop` does not end the forked daemon.
 - Services log where nosh sends them, not to the uniform location, so `journalctl -u` shows nothing for
   them. `restart` is a stop and a start. User services are not supported, and in a `--root` tree the
   converter cannot run: the record is written and `enable` says to reload on the target.
@@ -470,7 +658,10 @@ Translate=lazy
 [Timers]
 Scheduler=auto
 
-# Maps a systemd unit to a native service.
+# Maps a systemd unit to a native service of a different name, as in
+# apache2.service=httpd. An alias is authoritative: when the native service exists it is
+# used without comparing executables, and nothing is generated. When it does not exist,
+# the normal name and executable rules apply. An empty value removes the alias.
 [Aliases]
 foo.service=bar
 
