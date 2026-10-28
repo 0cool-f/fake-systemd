@@ -1,17 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Debian with nosh 1.41 from the binary packages of its author, whose repository is served over plain
-# HTTP: every package is checked against the sha256 below before it is installed.
+# Debian with nosh 1.41 from the binary packages of its author, fetched by fetch-debs.sh into debs/ and
+# checked again here against debs.sha256 before they are installed.
 FROM docker.io/library/debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-ARG NOSH_REPO=http://debian.repository.jdebp.info/dists/stable/main/binary-amd64
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl procps util-linux \
-    && mkdir /debs && cd /debs \
-    && for p in \
-        nosh-exec_1.41_amd64.deb:333c9b7cad0f9764f646e6be04374046ea2e2b3a1887b626980245c903bfe7d8 \
-        nosh-service-management_1.41_amd64.deb:d0212e80f6a52b4d5f12c3216e406bfef9aaac641f7fab6d480b705963833536 \
-        nosh-terminal-management_1.41_amd64.deb:7b1624d7baa07d422f324545af1f5a4ea722f3dfc10b059beb77f0e57937201b \
-        nosh-bundles_1.41_amd64.deb:e65b2c66bfbca99776b7cfa7378bd128985fe3c59f5d01f765bfee96f13ca784; do \
-        curl -fsSLO "$NOSH_REPO/${p%%:*}" && echo "${p##*:}  ${p%%:*}" | sha256sum -c -; \
-    done \
+COPY debs.sha256 /debs/debs.sha256
+COPY debs/ /debs/
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates procps util-linux \
+    && (cd /debs && sha256sum -c debs.sha256) \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /debs/*.deb \
     && rm -rf /debs /var/lib/apt/lists/*

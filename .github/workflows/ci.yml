@@ -67,5 +67,14 @@ jobs:
           persist-credentials: false
       - name: Build the toolchain image
         run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+      - name: Cache the nosh packages
+        if: matrix.suite == 'nosh'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tests/e2e/nosh/debs
+          key: nosh-debs-${{ hashFiles('tests/e2e/nosh/debs.sha256') }}
+      - name: Fetch the nosh packages
+        if: matrix.suite == 'nosh'
+        run: tests/e2e/nosh/fetch-debs.sh
       - name: Run the ${{ matrix.suite }} end-to-end test
         run: tests/e2e/${{ matrix.suite }}/run.sh

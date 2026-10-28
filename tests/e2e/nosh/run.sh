@@ -18,6 +18,8 @@ prefix="$root/.zig-cache/e2e-prefix"
 "$engine" run --rm -v "$root:/src:Z" -w /src fake-systemd-build \
     zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix .zig-cache/e2e-prefix
 
+"$here/fetch-debs.sh"
+
 image=fake-systemd-e2e-nosh
 "$engine" build -q -t "$image" -f "$here/Containerfile" "$here" >/dev/null
 
