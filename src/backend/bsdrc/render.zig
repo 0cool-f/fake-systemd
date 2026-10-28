@@ -125,6 +125,7 @@ fn writeVariables(w: *Io.Writer, in: Input) Io.Writer.Error!void {
         try w.writeAll("daemon_pid=");
         try writeWord(w, in.daemon_pid_file);
         try w.print("\nstop_wait={d}\n", .{sysv.stopWait(in.unit)});
+        try sysv.writeStartVariables(w, in.unit);
     }
 }
 
@@ -178,7 +179,7 @@ fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!vo
     try w.writeAll("\tmkdir -p \"$state_dir\" \"$log_dir\" || return 1\n\trm -f \"$exit_file\" \"$main_pid\"\n");
     try w.print("\techo \"Starting {s}\"\n\t", .{u.name.full});
     try writeExecutor(w, in, args.items);
-    try w.writeAll("\n}\n");
+    try w.writeAll("\n\t_rc=$?\n\t[ \"$_rc\" -eq 0 ] && { wait_started || _rc=$?; }\n\treturn \"$_rc\"\n}\n");
 }
 
 /// The script signals the executor itself: SIGTERM, a wait for it to go, and SIGKILL when it
@@ -326,6 +327,7 @@ fn writeScript(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
     switch (in.mode) {
         .daemon => {
             try writeRunning(w);
+            try sysv.writeWaitStarted(w, in.unit);
             try writeDaemonStart(w, gpa, in);
             try writeDaemonStop(w, gpa, in);
             try writeDaemonStatus(w, in);

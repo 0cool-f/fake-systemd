@@ -3,7 +3,7 @@
 # Unit: reload-stop.service
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:6abe4782b4054be4
+# Body-Hash: xxh3:0d32b544fffe77a3
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Daemon with reload and stop hooks'
@@ -13,6 +13,33 @@ command_args="--exec reload-stop.service --stop-on-signal --log --record-exit"
 command_background=yes
 pidfile=/run/reload-stop.fake-systemd.pid
 retry=TERM/100/KILL/5
+
+start_pre() {
+	rm -f /run/fake-systemd/reload-stop.service.pid /run/fake-systemd/reload-stop.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/reload-stop.service.exit ] && return 0
+		_pid=$(cat /run/reload-stop.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/reload-stop.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/reload-stop.service.pid ]; then
+				read _main _ < /run/fake-systemd/reload-stop.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "reload-stop.service did not come up"
+	return 1
+}
 
 stop_post() {
 	/usr/bin/fake-systemd --exec reload-stop.service --phase stop-post

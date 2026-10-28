@@ -14,7 +14,7 @@ exec /usr/bin/fake-systemd --exec multi-oneshot.service
 # Unit: multi-oneshot.service
 # Source: /usr/lib/systemd/system/multi-oneshot.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:0a64380829e1c75f
+# Body-Hash: xxh3:c88ec85b0ca99732
 # Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
@@ -23,7 +23,7 @@ case "$1" in
 esac
 if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
 printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
-sv once .
+case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
 === log/run 0755
 #!/bin/sh
 # Generated automatically by fake-systemd. Remove this block to take ownership of the file.

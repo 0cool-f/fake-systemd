@@ -3,7 +3,7 @@
 # Unit: notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:c216e1bb6916836f
+# Body-Hash: xxh3:772326409229772d
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Notify-style database'
@@ -16,6 +16,33 @@ retry=TERM/55/KILL/5
 
 depend() {
 	use net network-online
+}
+
+start_pre() {
+	rm -f /run/fake-systemd/notify-service.service.pid /run/fake-systemd/notify-service.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/notify-service.service.exit ] && return 0
+		_pid=$(cat /run/notify-service.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/notify-service.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/notify-service.service.pid ]; then
+				read _main _ < /run/fake-systemd/notify-service.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "notify-service.service did not come up"
+	return 1
 }
 
 reload() {

@@ -3,7 +3,7 @@
 # Unit: deps-mix.service
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:65bae9fffbee259e
+# Body-Hash: xxh3:0942bd9e55590779
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Service with many dependency kinds'
@@ -17,4 +17,31 @@ depend() {
 	need dbus postgresql
 	want syslog
 	use net network-online
+}
+
+start_pre() {
+	rm -f /run/fake-systemd/deps-mix.service.pid /run/fake-systemd/deps-mix.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/deps-mix.service.exit ] && return 0
+		_pid=$(cat /run/deps-mix.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/deps-mix.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/deps-mix.service.pid ]; then
+				read _main _ < /run/fake-systemd/deps-mix.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "deps-mix.service did not come up"
+	return 1
 }

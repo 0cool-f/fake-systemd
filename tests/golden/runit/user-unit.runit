@@ -14,7 +14,7 @@ exec /usr/bin/clipd --watch
 # Unit: user-unit.service
 # Source: /usr/lib/systemd/user/user-unit.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:4383fe9580049a7d
+# Body-Hash: xxh3:11db7d51dbb543ab
 # Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
@@ -24,7 +24,7 @@ esac
 if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
 printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
 if [ -n "$clean" ]; then
-    sv once .
+    case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
 else
     :
 fi

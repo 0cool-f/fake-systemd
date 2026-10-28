@@ -3,7 +3,7 @@
 # Unit: restart-always.service
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:b66fb2c05d7297d7
+# Body-Hash: xxh3:424032eb22b52836
 # Generator: fake-systemd 0.1.0 sysvinit/1
 # chkconfig: 2345 80 20
 # description: Always restarted worker
@@ -24,12 +24,35 @@ main_pid=/run/fake-systemd/restart-always.service.pid
 exit_file=/run/fake-systemd/restart-always.service.exit
 daemon_pid=/run/fake-systemd/restart-always.service.daemon.pid
 stop_wait=12
+start_wait=2147483647
+main_child=1
 lock_file=/var/lock/subsys/restart-always
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
 	case $_pid in ''|*[!0-9]*) return 1 ;; esac
 	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+}
+
+wait_started() {
+	_n=0
+	while [ "$_n" -lt $((start_wait * 20)) ]; do
+		[ -e "$exit_file" ] && return 0
+		if running; then
+			if [ -s "$main_pid" ]; then
+				[ "$main_child" -eq 0 ] && return 0
+				read _main _ < "$main_pid"
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+		else
+			_dead=$(cat "$daemon_pid" 2>/dev/null)
+			case $_dead in ''|*[!0-9]*) ;; *) [ -d "/proc/$_dead" ] || { [ -e "$exit_file" ] && return 0; break; } ;; esac
+		fi
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	echo "restart-always.service did not come up" >&2
+	return 1
 }
 
 do_start() {
@@ -40,6 +63,7 @@ do_start() {
 	echo "Starting restart-always.service"
 	/usr/bin/fake-systemd --exec restart-always.service --daemon --log --record-exit
 	_rc=$?
+	[ "$_rc" -eq 0 ] && { wait_started || _rc=$?; }
 	[ "$_rc" -eq 0 ] && : > "$lock_file"
 	return "$_rc"
 }

@@ -251,6 +251,11 @@ fn writeDelayOrNoop(w: *Io.Writer, u: *const model.Unit, indent: []const u8) Io.
     } else try w.writeAll(":\n");
 }
 
+/// The end of a `finish` that keeps the service down. `runsv` reads one control byte per pass and
+/// a byte that is still queued when `finish` ends is read after it, so `sv once .` is only sent while
+/// the service is wanted up: after a stop `once` would start it again.
+pub const once_line = "case \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv once . ;; esac\n";
+
 pub fn finish(gpa: Allocator, in: Input) Allocator.Error![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
@@ -274,22 +279,22 @@ fn writeFinish(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     }
     const restart: model.Restart = if (u.service_type == .oneshot) .no else u.restart;
     switch (restart) {
-        .no, .@"on-watchdog" => try w.writeAll("sv once .\n"),
+        .no, .@"on-watchdog" => try w.writeAll(once_line),
         .always => if (restartDelay(u) != null) try writeDelayOrNoop(w, u, ""),
         .@"on-failure" => {
-            try w.writeAll("if [ -n \"$clean\" ]; then\n    sv once .\nelse\n");
+            try w.writeAll("if [ -n \"$clean\" ]; then\n    " ++ once_line ++ "else\n");
             try writeDelayOrNoop(w, u, "    ");
             try w.writeAll("fi\n");
         },
         .@"on-success" => {
             try w.writeAll("if [ -n \"$clean\" ]; then\n");
             try writeDelayOrNoop(w, u, "    ");
-            try w.writeAll("else\n    sv once .\nfi\n");
+            try w.writeAll("else\n    " ++ once_line ++ "fi\n");
         },
         .@"on-abnormal", .@"on-abort" => {
             try w.writeAll("if [ \"$1\" = -1 ] && [ -z \"$clean\" ]; then\n");
             try writeDelayOrNoop(w, u, "    ");
-            try w.writeAll("else\n    sv once .\nfi\n");
+            try w.writeAll("else\n    " ++ once_line ++ "fi\n");
         },
     }
 }

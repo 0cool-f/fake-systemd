@@ -3,7 +3,7 @@
 # Unit: dbus-activated.service
 # Source: /usr/lib/systemd/system/dbus-activated.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:2e1671e35aa77a66
+# Body-Hash: xxh3:bb7e7ce9433d8588
 # Generator: fake-systemd 0.1.0 bsd-rc/1
 # Bus-activated helper
 
@@ -14,11 +14,34 @@ main_pid=/run/fake-systemd/dbus-activated.service.pid
 exit_file=/run/fake-systemd/dbus-activated.service.exit
 daemon_pid=/run/fake-systemd/dbus-activated.service.daemon.pid
 stop_wait=100
+start_wait=90
+main_child=1
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)
 	case $_pid in ''|*[!0-9]*) return 1 ;; esac
 	[ "$_pid" -gt 1 ] && [ "$(cat "/proc/$_pid/comm" 2>/dev/null)" = fake-systemd ]
+}
+
+wait_started() {
+	_n=0
+	while [ "$_n" -lt $((start_wait * 20)) ]; do
+		[ -e "$exit_file" ] && return 0
+		if running; then
+			if [ -s "$main_pid" ]; then
+				[ "$main_child" -eq 0 ] && return 0
+				read _main _ < "$main_pid"
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+		else
+			_dead=$(cat "$daemon_pid" 2>/dev/null)
+			case $_dead in ''|*[!0-9]*) ;; *) [ -d "/proc/$_dead" ] || { [ -e "$exit_file" ] && return 0; break; } ;; esac
+		fi
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	echo "dbus-activated.service did not come up" >&2
+	return 1
 }
 
 do_start() {
@@ -27,6 +50,9 @@ do_start() {
 	rm -f "$exit_file" "$main_pid"
 	echo "Starting dbus-activated.service"
 	/usr/bin/fake-systemd --exec dbus-activated.service --daemon --log --record-exit
+	_rc=$?
+	[ "$_rc" -eq 0 ] && { wait_started || _rc=$?; }
+	return "$_rc"
 }
 
 stop_daemon() {

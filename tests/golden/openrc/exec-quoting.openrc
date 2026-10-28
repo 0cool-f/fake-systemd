@@ -3,7 +3,7 @@
 # Unit: exec-quoting.service
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:6edd9e1e0ef58861
+# Body-Hash: xxh3:e114c56cd0528840
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Command lines that need quoting'
@@ -12,3 +12,30 @@ command_args="--exec exec-quoting.service --log --record-exit"
 command_background=yes
 pidfile=/run/exec-quoting.fake-systemd.pid
 retry=TERM/100/KILL/5
+
+start_pre() {
+	rm -f /run/fake-systemd/exec-quoting.service.pid /run/fake-systemd/exec-quoting.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/exec-quoting.service.exit ] && return 0
+		_pid=$(cat /run/exec-quoting.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/exec-quoting.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/exec-quoting.service.pid ]; then
+				read _main _ < /run/fake-systemd/exec-quoting.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "exec-quoting.service did not come up"
+	return 1
+}

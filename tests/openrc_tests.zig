@@ -750,7 +750,7 @@ test "an account the executor cannot resolve is given to it as numeric ids, with
     try h.expectNotContains(body, "--identity-set");
     // Root keeps the files of the executor: nothing is handed to the account.
     try h.expectNotContains(body, "checkpath");
-    try h.expectNotContains(body, "start_pre");
+    try h.expectNotContains(body, "start_pre() {\n\tmkdir");
 }
 
 test "an account the executor resolves needs no switch in the script" {

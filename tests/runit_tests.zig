@@ -295,6 +295,19 @@ test "restart and kill map to sv" {
     try testing.expect(t.rec.callIs(5, &.{ "sv", "kill", "foo" }));
 }
 
+test "a stop that had to kill waits for the service to be down, and fails when it is not" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
+    t.rec.code = 1;
+    t.rec.stdout = "run: foo: (pid 4242) 3s, want down, got TERM\n";
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "stop", "foo" }));
+    try testing.expect(t.rec.callIs(0, &.{ "sv", "-w", "90", "force-stop", "foo" }));
+    try testing.expect(t.rec.callIs(1, &.{ "sv", "-w", "7", "stop", "foo" }));
+}
+
 test "a signal sv has no command for goes through kill with the pid from the status" {
     var f: Fixture = .{};
     try f.init();
@@ -556,7 +569,7 @@ test "ExecStop, ExecStopPost and KillSignal land in control/t and finish" {
     const fin = try generatedFile(t, "/etc/sv/hooked/finish");
     try h.expectContains(fin, "-1) case $(($2 & 127)) in 1|2|13|15|10) clean=1 ;; esac ;;\n0|3) clean=1 ;;\n");
     try h.expectContains(fin, "/usr/bin/fake-systemd --exec hooked.service --phase stop-post\n");
-    try h.expectContains(fin, "if [ -n \"$clean\" ]; then\n    sv once .\nelse\n    case \"$(cat supervise/stat)\" in *\"want down\"*) ;; *) sleep 5 ;; esac\nfi\n");
+    try h.expectContains(fin, "if [ -n \"$clean\" ]; then\n    case \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv once . ;; esac\nelse\n    case \"$(cat supervise/stat)\" in *\"want down\"*) ;; *) sleep 5 ;; esac\nfi\n");
 }
 
 test "Restart=always without hooks has no finish script" {
@@ -673,7 +686,7 @@ test "a oneshot with RemainAfterExit keeps a process so that it stays active and
         "exec 2>&1\n/usr/bin/fake-systemd --exec fw.service || exit $?\nexec /usr/bin/sleep 2147483647\n",
         try generatedFile(t, "/etc/sv/fw/run"),
     );
-    try h.expectContains(try generatedFile(t, "/etc/sv/fw/finish"), "\nsv once .\n");
+    try h.expectContains(try generatedFile(t, "/etc/sv/fw/finish"), "\ncase \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv once . ;; esac\n");
 }
 
 // ---- user services ----

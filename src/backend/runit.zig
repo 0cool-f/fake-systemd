@@ -67,6 +67,8 @@ const turnstile_runit_conf = "/etc/turnstile/backend/runit.conf";
 /// Seconds `sv stop` waits before it kills a service without `TimeoutStopSec=`; systemd's
 /// default.
 const default_stop_wait: u64 = 90;
+/// Seconds `sv` waits for a service to be down after `force-stop` sent SIGKILL, which it does not wait for.
+const kill_wait: u64 = 7;
 /// How long to wait for `runsvdir` (which scans every 5 s) to start supervising a new link.
 const supervise_wait_ms = 8000;
 const supervise_poll_ms = 250;
@@ -662,7 +664,7 @@ fn restart(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {
 fn stopService(self: *Runit, env: Env, service: []const u8) !void {
     const wait = try waitArgs(env.ctx.gpa, self.waitsOf(service).stop orelse default_stop_wait);
     const res = try self.runSv(env, wait, "force-stop", service, .quiet);
-    if (res.code != 0) {
+    if (res.code != 0 and (try self.runSv(env, try waitArgs(env.ctx.gpa, kill_wait), "stop", service, .quiet)).code != 0) {
         const st = try self.statusOf(env, service);
         if (st.state != .inactive and st.state != .failed) {
             reportFailure(env, service, res);

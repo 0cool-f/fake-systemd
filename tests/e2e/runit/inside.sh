@@ -313,6 +313,27 @@ began=$(date +%s)
 expect "stop kills a service that ignores TERM after TimeoutStopSec=" 0 "" systemctl stop e2e-stubborn
 check "it did not wait for the default of 90 seconds" test $(($(date +%s) - began)) -lt 30
 expect "the stubborn service is gone" 3 "" systemctl is-active e2e-stubborn
+
+# --- A stop is final even when runsv reads what finish sent only after finish ended --------------
+cat >/usr/local/bin/e2e-hold-runsv <<'X'
+#!/bin/sh
+r=$(pgrep -f '^runsv e2e-hold$')
+( sleep 0.4; kill -CONT "$r" ) >/dev/null 2>&1 &
+kill -STOP "$r"
+X
+chmod 755 /usr/local/bin/e2e-hold-runsv
+printf '#!/bin/sh\nexec sleep 1000\n' >/usr/local/bin/e2e-hold-svc
+chmod 755 /usr/local/bin/e2e-hold-svc
+unit e2e-hold 'ExecStart=/usr/local/bin/e2e-hold-svc
+ExecStopPost=/usr/local/bin/e2e-hold-runsv'
+expect "the service whose finish holds runsv back starts" 0 "" systemctl start e2e-hold
+sleep 1.5
+expect "its stop succeeds" 0 "" timeout 30 systemctl stop e2e-hold
+sleep 1.5
+expect "the stop stays final: nothing starts the service again" 3 "inactive" systemctl is-active e2e-hold
+expect "restart after such a stop runs the service" 0 "" systemctl restart e2e-hold
+expect "it is active right after the restart" 0 "active" systemctl is-active e2e-hold
+systemctl stop e2e-hold >/dev/null 2>&1
 mkdir -p /etc/sv/dhcpcd
 printf '#!/bin/sh\nexec sleep 1000\n' >/etc/sv/dhcpcd/run
 chmod 755 /etc/sv/dhcpcd/run

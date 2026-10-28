@@ -3,7 +3,7 @@
 # Unit: env-exec-pre.service
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:01c330cffa5dee1b
+# Body-Hash: xxh3:dff11a0a720cf0ae
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Web application with a prepared environment'
@@ -15,4 +15,30 @@ retry=TERM/100/KILL/5
 
 depend() {
 	use net
+}
+
+start_pre() {
+	rm -f /run/fake-systemd/env-exec-pre.service.pid /run/fake-systemd/env-exec-pre.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/env-exec-pre.service.exit ] && return 0
+		_pid=$(cat /run/env-exec-pre.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/env-exec-pre.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/env-exec-pre.service.pid ]; then
+				return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "env-exec-pre.service did not come up"
+	return 1
 }

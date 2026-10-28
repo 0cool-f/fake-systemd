@@ -428,7 +428,7 @@ const known_openrc_variables = [_][]const u8{
 };
 
 /// Functions `openrc-run` calls.
-const known_openrc_functions = [_][]const u8{ "depend", "start_pre", "start", "stop", "stop_post", "reload" };
+const known_openrc_functions = [_][]const u8{ "depend", "start_pre", "start", "start_post", "stop", "stop_post", "reload" };
 
 fn inNames(list: []const []const u8, name: []const u8) bool {
     for (list) |l| if (std.mem.eql(u8, l, name)) return true;

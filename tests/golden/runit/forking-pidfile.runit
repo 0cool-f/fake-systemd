@@ -15,7 +15,7 @@ exec /usr/bin/fake-systemd --exec forking-pidfile.service
 # Unit: forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:8cdfa1c55fb9b6d5
+# Body-Hash: xxh3:3e390e18ac65b5ee
 # Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
@@ -27,7 +27,7 @@ printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
 if [ "$1" = -1 ] && [ -z "$clean" ]; then
     :
 else
-    sv once .
+    case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
 fi
 === log/run 0755
 #!/bin/sh

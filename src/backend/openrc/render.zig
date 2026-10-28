@@ -10,6 +10,7 @@ const model = @import("../../unit/model.zig");
 const timespan = @import("../../unit/timespan.zig");
 const shell = @import("../shell.zig");
 const native = @import("native.zig");
+const sysv = @import("../sysvinit/render.zig");
 
 /// How OpenRC runs the service.
 pub const Mode = enum {
@@ -364,6 +365,33 @@ fn writeStartPre(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll("\n}\n");
 }
 
+/// `start_pre` forgets the files of the last run, so that `start_post` reads only what the new
+/// executor writes; `start_post` waits until the executor has recorded the main process or the end
+/// of the service, and fails, which stops the service, when the executor dies first or
+/// `TimeoutStartSec=` runs out.
+fn writeBackgroundWait(w: *Io.Writer, in: Input) Io.Writer.Error!void {
+    const pidfile = in.pidfile orelse return;
+    try w.writeAll("\nstart_pre() {\n\trm -f ");
+    try writeWord(w, in.exec_pid_file, false);
+    try w.writeByte(' ');
+    try writeWord(w, in.exit_file, false);
+    try w.print("\n}}\n\nstart_post() {{\n\t_n=0\n\twhile [ \"$_n\" -lt {d} ]; do\n\t\t[ -e ", .{sysv.startWait(in.unit) * 20});
+    try writeWord(w, in.exit_file, false);
+    try w.writeAll(" ] && return 0\n\t\t_pid=$(cat ");
+    try writeWord(w, pidfile, false);
+    try w.writeAll(" 2>/dev/null)\n\t\tcase $_pid in ''|*[!0-9]*) ;; *)\n\t\t\tif [ ! -d \"/proc/$_pid\" ]; then\n\t\t\t\t[ -e ");
+    try writeWord(w, in.exit_file, false);
+    try w.writeAll(" ] && return 0\n\t\t\t\tbreak\n\t\t\tfi\n\t\t\tif [ -s ");
+    try writeWord(w, in.exec_pid_file, false);
+    try w.writeAll(" ]; then\n");
+    if (sysv.mainIsChild(in.unit)) {
+        try w.writeAll("\t\t\t\tread _main _ < ");
+        try writeWord(w, in.exec_pid_file, false);
+        try w.writeAll("\n\t\t\t\t[ \"$_main\" != \"$_pid\" ] && return 0\n");
+    } else try w.writeAll("\t\t\t\treturn 0\n");
+    try w.print("\t\t\tfi\n\t\t\t;;\n\t\tesac\n\t\tsleep 0.05\n\t\t_n=$((_n + 1))\n\tdone\n\teerror \"{s} did not come up\"\n\treturn 1\n}}\n", .{in.unit.name.full});
+}
+
 fn needsStartPre(in: Input) bool {
     return switch (in.mode) {
         .oneshot, .none, .forking => false,
@@ -479,6 +507,7 @@ fn writeScript(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
         try w.writeByte('\n');
         try writeStartPre(w, in);
     }
+    if (in.mode == .background) try writeBackgroundWait(w, in);
     switch (in.mode) {
         .oneshot => {
             try writeOneshotStart(w, gpa, in);
@@ -526,4 +555,60 @@ test "bare values and reserved names" {
     try testing.expect(!validEnvName("RC_SVCNAME"));
     try testing.expect(!validEnvName("1X"));
     try testing.expect(!validEnvName("A-B"));
+}
+
+// ---- `start_post` waits for the executor ----------------------------------------------------------
+
+const Fs = @import("../../core/root.zig").Fs;
+const name_mod = @import("../../unit/name.zig");
+
+/// Runs `start_post` of a generated background script after `setup`, which sets the files of the
+/// executor up in the shell; returns its exit status.
+fn startPostCode(a: Allocator, start_timeout_us: ?u64, setup: []const u8) !u8 {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try a.dupe(u8, buf[0..try tmp.dir.realPath(testing.io, &buf)]);
+    var u: model.Unit = .{ .name = try name_mod.parse(a, "foo.service"), .scope = .system };
+    u.timeout_start_sec = start_timeout_us;
+    const text = try script(a, .{
+        .unit = &u,
+        .mode = .background,
+        .command = .executor,
+        .executor_path = "/usr/bin/fake-systemd",
+        .log_dir = try std.fmt.allocPrint(a, "{s}/log", .{dir}),
+        .pidfile = try std.fmt.allocPrint(a, "{s}/ssd.pid", .{dir}),
+        .exit_file = try std.fmt.allocPrint(a, "{s}/exit", .{dir}),
+        .exec_pid_file = try std.fmt.allocPrint(a, "{s}/main", .{dir}),
+    });
+    const driver = try std.fmt.allocPrint(a, "eerror() {{ echo \"$*\" >&2; }}\n. {s}/foo\nD={s}\n{s}\nstart_post\n", .{ dir, dir, setup });
+    try fs.writeFileAtomic("/foo", text, 0o755);
+    try fs.writeFileAtomic("/driver", driver, 0o755);
+    const res = try std.process.run(a, testing.io, .{ .argv = &.{ "/bin/sh", try std.fmt.allocPrint(a, "{s}/driver", .{dir}) } });
+    return switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    };
+}
+
+test "start_post returns once a slow executor recorded a main process of its own" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const setup = "sleep 3 & echo $! > \"$D/ssd.pid\"\n( sleep 0.4; echo \"$$ 1\" > \"$D/main\" ) &";
+    try testing.expectEqual(@as(u8, 0), try startPostCode(arena.allocator(), 20 * std.time.us_per_s, setup));
+}
+
+test "start_post fails when the executor is gone without an end recorded, and when it does not record in time" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqual(@as(u8, 1), try startPostCode(arena.allocator(), 20 * std.time.us_per_s, "sh -c 'echo $$ > \"$D/ssd.pid\"'"));
+    try testing.expectEqual(@as(u8, 1), try startPostCode(arena.allocator(), 1 * std.time.us_per_s, "sleep 3 & echo $! > \"$D/ssd.pid\""));
+}
+
+test "start_post accepts a service that ended and recorded it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const setup = "sh -c 'echo $$ > \"$D/ssd.pid\"'; echo 'failed 3' > \"$D/exit\"";
+    try testing.expectEqual(@as(u8, 0), try startPostCode(arena.allocator(), 20 * std.time.us_per_s, setup));
 }

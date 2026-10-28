@@ -14,7 +14,7 @@ exec /usr/bin/hookd
 # Unit: reload-stop.service
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:6c1cbf42b626fba7
+# Body-Hash: xxh3:36b7f01f22f69de7
 # Generator: fake-systemd 0.1.0 runit/2
 clean=
 case "$1" in
@@ -24,7 +24,7 @@ esac
 if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
 printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
 /usr/bin/fake-systemd --exec reload-stop.service --phase stop-post
-sv once .
+case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
 === log/run 0755
 #!/bin/sh
 # Generated automatically by fake-systemd. Remove this block to take ownership of the file.

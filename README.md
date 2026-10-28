@@ -168,7 +168,9 @@ A unit becomes an `openrc-run` script in `/etc/init.d` (`foo@bar.service` become
 `supervise-daemon`, with the output going to the uniform log through `output_logger` and
 `error_logger`. The others run their executor under `start-stop-daemon` with a pid file of its own;
 the executor logs the output of the service itself and records how the main process ended, so the
-service does not depend on what `start-stop-daemon` can do (the one of dpkg can do little).
+service does not depend on what `start-stop-daemon` can do (the one of dpkg can do little). `start`
+returns once the executor recorded the main process or the end of the service, and fails when it dies
+first or `TimeoutStartSec=` runs out.
 
 - `Requires=` and `BindsTo=` become `need`, `Wants=` becomes `want`, `After=` and `Before=` become
   `after` and `before`, and the network targets become `use net` and `use network-online`.
@@ -210,7 +212,9 @@ initscripts 9.03.61) was read for the lock files, not run.
   `/run/fake-systemd/<unit>.exit`, and turns SIGTERM into the stop, so `ExecStop=` runs whenever the
   script stops the service: `systemctl stop`, a runlevel change, a shutdown. A daemon is started in the
   background by `start-stop-daemon` on Debian and by `fake-systemd --exec <unit> --daemon` on Red Hat,
-  and its executor pid is in `<unit>.daemon.pid`; `<unit>.pid` holds the main process.
+  and its executor pid is in `<unit>.daemon.pid`; `<unit>.pid` holds the main process. `start` returns
+  once the executor recorded it, or the end of the service, and fails when the executor dies first or
+  `TimeoutStartSec=` runs out.
 - sysvinit supervises nothing: `Restart=` is not honored, and a service that dies stays dead. `status`
   reads `failed` for it (the script says it is dead and not restarted), which is also how a timer
   runner that died shows, since the runner is such a service. A oneshot runs to the end in `start` and

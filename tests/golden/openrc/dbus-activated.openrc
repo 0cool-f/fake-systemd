@@ -3,7 +3,7 @@
 # Unit: dbus-activated.service
 # Source: /usr/lib/systemd/system/dbus-activated.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:b7aa125aa96a9ce5
+# Body-Hash: xxh3:496d22af021878b0
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Bus-activated helper'
@@ -12,3 +12,30 @@ command_args="--exec dbus-activated.service --log --record-exit"
 command_background=yes
 pidfile=/run/dbus-activated.fake-systemd.pid
 retry=TERM/100/KILL/5
+
+start_pre() {
+	rm -f /run/fake-systemd/dbus-activated.service.pid /run/fake-systemd/dbus-activated.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/dbus-activated.service.exit ] && return 0
+		_pid=$(cat /run/dbus-activated.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/dbus-activated.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/dbus-activated.service.pid ]; then
+				read _main _ < /run/fake-systemd/dbus-activated.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "dbus-activated.service did not come up"
+	return 1
+}

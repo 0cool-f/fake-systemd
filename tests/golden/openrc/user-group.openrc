@@ -3,7 +3,7 @@
 # Unit: user-group.service
 # Source: /usr/lib/systemd/system/user-group.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:e392bc8e5ec3bf77
+# Body-Hash: xxh3:58fdcd462f21c584
 # Generator: fake-systemd 0.1.0 openrc/1
 # flags: record-exit
 description='Daemon with user, group and supplementary groups'
@@ -12,3 +12,30 @@ command_args="--exec user-group.service --log --record-exit"
 command_background=yes
 pidfile=/run/user-group.fake-systemd.pid
 retry=TERM/100/KILL/5
+
+start_pre() {
+	rm -f /run/fake-systemd/user-group.service.pid /run/fake-systemd/user-group.service.exit
+}
+
+start_post() {
+	_n=0
+	while [ "$_n" -lt 1800 ]; do
+		[ -e /run/fake-systemd/user-group.service.exit ] && return 0
+		_pid=$(cat /run/user-group.fake-systemd.pid 2>/dev/null)
+		case $_pid in ''|*[!0-9]*) ;; *)
+			if [ ! -d "/proc/$_pid" ]; then
+				[ -e /run/fake-systemd/user-group.service.exit ] && return 0
+				break
+			fi
+			if [ -s /run/fake-systemd/user-group.service.pid ]; then
+				read _main _ < /run/fake-systemd/user-group.service.pid
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+			;;
+		esac
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	eerror "user-group.service did not come up"
+	return 1
+}

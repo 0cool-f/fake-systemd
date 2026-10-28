@@ -30,6 +30,7 @@ const runner = @import("runner.zig");
 const Runit = @import("runit.zig");
 const Sysvinit = @import("sysvinit.zig");
 const runit_layout = @import("runit/layout.zig");
+const runit_render = @import("runit/render.zig");
 const sysv_native = @import("sysvinit/native.zig");
 const inittab = @import("busybox/inittab.zig");
 const sv = @import("busybox/sv.zig");
@@ -144,7 +145,7 @@ fn scanDirs(ptr: *anyopaque, gpa: Allocator, scope: core.Scope) anyerror![]const
 /// `finish` ends with `sv once .` to keep the service from starting again. The `runsv` of BusyBox
 /// takes the byte that command sends after it has seen `finish` exit when it is quick, and `once`
 /// then starts the service that just ended; `down` only sets what is wanted, whatever the state.
-const finish_once = "sv once .\n";
+const finish_once = runit_render.once_line;
 const finish_down = "sv down .\n";
 
 /// The text of a generated run or finish script as BusyBox needs it: a run script finds the

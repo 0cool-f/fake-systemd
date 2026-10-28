@@ -65,6 +65,7 @@ pub const Input = struct {
 pub const shebang = "#!/bin/sh\n";
 
 const default_stop_wait: u64 = 90;
+const default_start_wait: u64 = 90;
 const kill_wait: u64 = 5;
 /// Longest wait `--retry` takes: the schedule is read as an `int`.
 pub const unlimited_wait: u64 = std.math.maxInt(i32);
@@ -98,6 +99,57 @@ pub fn stopWait(u: *const model.Unit) u64 {
     if (timeout == timespan.infinity) return unlimited_wait;
     const secs = std.math.divCeil(u64, timeout, std.time.us_per_s) catch return unlimited_wait;
     return @min(@max(secs, 1) + executor_grace, unlimited_wait);
+}
+
+/// Seconds `start` waits for the executor to record the main process: `TimeoutStartSec=`.
+pub fn startWait(u: *const model.Unit) u64 {
+    const timeout = u.timeout_start_sec orelse default_start_wait * std.time.us_per_s;
+    if (timeout == timespan.infinity) return unlimited_wait;
+    const secs = std.math.divCeil(u64, timeout, std.time.us_per_s) catch return unlimited_wait;
+    return @min(@max(secs, 1), unlimited_wait);
+}
+
+/// True when the executor runs the main process as its own child, so that the pid it records
+/// first (its own) is replaced by the child's: `start` waits for the replacement.
+pub fn mainIsChild(u: *const model.Unit) bool {
+    return u.exec_start_pre.len == 0 and switch (u.service_type) {
+        .oneshot, .forking => false,
+        else => true,
+    };
+}
+
+/// The variables `wait_started` reads.
+pub fn writeStartVariables(w: *Io.Writer, u: *const model.Unit) Io.Writer.Error!void {
+    try w.print("start_wait={d}\nmain_child={d}\n", .{ startWait(u), @intFromBool(mainIsChild(u)) });
+}
+
+/// `wait_started`: returns once the detached executor has recorded the main process or the end of
+/// the service, and fails when the executor dies first or `TimeoutStartSec=` runs out. It needs
+/// `running`, which leaves the pid of the executor in `$_pid`.
+pub fn writeWaitStarted(w: *Io.Writer, u: *const model.Unit) Io.Writer.Error!void {
+    try w.print(
+        "\nwait_started() {{\n" ++
+            "\t_n=0\n" ++
+            "\twhile [ \"$_n\" -lt $((start_wait * 20)) ]; do\n" ++
+            "\t\t[ -e \"$exit_file\" ] && return 0\n" ++
+            "\t\tif running; then\n" ++
+            "\t\t\tif [ -s \"$main_pid\" ]; then\n" ++
+            "\t\t\t\t[ \"$main_child\" -eq 0 ] && return 0\n" ++
+            "\t\t\t\tread _main _ < \"$main_pid\"\n" ++
+            "\t\t\t\t[ \"$_main\" != \"$_pid\" ] && return 0\n" ++
+            "\t\t\tfi\n" ++
+            "\t\telse\n" ++
+            "\t\t\t_dead=$(cat \"$daemon_pid\" 2>/dev/null)\n" ++
+            "\t\t\tcase $_dead in ''|*[!0-9]*) ;; *) [ -d \"/proc/$_dead\" ] || {{ [ -e \"$exit_file\" ] && return 0; break; }} ;; esac\n" ++
+            "\t\tfi\n" ++
+            "\t\tsleep 0.05\n" ++
+            "\t\t_n=$((_n + 1))\n" ++
+            "\tdone\n" ++
+            "\techo \"{s} did not come up\" >&2\n" ++
+            "\treturn 1\n" ++
+            "}}\n",
+        .{u.name.full},
+    );
 }
 
 /// True when the executor is killed after the wait: with `TimeoutStopSec=infinity` and
@@ -212,6 +264,7 @@ fn writeVariables(w: *Io.Writer, in: Input) Io.Writer.Error!void {
         try w.writeAll("daemon_pid=");
         try writeWord(w, in.daemon_pid_file);
         try w.print("\nstop_wait={d}\n", .{stopWait(in.unit)});
+        try writeStartVariables(w, in.unit);
     }
     if (locks(in)) try w.print("lock_file={s}/{s}\n", .{ lock_dir, in.service });
 }
@@ -247,12 +300,11 @@ fn writeDaemonStart(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!vo
     try writeStartTail(w, in);
 }
 
-/// The lock file of Red Hat, after a start that worked.
+/// The wait for the executor, then the lock file of Red Hat, after a start that worked.
 fn writeStartTail(w: *Io.Writer, in: Input) Io.Writer.Error!void {
-    if (in.variant == .redhat) {
-        try w.writeAll("\t_rc=$?\n\t[ \"$_rc\" -eq 0 ] && : > \"$lock_file\"\n\treturn \"$_rc\"\n");
-    }
-    try w.writeAll("}\n");
+    try w.writeAll("\t_rc=$?\n\t[ \"$_rc\" -eq 0 ] && { wait_started || _rc=$?; }\n");
+    if (in.variant == .redhat) try w.writeAll("\t[ \"$_rc\" -eq 0 ] && : > \"$lock_file\"\n");
+    try w.writeAll("\treturn \"$_rc\"\n}\n");
 }
 
 /// Without `start-stop-daemon` the script signals the executor itself: SIGTERM, a wait for it to
@@ -431,6 +483,7 @@ fn writeScript(w: *Io.Writer, gpa: Allocator, in: Input) Io.Writer.Error!void {
     switch (in.mode) {
         .daemon => {
             try writeRunning(w);
+            try writeWaitStarted(w, in.unit);
             try writeDaemonStart(w, gpa, in);
             try writeDaemonStop(w, gpa, in);
             try writeDaemonStatus(w, in);
@@ -490,4 +543,147 @@ test "a description is cut at its first line" {
     // A trailing backslash would join the next line to the `description:` of chkconfig.
     try testing.expectEqualStrings("a b", oneLine("a b \\"));
     try testing.expectEqualStrings("a b", oneLine("a b \\ \\"));
+}
+
+// ---- the generated script runs: `start` returns once the executor recorded the service --------------
+
+const Fs = @import("../../core/root.zig").Fs;
+
+const start_stub =
+    \\#!/bin/sh
+    \\while [ $# -gt 0 ]; do
+    \\  case $1 in --pidfile) pf=$2; shift ;; --exec) ex=$2; shift ;; --) shift; break ;; esac
+    \\  shift
+    \\done
+    \\"$ex" "$@" > /dev/null 2>&1 < /dev/null &
+    \\echo $! > "$pf"
+    \\
+;
+
+const Outcome = struct {
+    start_code: u8,
+    stderr: []const u8,
+    main_recorded: bool,
+    main_is_executor: bool,
+    status_code: u8,
+};
+
+fn runSh(a: Allocator, argv: []const []const u8) !struct { code: u8, stderr: []const u8 } {
+    const res = try std.process.run(a, testing.io, .{ .argv = argv });
+    return .{ .code = switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    }, .stderr = res.stderr };
+}
+
+/// Starts a service whose executor first runs `setup` in the background and then `tail` in the
+/// process that holds the daemon pid; `tail` ends in `exec sleep`, so the process keeps the name
+/// `sleep`, which stands in for `fake-systemd` in the script. A Debian script runs the executor
+/// under a `start-stop-daemon` that returns at once, a Red Hat script detaches it with `--daemon`.
+fn startOutcome(a: Allocator, variant: Variant, start_timeout_us: ?u64, setup: []const u8, tail: []const u8) !Outcome {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const fs: Fs = .initDir(testing.io, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try a.dupe(u8, buf[0..try tmp.dir.realPath(testing.io, &buf)]);
+    const daemon_pid = try std.fmt.allocPrint(a, "{s}/run/foo.daemon.pid", .{dir});
+    const main_pid = try std.fmt.allocPrint(a, "{s}/run/foo.pid", .{dir});
+    const exit_file = try std.fmt.allocPrint(a, "{s}/run/foo.exit", .{dir});
+    const executor = try std.fmt.allocPrint(a, "{s}/fake-systemd", .{dir});
+    const main_script = try std.fmt.allocPrint(a, "{s}/daemon-main", .{dir});
+    const stub = try std.fmt.allocPrint(a, "{s}/start-stop-daemon", .{dir});
+    const path = try std.fmt.allocPrint(a, "{s}/foo", .{dir});
+
+    var u = try testUnit(a, "/usr/bin/foo");
+    u.timeout_start_sec = start_timeout_us;
+    const text = try script(a, .{
+        .unit = &u,
+        .variant = variant,
+        .service = "foo",
+        .mode = .daemon,
+        .executor_path = executor,
+        .state_dir = try std.fmt.allocPrint(a, "{s}/run", .{dir}),
+        .log_dir = try std.fmt.allocPrint(a, "{s}/log", .{dir}),
+        .daemon_pid_file = daemon_pid,
+        .main_pid_file = main_pid,
+        .exit_file = exit_file,
+    });
+    const with_stub = try std.mem.replaceOwned(u8, a, text, "start-stop-daemon", stub);
+    const with_lock = try std.mem.replaceOwned(u8, a, with_stub, lock_dir, try std.fmt.allocPrint(a, "{s}/lock", .{dir}));
+    const local = try std.mem.replaceOwned(u8, a, with_lock, "= fake-systemd ]", "= sleep ]");
+
+    const fake = try std.fmt.allocPrint(a,
+        \\#!/bin/sh
+        \\case " $* " in *" --daemon "*) sh -c 'echo $$ > "$0"; exec "$1"' {s} {s} > /dev/null 2>&1 < /dev/null & exit 0 ;; esac
+        \\exec {s}
+        \\
+    , .{ daemon_pid, main_script, main_script });
+    const daemon_main = try std.fmt.allocPrint(a,
+        \\#!/bin/sh
+        \\MAIN={s}
+        \\EXIT={s}
+        \\( {s}
+        \\: ) > /dev/null 2>&1 < /dev/null &
+        \\{s}
+        \\
+    , .{ main_pid, exit_file, setup, tail });
+    try fs.writeFileAtomic("/fake-systemd", fake, 0o755);
+    try fs.writeFileAtomic("/daemon-main", daemon_main, 0o755);
+    try fs.writeFileAtomic("/start-stop-daemon", start_stub, 0o755);
+    try fs.writeFileAtomic("/foo", local, 0o755);
+    try fs.makePath("/run");
+
+    const started = try runSh(a, &.{ "/bin/sh", path, "start" });
+    var out: Outcome = .{ .start_code = started.code, .stderr = started.stderr, .main_recorded = false, .main_is_executor = false, .status_code = 255 };
+    if (fs.readFileAlloc(a, "/run/foo.pid", 64)) |recorded| {
+        out.main_recorded = true;
+        const daemon = std.mem.trim(u8, fs.readFileAlloc(a, "/run/foo.daemon.pid", 64) catch "", " \n");
+        out.main_is_executor = std.mem.eql(u8, std.mem.trim(u8, recorded[0 .. std.mem.findScalar(u8, recorded, ' ') orelse recorded.len], " \n"), daemon);
+    } else |_| {}
+    out.status_code = (try runSh(a, &.{ "/bin/sh", path, "status" })).code;
+    if (fs.readFileAlloc(a, "/run/foo.daemon.pid", 64)) |pid| _ = try runSh(a, &.{ "kill", std.mem.trim(u8, pid, " \n") }) else |_| {}
+    return out;
+}
+
+const slow_setup = "sleep 0.4; sleep 12 & echo \"$! 1\" > \"$MAIN\"";
+
+test "start returns once a slow executor has recorded the main process, for both variants" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Variant{ .debian, .redhat }) |variant| {
+        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, slow_setup, "exec sleep 10");
+        if (out.start_code != 0 or out.status_code != 0) std.debug.print("{t}: start {d}, status {d}: {s}\n", .{ variant, out.start_code, out.status_code, out.stderr });
+        try testing.expectEqual(@as(u8, 0), out.start_code);
+        try testing.expect(out.main_recorded);
+        try testing.expect(!out.main_is_executor);
+        try testing.expectEqual(@as(u8, 0), out.status_code);
+    }
+}
+
+test "start fails when the executor dies before it recorded anything" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Variant{ .debian, .redhat }) |variant| {
+        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, ":", "exit 1");
+        try testing.expectEqual(@as(u8, 1), out.start_code);
+        try testing.expect(std.mem.find(u8, out.stderr, "did not come up") != null);
+    }
+}
+
+test "start fails when the executor does not record within TimeoutStartSec" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Variant{ .debian, .redhat }) |variant| {
+        const out = try startOutcome(arena.allocator(), variant, 1 * std.time.us_per_s, ":", "exec sleep 3");
+        try testing.expectEqual(@as(u8, 1), out.start_code);
+    }
+}
+
+test "start succeeds for a service that ended before the script looked, once its end is recorded" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Variant{ .debian, .redhat }) |variant| {
+        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, ":", "echo 'failed 3' > \"$EXIT\"; exit 3");
+        try testing.expectEqual(@as(u8, 0), out.start_code);
+    }
 }
