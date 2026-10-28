@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 RUN apk add --no-cache s6 s6-rc execline setpriv
