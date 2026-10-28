@@ -17,7 +17,7 @@ RUN set -eu; \
     mkdir -p /opt/zig; \
     tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:13ecca0cd6ee68809c95676fbe2b5bd65878ab8974dab5059ea6dc4db4de6909
+FROM cgr.dev/chainguard/wolfi-base@sha256:31cfe087eb48bde827a6e0f607a12865f6f37d89093b95b324b9d5714e3cedab
 
 COPY --from=zig /opt/zig /opt/zig
 
