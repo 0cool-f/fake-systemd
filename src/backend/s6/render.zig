@@ -204,7 +204,7 @@ fn writeShCommand(w: *Io.Writer, in: Input, words: ?[]const []const u8) Io.Write
 }
 
 fn writeFlags(w: *Io.Writer, flags: native.Flags) Io.Writer.Error!void {
-    if (!flags.exec_stop and !flags.remain and !flags.oneshot) return;
+    if (!flags.exec_stop and !flags.remain and !flags.oneshot and flags.start_timeout_ms == null) return;
     try w.writeAll(native.flags_prefix);
     if (flags.exec_stop) try w.writeAll(" exec-stop");
     if (flags.remain) try w.writeAll(" remain");
@@ -220,7 +220,7 @@ pub fn flagsOf(u: *const model.Unit) native.Flags {
         .exec_stop = u.service_type == .oneshot and u.exec_stop.len > 0,
         .remain = holdsAfterExit(u),
         .oneshot = u.service_type == .oneshot and !holdsAfterExit(u),
-        .start_timeout_ms = if (u.service_type == .oneshot and !holdsAfterExit(u)) startTimeoutMs(u) else null,
+        .start_timeout_ms = startTimeoutMs(u),
     };
 }
 
@@ -242,7 +242,30 @@ pub fn hardWaitMs(u: *const model.Unit) u64 {
 pub const soft_wait_ms: u64 = 5000;
 pub const default_timeout_ms: u64 = 90_000;
 
+/// Shell function that returns once an `s6-supervise` is ready for the service directory `$1`,
+/// after asking `s6-svscan` to scan its parent directory, and fails after `$2` polls.
+const wait_supervised_fn =
+    \\wait_supervised() {
+    \\    s6-svok "$1" 2>/dev/null || s6-svscanctl -a "${1%/*}" 2>/dev/null
+    \\    n=0
+    \\    until s6-svok "$1" 2>/dev/null && s6-svstat "$1" >/dev/null 2>&1; do
+    \\        n=$((n + 1))
+    \\        if [ "$n" -gt "$2" ]; then
+    \\            echo "no s6-supervise runs for $1" >&2
+    \\            return 1
+    \\        fi
+    \\        sleep 0.25
+    \\    done
+    \\}
+    \\
+;
+const supervise_poll_ms = 250;
+
 fn writeStart(w: *Io.Writer, path: []const u8, wait_ms: u64, abort: bool) Io.Writer.Error!void {
+    try w.writeAll("wait_supervised ");
+    try writeWord(w, path, false);
+    try w.print(" {d}", .{wait_ms / supervise_poll_ms});
+    try w.writeAll(if (abort) " || exit 1\n" else " || :\n");
     try w.writeAll("s6-svc -u ");
     try writeWord(w, path, false);
     try w.writeAll(" 2>/dev/null\n");
@@ -256,6 +279,7 @@ fn writeRun(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll(shebang);
     try writeFlags(w, flagsOf(u));
     try w.writeAll("exec 2>&1\n");
+    if (in.hard.len + in.soft.len > 0) try w.writeAll(wait_supervised_fn);
     for (in.hard) |dep| try writeStart(w, dep, hardWaitMs(u), true);
     for (in.soft) |dep| try writeStart(w, dep, soft_wait_ms, false);
     if (in.command == .native) {

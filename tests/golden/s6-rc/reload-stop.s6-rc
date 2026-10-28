@@ -7,7 +7,7 @@ longrun
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:9a008d1a377341aa
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec 2>&1
 exec /usr/bin/fake-systemd --exec reload-stop.service --stop-on-signal
 === reload-stop-srv/finish 0755
@@ -17,7 +17,7 @@ exec /usr/bin/fake-systemd --exec reload-stop.service --stop-on-signal
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:11bdcf4a570d33a0
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -38,7 +38,7 @@ reload-stop-log
 Unit: reload-stop.service
 Source: /usr/lib/systemd/system/reload-stop.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: producer-for xxh3:81d13fa02d3f24bb
 Body-Hash: timeout-kill xxh3:cbe2b030b9d6484e
@@ -52,7 +52,7 @@ longrun
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:03b3037d3fd35faa
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec /usr/bin/fake-systemd --log reload-stop.service
 === reload-stop-log/consumer-for 0644
 reload-stop-srv
@@ -63,7 +63,7 @@ reload-stop
 Unit: reload-stop.service
 Source: /usr/lib/systemd/system/reload-stop.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: consumer-for xxh3:d5229817218bc32b
 Body-Hash: pipeline-name xxh3:e903d0ed66b5128a

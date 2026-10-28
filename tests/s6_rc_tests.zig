@@ -87,7 +87,7 @@ test "enable writes the pipeline, lists it in the boot bundle, compiles and upda
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const run = marker.parse(try t.read(sources ++ "/foo-srv/run")).?;
     try testing.expectEqualStrings("foo.service", run.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 s6-rc/1", run.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 s6-rc/2", run.marker.generator);
     try testing.expect(run.bodyIntact());
     try testing.expectEqualStrings("longrun\n", try t.read(sources ++ "/foo-srv/type"));
     try testing.expectEqualStrings("foo-log\n", try t.read(sources ++ "/foo-srv/producer-for"));
@@ -367,7 +367,7 @@ test "a failing s6-rc change fails the start with its output" {
     try h.expectContains(t.stderr(), "s6-rc exited 1: s6-rc: warning: unable to start service foo-srv: command exited 1");
 }
 
-test "stop brings the pipeline down and records a clean end" {
+test "stop brings the pipeline down, waits for finish, and records a clean end" {
     var f: Fixture = .{};
     try f.init(false);
     defer f.deinit();
@@ -377,6 +377,7 @@ test "stop brings the pipeline down and records a clean end" {
     try t.write(live ++ "/servicedirs/foo-srv/supervise/exit-status", "failed 256 9\n", 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "foo" }));
     try f.expectCall(0, &.{ "s6-rc", "-l", live, "-d", "change", "foo" });
+    try f.expectCall(1, &.{ "s6-svwait", "-D", "-t", "60000", live ++ "/servicedirs/foo-srv" });
     try testing.expectEqualStrings("ok 0 0\n", try t.read(live ++ "/servicedirs/foo-srv/supervise/exit-status"));
 }
 
@@ -502,7 +503,8 @@ test "a service with ExecStop= runs its executor in stop mode, so s6-rc -d is th
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "hook" }));
     try f.expectCall(0, &.{ "s6-rc", "-l", live, "-d", "change", "hook" });
-    try testing.expectEqual(@as(usize, 1), f.sc.calls.items.len);
+    try testing.expectEqual(@as(usize, 2), f.sc.calls.items.len);
+    try f.expectCall(1, &.{ "s6-svwait", "-D", "-t", "60000", live ++ "/servicedirs/hook-srv" });
 }
 
 test "power goes through s6-linux-init-hpr" {

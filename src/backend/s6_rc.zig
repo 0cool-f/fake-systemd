@@ -39,7 +39,7 @@ const Env = interface.Env;
 const S6Rc = @This();
 
 pub const backend_name = "s6-rc";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.2. `soft_deps` is off: s6-rc starts what a service depends on and
 /// stops what depends on it, whatever the unit said.
@@ -57,6 +57,8 @@ const default_repository = "/etc/s6/repo";
 const default_boot_bundle = "default";
 /// Milliseconds `s6-svc -wu` waits for a service to come up.
 const up_wait_ms = 10_000;
+/// Milliseconds `s6-svwait -D` waits for the `finish` of a stopped service to end.
+const finish_wait_ms = 60_000;
 
 ctx: *core.Context,
 dirs: *const profile.BackendDirs,
@@ -773,6 +775,15 @@ fn restartOutsideRc(self: *S6Rc, env: Env, service: []const u8, loc: ?layout.Loc
     return true;
 }
 
+/// Waits until the `finish` of a stopped longrun has ended, since it records how the process
+/// ended and must not do so after `markStopped`; it is a no-op for a service nobody supervises.
+fn awaitFinish(self: *S6Rc, env: Env, servicedir: []const u8) !void {
+    _ = self;
+    if (env.ctx.dry_run) return;
+    const wait = try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{finish_wait_ms});
+    _ = try runTool(env, &.{ "s6-svwait", "-D", "-t", wait, servicedir }, .quiet);
+}
+
 fn stopService(self: *S6Rc, env: Env, service: []const u8) !void {
     const loc = self.located(service);
     const target = try self.changeName(service, loc);
@@ -781,7 +792,11 @@ fn stopService(self: *S6Rc, env: Env, service: []const u8) !void {
         const st = try self.statusOf(env, service);
         if (st.state != .inactive and st.state != .failed) return failed(env, "s6-rc", res);
     }
-    if (loc) |l| if (l.kind == .longrun) self.markStopped(env, try self.serviceDirOf(l.name));
+    const l = loc orelse return;
+    if (l.kind != .longrun) return;
+    const dir = try self.serviceDirOf(l.name);
+    try self.awaitFinish(env, dir);
+    self.markStopped(env, dir);
 }
 
 fn stop(ptr: *anyopaque, env: Env, service: []const u8) anyerror!void {

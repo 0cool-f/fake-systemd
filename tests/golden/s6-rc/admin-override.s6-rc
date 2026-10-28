@@ -7,7 +7,7 @@ longrun
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0a23168b93997cd5
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec 2>&1
 exec /opt/site/bin/site-agent
 === admin-override-srv/finish 0755
@@ -17,7 +17,7 @@ exec /opt/site/bin/site-agent
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -35,7 +35,7 @@ admin-override-log
 Unit: admin-override.service
 Source: /etc/systemd/system/admin-override.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: producer-for xxh3:a24fd6b4957abdd2
 Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
@@ -48,7 +48,7 @@ longrun
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:3cee6792b4d84e4a
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec /usr/bin/fake-systemd --log admin-override.service
 === admin-override-log/consumer-for 0644
 admin-override-srv
@@ -59,7 +59,7 @@ admin-override
 Unit: admin-override.service
 Source: /etc/systemd/system/admin-override.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: consumer-for xxh3:95e93eac3bd29ee3
 Body-Hash: pipeline-name xxh3:4b616a6b883dbce3

@@ -7,7 +7,7 @@ oneshot
 # Source: /usr/lib/systemd/system/multi-oneshot.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:8bf9fb7478732415
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 pipeline -w { /usr/bin/fake-systemd --log multi-oneshot.service }
 fdmove -c 2 1
 /usr/bin/fake-systemd --exec multi-oneshot.service
@@ -16,5 +16,5 @@ fdmove -c 2 1
 Unit: multi-oneshot.service
 Source: /usr/lib/systemd/system/multi-oneshot.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:5af6a86071bcd849

@@ -4,13 +4,28 @@
 # Unit: deps-mix.service
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:18c9188220649c60
-# Generator: fake-systemd 0.1.0 s6/2
+# Body-Hash: xxh3:a820b074d650e9d4
+# Generator: fake-systemd 0.1.0 s6/3
 exec 2>&1
+wait_supervised() {
+    s6-svok "$1" 2>/dev/null || s6-svscanctl -a "${1%/*}" 2>/dev/null
+    n=0
+    until s6-svok "$1" 2>/dev/null && s6-svstat "$1" >/dev/null 2>&1; do
+        n=$((n + 1))
+        if [ "$n" -gt "$2" ]; then
+            echo "no s6-supervise runs for $1" >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+}
+wait_supervised /service/dbus 360 || exit 1
 s6-svc -u /service/dbus 2>/dev/null
 s6-svwait -u -t 90000 /service/dbus || exit 1
+wait_supervised /service/postgresql 360 || exit 1
 s6-svc -u /service/postgresql 2>/dev/null
 s6-svwait -u -t 90000 /service/postgresql || exit 1
+wait_supervised /service/syslog 20 || :
 s6-svc -u /service/syslog 2>/dev/null
 s6-svwait -u -t 5000 /service/syslog || :
 exec /usr/bin/depsvc
@@ -21,7 +36,7 @@ exec /usr/bin/depsvc
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6/2
+# Generator: fake-systemd 0.1.0 s6/3
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -37,7 +52,7 @@ s6-svc -O .
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:702a01f63f500b0e
-# Generator: fake-systemd 0.1.0 s6/2
+# Generator: fake-systemd 0.1.0 s6/3
 exec /usr/bin/fake-systemd --log deps-mix.service
 === timeout-kill 0644
 90000
@@ -46,7 +61,7 @@ exec /usr/bin/fake-systemd --log deps-mix.service
 Unit: deps-mix.service
 Source: /usr/lib/systemd/system/deps-mix.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6/2
+Generator: fake-systemd 0.1.0 s6/3
 Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
 Starts: dbus
 Starts: postgresql

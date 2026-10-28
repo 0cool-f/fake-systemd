@@ -144,6 +144,7 @@ cat >/usr/local/bin/e2e-signals <<'X'
 #!/bin/sh
 trap 'touch /tmp/e2e-hup' HUP
 trap 'touch /tmp/e2e-winch' WINCH
+touch /tmp/e2e-signals-ready
 echo e2e-hello-from-the-service
 while :; do sleep 0.2; done
 X
@@ -317,6 +318,63 @@ else
     check "the dependency's link is removed" test ! -e "$scan/e2e-b"
 fi
 
+# --- A start while s6-svscan has not started the supervisors yet ----------------------------------------
+if [ $mode = alpine-s6 ]; then
+    unit e2e-slow-dep 'ExecStart=/bin/sleep 1000'
+    printf '[Unit]\nRequires=e2e-slow-dep.service\nAfter=e2e-slow-dep.service\n\n[Service]\nExecStart=/bin/sleep 1000\n\n[Install]\nWantedBy=multi-user.target\n' >/usr/lib/systemd/system/e2e-slow-top.service
+    svscan_pid=$(pgrep -x s6-svscan)
+    kill -STOP "$svscan_pid"
+    rm -f /tmp/e2e-slow.rc
+    (systemctl enable --now e2e-slow-top >/tmp/e2e-slow.out 2>&1; echo $? >/tmp/e2e-slow.rc) &
+    wait_for "the start links the service while s6-svscan is held" 10 test -L "$scan/e2e-slow-top"
+    sleep 2
+    refute "no supervisor runs yet" s6-svok "$scan/e2e-slow-top"
+    check "the start is still waiting for it" test ! -e /tmp/e2e-slow.rc
+    kill -CONT "$svscan_pid"
+    wait_for "the start returns once s6-svscan has started the supervisors" 20 test -s /tmp/e2e-slow.rc
+    check "the start succeeded" test "$(cat /tmp/e2e-slow.rc)" = 0
+    check "its output is clean" sh -c "! grep -v '^Created symlink' /tmp/e2e-slow.out"
+    wait_for "the required service runs" 10 svrun e2e-slow-dep
+    wait_for "the service runs" 10 svrun e2e-slow-top
+    systemctl stop e2e-slow-top e2e-slow-dep >/dev/null 2>&1
+    systemctl disable e2e-slow-top e2e-slow-dep >/dev/null 2>&1
+
+    unit e2e-nosup 'ExecStart=/bin/sleep 1000
+TimeoutStartSec=3'
+    kill -STOP "$svscan_pid"
+    began=$(date +%s)
+    expect "a start fails when no supervisor appears" 1 "" systemctl start e2e-nosup
+    check "the error says no s6-supervise runs" grep -q 'no s6-supervise runs for /service/e2e-nosup after 3000 ms' /tmp/stderr
+    check "the wait is bounded by TimeoutStartSec=" test $(($(date +%s) - began)) -le 10
+    kill -CONT "$svscan_pid"
+    wait_for "the supervisor appears once s6-svscan scans" 10 s6-svok "$scan/e2e-nosup"
+    systemctl disable e2e-nosup >/dev/null 2>&1
+
+    # The run script of a service starts a dependency whose link s6-svscan has not seen yet.
+    unit e2e-rs-dep 'ExecStart=/bin/sleep 1000'
+    printf '[Unit]\nRequires=e2e-rs-dep.service\nAfter=e2e-rs-dep.service\n\n[Service]\nExecStart=/bin/sleep 1000\n' >/usr/lib/systemd/system/e2e-rs-top.service
+    systemctl start e2e-rs-top >/dev/null 2>&1
+    systemctl stop e2e-rs-top e2e-rs-dep >/dev/null 2>&1
+    rm -f "$scan/e2e-rs-dep"
+    s6-svscanctl -an "$scan"
+    wait_for "the supervisor of the unlinked dependency is gone" 10 sh -c "! s6-svok $scan/e2e-rs-dep"
+    kill -STOP "$svscan_pid"
+    ln -s "$gen/e2e-rs-dep" "$scan/e2e-rs-dep"
+    deaths=$(s6-svdt "$scan/e2e-rs-top" | wc -l)
+    s6-svc -u "$scan/e2e-rs-top"
+    sleep 2
+    refute "the dependency has no supervisor yet" s6-svok "$scan/e2e-rs-dep"
+    kill -CONT "$svscan_pid"
+    wait_for "run waits for the supervisor and starts the dependency" 20 svrun e2e-rs-dep
+    wait_for "the service comes up" 20 svrun e2e-rs-top
+    check "run did not exit while it waited" test "$(s6-svdt "$scan/e2e-rs-top" | wc -l)" = "$deaths"
+    systemctl stop e2e-rs-top e2e-rs-dep >/dev/null 2>&1
+    systemctl disable e2e-rs-top e2e-rs-dep >/dev/null 2>&1
+    rm -f /usr/lib/systemd/system/e2e-rs-top.service /usr/lib/systemd/system/e2e-rs-dep.service
+    rm -f /usr/lib/systemd/system/e2e-slow-top.service /usr/lib/systemd/system/e2e-slow-dep.service /usr/lib/systemd/system/e2e-nosup.service
+    systemctl daemon-reload >/dev/null 2>&1
+fi
+
 # --- Templates ----------------------------------------------------------------------------------------
 printf '[Service]\nExecStart=/bin/sh -c "echo %%i >/tmp/e2e-tpl-%%i; exec sleep 1000"\n\n[Install]\nWantedBy=multi-user.target\n' >/usr/lib/systemd/system/e2e-tpl@.service
 expect "a template instance starts" 0 "" systemctl start e2e-tpl@one
@@ -378,12 +436,13 @@ expect "it is inactive after stop" 3 "inactive" systemctl is-active e2e-remain
 # --- Signals and logs ---------------------------------------------------------------------------------
 unit e2e-signals 'ExecStart=/usr/local/bin/e2e-signals'
 expect "a signal-handling service starts" 0 "" systemctl start e2e-signals
-wait_for "it runs" 5 svrun e2e-signals
+wait_for "it runs" 30 svrun e2e-signals
+wait_for "it installed its signal handlers" 30 test -e /tmp/e2e-signals-ready
 expect "kill -s HUP goes through s6-svc" 0 "" systemctl kill -s HUP e2e-signals
-wait_for "the service got SIGHUP" 5 test -e /tmp/e2e-hup
+wait_for "the service got SIGHUP" 30 test -e /tmp/e2e-hup
 expect "kill -s WINCH goes through s6-svc -s" 0 "" systemctl kill -s WINCH e2e-signals
-wait_for "the service got SIGWINCH" 5 test -e /tmp/e2e-winch
-wait_for "the service output reached the uniform log" 5 grep -q e2e-hello-from-the-service /var/log/fake-systemd/e2e-signals.service/current
+wait_for "the service got SIGWINCH" 30 test -e /tmp/e2e-winch
+wait_for "the service output reached the uniform log" 30 grep -q e2e-hello-from-the-service /var/log/fake-systemd/e2e-signals.service/current
 expect "journalctl -u shows the output of the service" 0 "e2e-hello-from-the-service" journalctl -u e2e-signals.service --no-pager
 expect "stop succeeds" 0 "" systemctl stop e2e-signals
 

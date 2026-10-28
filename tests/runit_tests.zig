@@ -463,8 +463,11 @@ test "hard and soft dependencies become sv start lines, and the services they st
     try testing.expectEqual(@as(usize, 0), t.rec.calls.items.len);
 
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
-    try testing.expectEqual(@as(usize, 1), t.rec.calls.items.len);
-    try testing.expect(t.rec.callIs(0, &.{ "sv", "start", "a" }));
+    try testing.expectEqual(@as(usize, 4), t.rec.calls.items.len);
+    try testing.expect(t.rec.callIs(0, &.{ "sv", "status", "b" }));
+    try testing.expect(t.rec.callIs(1, &.{ "sv", "status", "d" }));
+    try testing.expect(t.rec.callIs(2, &.{ "sv", "status", "c" }));
+    try testing.expect(t.rec.callIs(3, &.{ "sv", "start", "a" }));
 }
 
 test "start links the dependencies first and waits for each runsv" {

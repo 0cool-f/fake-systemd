@@ -33,7 +33,7 @@ const Env = interface.Env;
 const S6 = @This();
 
 pub const backend_name = "s6";
-pub const generator_number = 2;
+pub const generator_number = 3;
 
 /// Capabilities of §11.2. s6 has no user service manager, and no oneshot service type: a
 /// oneshot is a service that stops itself after its command.
@@ -47,13 +47,13 @@ pub const capabilities: interface.Capabilities = .{
 
 const power_tool = "s6-linux-init-hpr";
 const default_scan_dir = "/service";
-/// How long to wait for `s6-svscan` (which scans every 5 s) to start supervising a new link.
-const supervise_wait_ms = 8000;
+/// How long to wait for `s6-svscan` (which scans every 5 s) to stop supervising a removed link.
+const gone_wait_ms = 8000;
 const supervise_poll_ms = 250;
 const max_dependency_depth = 16;
 /// Milliseconds `s6-svc -wu` waits for a service to come up.
 const up_wait_ms = 10_000;
-/// Milliseconds `s6-svc -wd` waits beyond the `timeout-kill` of a service.
+/// Milliseconds `s6-svc -wD` waits beyond the `timeout-kill` of a service.
 const down_slack_ms = 5000;
 
 ctx: *core.Context,
@@ -373,24 +373,68 @@ fn markStopped(self: *S6, env: Env, service: []const u8) !void {
     self.ctx.fs.writeFileAtomic(path, "ok 0 0\n", 0o644) catch |e| env.ctx.diag.warn("{s}: cannot write {s}: {t}", .{ service, path, e });
 }
 
-/// Waits until an `s6-supervise` supervises `service`; a new link is only noticed at the next scan.
-fn waitSupervised(self: *S6, env: Env, service: []const u8) void {
-    if (env.ctx.dry_run) return;
-    const link = self.linkPath(service) catch return;
-    var waited: u64 = 0;
-    while (waited <= supervise_wait_ms) : (waited += supervise_poll_ms) {
-        if (self.supervised(env, link)) return;
-        sleepMs(env, supervise_poll_ms);
-    }
-    env.ctx.diag.warn("{s}: s6-svscan did not start supervising the service in time", .{service});
+/// True when an `s6-supervise` runs for the service directory `path` and has published its
+/// status, which is what `s6-svc -wu`, `s6-svwait` and `s6-svstat` read.
+fn ready(self: *S6, env: Env, path: []const u8) bool {
+    if (!self.supervised(env, path)) return false;
+    const res = runTool(env, &.{ "s6-svstat", path }, .capture) catch return false;
+    return res.code == 0;
 }
 
+/// Services `service` starts, and those they start in turn, that are linked.
+fn collectStarted(self: *S6, service: []const u8, out: *std.ArrayList([]const u8), depth: usize) !void {
+    if (depth > max_dependency_depth) return;
+    for (try self.dependencyNames(service)) |dep| {
+        if (!self.linked(try self.linkPath(dep))) continue;
+        const seen = for (out.items) |name| {
+            if (std.mem.eql(u8, name, dep)) break true;
+        } else false;
+        if (seen) continue;
+        try out.append(self.ctx.gpa, dep);
+        try self.collectStarted(dep, out, depth + 1);
+    }
+}
+
+/// Makes sure an `s6-supervise` runs for `service` and every service it starts before they
+/// are controlled: a link is only noticed at a scan, which is asked for when a link is new or a
+/// supervisor is missing. Fails when one is not ready within `TimeoutStartSec=`.
+fn awaitSupervisors(self: *S6, env: Env, service: []const u8, fresh: bool) !void {
+    var names: std.ArrayList([]const u8) = .empty;
+    try self.collectStarted(service, &names, 0);
+    if (self.linked(try self.linkPath(service))) try names.append(env.ctx.gpa, service);
+    var pending = fresh;
+    if (!pending) {
+        for (names.items) |name| {
+            if (self.ready(env, try self.linkPath(name))) continue;
+            pending = true;
+            break;
+        }
+    }
+    if (!pending) return;
+    self.rescan(env, false);
+    const limit = (try self.runFlags(service)).start_timeout_ms orelse 0;
+    for (names.items) |name| try self.waitSupervised(env, name, if (limit == 0) render.default_timeout_ms else limit);
+}
+
+/// Waits until an `s6-supervise` is ready for `service`.
+fn waitSupervised(self: *S6, env: Env, service: []const u8, limit_ms: u64) !void {
+    const link = try self.linkPath(service);
+    var waited: u64 = 0;
+    while (!self.ready(env, link)) {
+        if (waited >= limit_ms) {
+            env.ctx.diag.err("{s}: no s6-supervise runs for {s} after {d} ms; is s6-svscan scanning {s}?", .{ service, link, limit_ms, self.scanDir() });
+            return error.CommandFailed;
+        }
+        sleepMs(env, supervise_poll_ms);
+        waited += supervise_poll_ms;
+    }
+}
 /// Waits until the supervisor of an unlinked service has exited, which the next nuking scan of
 /// `s6-svscan` makes it do; `s6-svstat` is given the service directory because the link is gone.
 fn waitGone(self: *S6, env: Env, service: []const u8) void {
     const dir = (self.serviceDir(service) catch return) orelse return;
     var waited: u64 = 0;
-    while (waited <= supervise_wait_ms) : (waited += supervise_poll_ms) {
+    while (waited <= gone_wait_ms) : (waited += supervise_poll_ms) {
         const res = runTool(env, &.{ "s6-svstat", dir }, .capture) catch return;
         if (!native.hasStatusLine(res.stdout)) return;
         sleepMs(env, supervise_poll_ms);
@@ -410,10 +454,7 @@ fn begin(self: *S6, env: Env, service: []const u8) !void {
     if (!env.ctx.dry_run) {
         try self.linkDependencies(service, &created, 0);
         if (try self.linkIdle(service)) try created.append(env.ctx.gpa, service);
-    }
-    if (created.items.len > 0) {
-        self.rescan(env, false);
-        for (created.items) |name| self.waitSupervised(env, name);
+        try self.awaitSupervisors(env, service, created.items.len > 0);
     }
     self.forgetExit(env, service);
     const wait = try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{up_wait_ms});
@@ -465,7 +506,7 @@ fn readNumber(self: *S6, dir: []const u8, name: []const u8) ?u64 {
     return std.fmt.parseInt(u64, std.mem.trim(u8, text, " \t\r\n"), 10) catch null;
 }
 
-/// Milliseconds `s6-svc -wd` waits: the `timeout-kill` of the service plus a margin, which
+/// Milliseconds `s6-svc -wD` waits: the `timeout-kill` of the service plus a margin, which
 /// is also what native services get when they have none; none when the service is never killed.
 fn downWaitMs(self: *S6, service: []const u8) ?u64 {
     const dir = (self.serviceDir(service) catch return render.default_timeout_ms) orelse return render.default_timeout_ms;
@@ -483,7 +524,7 @@ fn stopService(self: *S6, env: Env, service: []const u8) !void {
     if (!self.supervised(env, link)) return;
     if ((try self.runFlags(service)).exec_stop) try self.runStopHook(env, service, link);
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(env.ctx.gpa, &.{ "s6-svc", "-wd" });
+    try argv.appendSlice(env.ctx.gpa, &.{ "s6-svc", "-wD" });
     if (self.downWaitMs(service)) |ms| try argv.appendSlice(env.ctx.gpa, &.{ "-T", try std.fmt.allocPrint(env.ctx.gpa, "{d}", .{ms}) });
     try argv.appendSlice(env.ctx.gpa, &.{ "-d", link });
     const res = try runTool(env, argv.items, .quiet);

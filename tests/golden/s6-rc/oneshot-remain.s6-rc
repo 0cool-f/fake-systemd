@@ -7,7 +7,7 @@ oneshot
 # Source: /usr/lib/systemd/system/oneshot-remain.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:aefc42b6545978e3
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 # fake-systemd flags: remain
 pipeline -w { /usr/bin/fake-systemd --log oneshot-remain.service }
 fdmove -c 2 1
@@ -19,7 +19,7 @@ fdmove -c 2 1
 # Source: /usr/lib/systemd/system/oneshot-remain.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:a4883ad78f1ae4d6
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 pipeline -w { /usr/bin/fake-systemd --log oneshot-remain.service }
 fdmove -c 2 1
 /usr/bin/fwctl flush
@@ -28,5 +28,5 @@ fdmove -c 2 1
 Unit: oneshot-remain.service
 Source: /usr/lib/systemd/system/oneshot-remain.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:5af6a86071bcd849

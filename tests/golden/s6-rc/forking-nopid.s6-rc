@@ -7,7 +7,7 @@ longrun
 # Source: /usr/lib/systemd/system/forking-nopid.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:b02c26a16332581a
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec 2>&1
 exec /usr/bin/fake-systemd --exec forking-nopid.service
 === forking-nopid-srv/finish 0755
@@ -17,7 +17,7 @@ exec /usr/bin/fake-systemd --exec forking-nopid.service
 # Source: /usr/lib/systemd/system/forking-nopid.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -35,7 +35,7 @@ forking-nopid-log
 Unit: forking-nopid.service
 Source: /usr/lib/systemd/system/forking-nopid.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: producer-for xxh3:44b338e058d565fd
 Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6
@@ -48,7 +48,7 @@ longrun
 # Source: /usr/lib/systemd/system/forking-nopid.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:72be9d14a9629ab0
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec /usr/bin/fake-systemd --log forking-nopid.service
 === forking-nopid-log/consumer-for 0644
 forking-nopid-srv
@@ -59,7 +59,7 @@ forking-nopid
 Unit: forking-nopid.service
 Source: /usr/lib/systemd/system/forking-nopid.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: consumer-for xxh3:9fac0b4104b95a23
 Body-Hash: pipeline-name xxh3:c55a941945e03fdf

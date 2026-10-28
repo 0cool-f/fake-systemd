@@ -6,8 +6,9 @@ longrun
 # Unit: restart-always.service
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:9c41e4700941ac6c
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Body-Hash: xxh3:4c0331ab315b69b5
+# Generator: fake-systemd 0.1.0 s6-rc/2
+# fake-systemd flags: start-timeout=0
 exec 2>&1
 exec /usr/bin/worker --queue default
 === restart-always-srv/finish 0755
@@ -17,7 +18,7 @@ exec /usr/bin/worker --queue default
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:57449c80d0afc2e8
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -39,7 +40,7 @@ SIGUSR1
 Unit: restart-always.service
 Source: /usr/lib/systemd/system/restart-always.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: producer-for xxh3:f4e50bce659ac067
 Body-Hash: timeout-kill xxh3:b521a4f3d6d0ffc6
@@ -54,7 +55,7 @@ longrun
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:d9ffc53de041c36d
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec /usr/bin/fake-systemd --log restart-always.service
 === restart-always-log/consumer-for 0644
 restart-always-srv
@@ -65,7 +66,7 @@ restart-always
 Unit: restart-always.service
 Source: /usr/lib/systemd/system/restart-always.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: consumer-for xxh3:ee713900da3c4308
 Body-Hash: pipeline-name xxh3:11d4f6bd65a9f897

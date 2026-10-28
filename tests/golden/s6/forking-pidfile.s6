@@ -4,8 +4,9 @@
 # Unit: forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:a7ac6e248b1ed14e
-# Generator: fake-systemd 0.1.0 s6/2
+# Body-Hash: xxh3:e7db7b4ddea81ea9
+# Generator: fake-systemd 0.1.0 s6/3
+# fake-systemd flags: start-timeout=30000
 exec 2>&1
 exec /usr/bin/fake-systemd --exec forking-pidfile.service
 === finish 0755
@@ -15,7 +16,7 @@ exec /usr/bin/fake-systemd --exec forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:67d49a3e055f88dc
-# Generator: fake-systemd 0.1.0 s6/2
+# Generator: fake-systemd 0.1.0 s6/3
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -35,7 +36,7 @@ fi
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:2c9fa828c92df17d
-# Generator: fake-systemd 0.1.0 s6/2
+# Generator: fake-systemd 0.1.0 s6/3
 exec /usr/bin/fake-systemd --log forking-pidfile.service
 === timeout-kill 0644
 90000
@@ -44,5 +45,5 @@ exec /usr/bin/fake-systemd --log forking-pidfile.service
 Unit: forking-pidfile.service
 Source: /usr/lib/systemd/system/forking-pidfile.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6/2
+Generator: fake-systemd 0.1.0 s6/3
 Body-Hash: timeout-kill xxh3:2cb05fc0691a1df6

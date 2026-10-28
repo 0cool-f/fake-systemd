@@ -7,7 +7,7 @@ longrun
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0f0e83045c2cd8ca
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec 2>&1
 exec /usr/bin/fake-systemd --exec notify-service.service
 === notify-service-srv/finish 0755
@@ -17,7 +17,7 @@ exec /usr/bin/fake-systemd --exec notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:6e44124b63406cbf
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 clean=
 case "$1" in
 256) case "$2" in 1|2|13|15) clean=1 ;; esac ;;
@@ -37,7 +37,7 @@ SIGINT
 Unit: notify-service.service
 Source: /usr/lib/systemd/system/notify-service.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: producer-for xxh3:639e1ad95a3d02ac
 Body-Hash: timeout-kill xxh3:182a3cb1bcc392ef
@@ -51,7 +51,7 @@ longrun
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:f044e17008c891d5
-# Generator: fake-systemd 0.1.0 s6-rc/1
+# Generator: fake-systemd 0.1.0 s6-rc/2
 exec /usr/bin/fake-systemd --log notify-service.service
 === notify-service-log/consumer-for 0644
 notify-service-srv
@@ -62,7 +62,7 @@ notify-service
 Unit: notify-service.service
 Source: /usr/lib/systemd/system/notify-service.service
 Source-Hash: xxh3:0123456789abcdef
-Generator: fake-systemd 0.1.0 s6-rc/1
+Generator: fake-systemd 0.1.0 s6-rc/2
 Body-Hash: type xxh3:391525c5570cb577
 Body-Hash: consumer-for xxh3:7cf1d7e08b7cbe59
 Body-Hash: pipeline-name xxh3:51fda8de10851f5b

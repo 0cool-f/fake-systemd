@@ -100,6 +100,10 @@ pub const Script = struct {
     fs: ?*h.core.Fs = null,
     /// File that an `s6-svwait` call creates, as the `finish` script of the service it waits for does.
     svwait_writes: ?struct { path: []const u8, text: []const u8 } = null,
+    /// Number of `s6-svok` calls on `svok_path` (any path when empty) that fail, as for a supervisor
+    /// that `s6-svscan` has not started yet.
+    svok_refusals: usize = 0,
+    svok_path: []const u8 = "",
 
     pub fn runner(s: *Script) h.backend.Runner {
         return .{ .ptr = s, .run_fn = runFn };
@@ -112,6 +116,10 @@ pub const Script = struct {
         try s.calls.append(s.gpa, copy);
         if (s.fs) |fs| if (argv.len > 1 and std.mem.eql(u8, argv[0], "s6-rc-compile")) try fs.makePath(argv[1]);
         if (s.svwait_writes) |w| if (s.fs) |fs| if (std.mem.eql(u8, argv[0], "s6-svwait")) try fs.writeFileAtomic(w.path, w.text, 0o644);
+        if (s.svok_refusals > 0 and std.mem.eql(u8, argv[0], "s6-svok") and (s.svok_path.len == 0 or std.mem.eql(u8, argv[1], s.svok_path))) {
+            s.svok_refusals -= 1;
+            return .{ .code = 1 };
+        }
         for (s.rules) |r| {
             if (r.prefix.len > argv.len) continue;
             const same = for (r.prefix, argv[0..r.prefix.len]) |a, b| {

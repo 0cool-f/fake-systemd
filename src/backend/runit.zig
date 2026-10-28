@@ -603,6 +603,19 @@ fn waitSupervised(self: *Runit, env: Env, service: []const u8) void {
     env.ctx.diag.warn("{s}: runsvdir did not start supervising the service in time", .{service});
 }
 
+/// Waits until a `runsv` supervises each service `service` starts, and those they start in
+/// turn, since their `run` scripts `sv start` them.
+fn waitDependencies(self: *Runit, env: Env, service: []const u8, depth: usize) void {
+    if (depth > max_dependency_depth) return;
+    const deps = self.dependencies(service) catch return;
+    for (deps) |dep| {
+        const link = self.linkPath(dep) catch continue;
+        if (!self.linked(link)) continue;
+        self.waitSupervised(env, dep);
+        self.waitDependencies(env, dep, depth + 1);
+    }
+}
+
 /// Waits until the `runsv` of an unlinked service has exited, which `runsvdir` does at its
 /// next scan; `sv` is given the service directory because the name no longer resolves.
 fn waitGone(self: *Runit, env: Env, service: []const u8) void {
@@ -628,9 +641,10 @@ fn begin(self: *Runit, env: Env, service: []const u8, action: []const u8) !void 
     var created: std.ArrayList([]const u8) = .empty;
     if (!env.ctx.dry_run) {
         try self.linkDependencies(service, &created, 0);
-        if (try self.linkIdle(service)) try created.append(env.ctx.gpa, service);
+        const fresh = try self.linkIdle(service);
+        self.waitDependencies(env, service, 0);
+        if (fresh) self.waitSupervised(env, service);
     }
-    for (created.items) |name| self.waitSupervised(env, name);
     self.forgetExit(env, service);
     const pre: []const []const u8 = if (self.waitsOf(service).start) |s| try waitArgs(env.ctx.gpa, s) else &.{};
     var res = try self.runSv(env, pre, action, service, .quiet);

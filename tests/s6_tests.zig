@@ -82,7 +82,7 @@ test "enable generates the service directory, links it and asks s6-svscan to sca
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read(sv ++ "/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 s6/2", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 s6/3", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expect(t.exists(sv ++ "/foo/finish"));
     try testing.expect(t.exists(sv ++ "/foo/log/run"));
@@ -136,8 +136,64 @@ test "enable --now starts through s6-svc" {
     const t = &f.t;
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "--now", "foo" }));
     try f.expectCall(0, &.{ "s6-svscanctl", "-a", scan });
-    try f.expectCall(1, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
-    try testing.expectEqual(@as(usize, 2), f.sc.calls.items.len);
+    try f.expectCall(1, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(2, &.{ "s6-svstat", scan ++ "/foo" });
+    try f.expectCall(3, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
+    try testing.expectEqual(@as(usize, 4), f.sc.calls.items.len);
+}
+
+test "enable --now controls a service only once its supervisor is ready" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    f.sc.svok_refusals = 3;
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "--now", "foo" }));
+    try f.expectCall(0, &.{ "s6-svscanctl", "-a", scan });
+    try f.expectCall(1, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(2, &.{ "s6-svscanctl", "-a", scan });
+    try f.expectCall(3, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(4, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(5, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(6, &.{ "s6-svstat", scan ++ "/foo" });
+    try f.expectCall(7, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
+    try testing.expectEqual(@as(usize, 8), f.sc.calls.items.len);
+}
+
+test "a supervisor that never appears fails the start within TimeoutStartSec= without s6-svc" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "TimeoutStartSec=1");
+    try addSvc(t, "b", "", "");
+    f.sc.svok_refusals = 1000;
+    f.sc.svok_path = scan ++ "/b";
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "a" }));
+    try h.expectContains(t.stderr(), "b: no s6-supervise runs for /service/b after 1000 ms");
+    try testing.expect(!f.sc.called(&.{"s6-svc"}));
+}
+
+test "start waits for the supervisor of a dependency whose link an earlier enable made" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try addSvc(t, "a", "Requires=b.service", "");
+    try addSvc(t, "b", "", "");
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
+    f.sc.calls.clearRetainingCapacity();
+    f.sc.svok_refusals = 2;
+    f.sc.svok_path = scan ++ "/b";
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
+    try f.expectCall(0, &.{ "s6-svok", scan ++ "/b" });
+    try f.expectCall(1, &.{ "s6-svscanctl", "-a", scan });
+    try f.expectCall(2, &.{ "s6-svok", scan ++ "/b" });
+    try f.expectCall(3, &.{ "s6-svok", scan ++ "/b" });
+    try f.expectCall(4, &.{ "s6-svstat", scan ++ "/b" });
+    try f.expectCall(5, &.{ "s6-svok", scan ++ "/a" });
+    try f.expectCall(6, &.{ "s6-svstat", scan ++ "/a" });
+    try f.expectCall(7, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/a" });
 }
 
 test "is-enabled follows the link and the down file" {
@@ -203,8 +259,9 @@ test "start of a service that is not linked links it with down, waits for its su
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "foo" }));
     try f.expectCall(0, &.{ "s6-svscanctl", "-a", scan });
     try f.expectCall(1, &.{ "s6-svok", scan ++ "/foo" });
-    try f.expectCall(2, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
-    try testing.expectEqual(@as(usize, 3), f.sc.calls.items.len);
+    try f.expectCall(2, &.{ "s6-svstat", scan ++ "/foo" });
+    try f.expectCall(3, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
+    try testing.expectEqual(@as(usize, 4), f.sc.calls.items.len);
     try testing.expectEqualStrings(sv ++ "/foo", try f.link("foo"));
     try testing.expect(t.exists(sv ++ "/foo/down"));
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "is-enabled", "foo" }));
@@ -212,7 +269,7 @@ test "start of a service that is not linked links it with down, waits for its su
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "foo" }));
     try f.expectCall(0, &.{ "s6-svok", scan ++ "/foo" });
-    try f.expectCall(1, &.{ "s6-svc", "-wd", "-T", "95000", "-d", scan ++ "/foo" });
+    try f.expectCall(1, &.{ "s6-svc", "-wD", "-T", "95000", "-d", scan ++ "/foo" });
     try testing.expectEqualStrings(sv ++ "/foo", try f.link("foo"));
     try testing.expect(t.exists(sv ++ "/foo/down"));
 }
@@ -272,7 +329,7 @@ test "stop of a service nobody supervises does nothing, and a stop that fails wh
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "foo" }));
     try testing.expectEqual(@as(usize, 1), f.sc.calls.items.len);
     f.sc.rules = &.{
-        .{ .prefix = &.{ "s6-svc", "-wd" }, .code = 1, .stdout = "s6-svc: fatal: timed out\n" },
+        .{ .prefix = &.{ "s6-svc", "-wD" }, .code = 1, .stdout = "s6-svc: fatal: timed out\n" },
         .{ .prefix = &.{"s6-svstat"}, .stdout = up_text },
     };
     try testing.expectEqual(@as(u8, 1), t.run(&.{ "stop", "foo" }));
@@ -289,9 +346,9 @@ test "the stop wait follows the timeout-kill of the service, and none is set for
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "slow", "stubborn" }));
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "slow" }));
-    try f.expectCall(1, &.{ "s6-svc", "-wd", "-T", "12000", "-d", scan ++ "/slow" });
+    try f.expectCall(1, &.{ "s6-svc", "-wD", "-T", "12000", "-d", scan ++ "/slow" });
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "stubborn" }));
-    try f.expectCall(3, &.{ "s6-svc", "-wd", "-d", scan ++ "/stubborn" });
+    try f.expectCall(3, &.{ "s6-svc", "-wD", "-d", scan ++ "/stubborn" });
     try testing.expectEqualStrings("0\n", try t.read(sv ++ "/stubborn/timeout-kill"));
 }
 
@@ -304,8 +361,10 @@ test "restart is a stop followed by a start" {
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "restart", "foo" }));
     try f.expectCall(0, &.{ "s6-svok", scan ++ "/foo" });
-    try f.expectCall(1, &.{ "s6-svc", "-wd", "-T", "95000", "-d", scan ++ "/foo" });
-    try f.expectCall(2, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
+    try f.expectCall(1, &.{ "s6-svc", "-wD", "-T", "95000", "-d", scan ++ "/foo" });
+    try f.expectCall(2, &.{ "s6-svok", scan ++ "/foo" });
+    try f.expectCall(3, &.{ "s6-svstat", scan ++ "/foo" });
+    try f.expectCall(4, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/foo" });
 }
 
 // ---- status, signals, reload ---------------------------------------------------------------------
@@ -401,7 +460,7 @@ test "a service with ExecStop= runs its executor in stop mode, so s6-svc -d is t
     f.sc.calls.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "stop", "hook" }));
     try f.expectCall(0, &.{ "s6-svok", scan ++ "/hook" });
-    try f.expectCall(1, &.{ "s6-svc", "-wd", "-T", "55000", "-d", scan ++ "/hook" });
+    try f.expectCall(1, &.{ "s6-svc", "-wD", "-T", "55000", "-d", scan ++ "/hook" });
     try testing.expectEqual(@as(usize, 2), f.sc.calls.items.len);
 }
 
@@ -418,7 +477,7 @@ test "a oneshot that holds after its command gets ExecStop= from the backend bef
     try f.expectCall(0, &.{ "s6-svok", scan ++ "/keep" });
     try f.expectCall(1, &.{ "s6-svc", "-O", scan ++ "/keep" });
     try f.expectCall(3, &.{ "env", "MAINPID=88", "/usr/bin/fake-systemd", "--exec", "keep.service", "--phase", "stop-main" });
-    try f.expectCall(4, &.{ "s6-svc", "-wd", "-T", "95000", "-d", scan ++ "/keep" });
+    try f.expectCall(4, &.{ "s6-svc", "-wD", "-T", "95000", "-d", scan ++ "/keep" });
 }
 
 test "daemon-reload removes links to service directories that are gone and has s6-svscan notice" {
@@ -523,9 +582,9 @@ test "hard and soft dependencies become s6-svc and s6-svwait lines, and the serv
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "a" }));
     try h.expectContains(
         try t.read(sv ++ "/a/run"),
-        "\ns6-svc -u /service/b 2>/dev/null\ns6-svwait -u -t 90000 /service/b || exit 1\ns6-svc -u /service/c 2>/dev/null\ns6-svwait -u -t 5000 /service/c || :\nexec /usr/bin/a --run\n",
+        "\nwait_supervised /service/b 360 || exit 1\ns6-svc -u /service/b 2>/dev/null\ns6-svwait -u -t 90000 /service/b || exit 1\nwait_supervised /service/c 20 || :\ns6-svc -u /service/c 2>/dev/null\ns6-svwait -u -t 5000 /service/c || :\nexec /usr/bin/a --run\n",
     );
-    try h.expectContains(try t.read(sv ++ "/b/run"), "\ns6-svwait -u -t 5000 /service/d || :\n");
+    try h.expectContains(try t.read(sv ++ "/b/run"), "\nwait_supervised /service/d 20 || :\ns6-svc -u /service/d 2>/dev/null\ns6-svwait -u -t 5000 /service/d || :\n");
     try testing.expectEqualStrings(sv ++ "/a", try f.link("a"));
     for ([_][]const u8{ "b", "c", "d" }) |dep| {
         try testing.expect(t.exists(try std.fmt.allocPrint(t.a(), "{s}/{s}/down", .{ sv, dep })));
@@ -545,8 +604,10 @@ test "start links the dependencies first and waits for each supervisor" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
     try f.expectCall(0, &.{ "s6-svscanctl", "-a", scan });
     try f.expectCall(1, &.{ "s6-svok", scan ++ "/b" });
-    try f.expectCall(2, &.{ "s6-svok", scan ++ "/a" });
-    try f.expectCall(3, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/a" });
+    try f.expectCall(2, &.{ "s6-svstat", scan ++ "/b" });
+    try f.expectCall(3, &.{ "s6-svok", scan ++ "/a" });
+    try f.expectCall(4, &.{ "s6-svstat", scan ++ "/a" });
+    try f.expectCall(5, &.{ "s6-svc", "-wu", "-T", "10000", "-u", scan ++ "/a" });
     try testing.expect(t.exists(sv ++ "/b/down"));
     try testing.expect(t.exists(sv ++ "/a/down"));
 }
@@ -560,7 +621,7 @@ test "enabled network providers become soft dependencies" {
     try t.fs.symLink(sv ++ "/dhcpcd", scan ++ "/dhcpcd");
     try addSvc(t, "net", "After=network-online.target\nWants=network-online.target", "");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "net" }));
-    try h.expectContains(try t.read(sv ++ "/net/run"), "\ns6-svc -u /service/dhcpcd 2>/dev/null\ns6-svwait -u -t 5000 /service/dhcpcd || :\n");
+    try h.expectContains(try t.read(sv ++ "/net/run"), "\nwait_supervised /service/dhcpcd 20 || :\ns6-svc -u /service/dhcpcd 2>/dev/null\ns6-svwait -u -t 5000 /service/dhcpcd || :\n");
 }
 
 // ---- executor, timers --------------------------------------------------------------------------------
@@ -771,7 +832,7 @@ test "a service generated before the meta file listed its dependencies is genera
     try t.write(meta_path, old_meta, 0o644);
     try t.fs.deleteFile(scan ++ "/b");
     const index_path = "/var/lib/fake-systemd/s6/index";
-    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=2", "generator=1");
+    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=3", "generator=2");
     // The index records the whole content of a meta file as its hash, and its fingerprint.
     const entry = try std.fmt.allocPrint(t.a(), "{s}=", .{meta_path});
     const at = std.mem.find(u8, old, entry).? + entry.len;
