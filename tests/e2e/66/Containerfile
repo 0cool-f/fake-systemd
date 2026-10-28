@@ -2,7 +2,7 @@
 # 66 0.9.1.2 with its library oblibs 0.4.0.1, built from the sources of git.obarun.org at the
 # commits of those tags: Obarun is the only distribution that packages 66, and an Alpine
 # container boots it without one. The sources are fetched by commit, which Dependabot does not track.
-FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395 AS build
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS build
 
 RUN apk add --no-cache build-base meson ninja git linux-headers pkgconf execline execline-dev lowdown
 
@@ -21,7 +21,7 @@ RUN cd /build/66 \
  && meson compile -C builddir \
  && DESTDIR=/stage meson install -C builddir
 
-FROM docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 RUN apk add --no-cache execline setpriv procps-ng util-linux-misc shadow
 COPY --from=build /stage/ /
