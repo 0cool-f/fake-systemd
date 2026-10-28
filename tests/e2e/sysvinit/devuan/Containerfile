@@ -2,4 +2,4 @@
 # Devuan runs sysvinit as PID 1 with sysv-rc and insserv, and start-stop-daemon from dpkg.
 FROM docker.io/devuan/devuan:daedalus-2026-09-17@sha256:0cd6fc5365a948c7c8afbeeb3fa4db124c68e2eca97c69a68df949c37b0c3efd
 
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends sysvinit-core insserv sysv-rc initscripts lsb-base procps && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=5 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends sysvinit-core insserv sysv-rc initscripts lsb-base procps && rm -rf /var/lib/apt/lists/*

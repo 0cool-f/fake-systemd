@@ -11,8 +11,8 @@ RUN set -eu; \
     arch="$(uname -m)"; \
     name="zig-${arch}-linux-${ZIG_VERSION}"; \
     url="https://ziglang.org/download/${ZIG_VERSION}/${name}.tar.xz"; \
-    curl -fsSLo /tmp/zig.tar.xz "$url"; \
-    curl -fsSLo /tmp/zig.tar.xz.minisig "$url.minisig"; \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/zig.tar.xz "$url"; \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/zig.tar.xz.minisig "$url.minisig"; \
     minisign -Vm /tmp/zig.tar.xz -x /tmp/zig.tar.xz.minisig -P "$ZIG_PUBKEY"; \
     mkdir -p /opt/zig; \
     tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1

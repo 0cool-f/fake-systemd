@@ -21,7 +21,7 @@ prefix="$root/.zig-cache/e2e-prefix"
 "$here/fetch-debs.sh"
 
 image=fake-systemd-e2e-nosh
-"$engine" build -q -t "$image" -f "$here/Containerfile" "$here" >/dev/null
+"$here/../lib/image.sh" "$image" "$here"
 
 # --init gives the container a PID 1 that reaps the processes the manager orphans.
 status=0

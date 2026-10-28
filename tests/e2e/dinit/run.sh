@@ -14,7 +14,7 @@ prefix="$root/.zig-cache/e2e-prefix"
 "$engine" run --rm -v "$root:/src:Z" -w /src fake-systemd-build \
     zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix .zig-cache/e2e-prefix
 
-"$engine" build -q -t fake-systemd-e2e-dinit -f "$here/Containerfile" "$here" >/dev/null
+"$here/../lib/image.sh" fake-systemd-e2e-dinit "$here"
 
 exec "$engine" run --rm \
     -v "$prefix/bin:/opt/fake-systemd:ro,Z" \

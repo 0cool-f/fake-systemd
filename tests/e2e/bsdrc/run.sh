@@ -47,10 +47,7 @@ wait_for_file() {
 }
 
 image=fake-systemd-e2e-bsdrc
-if ! "$engine" build -q -t "$image" -f "$here/Containerfile" "$here" >"$out/build.log" 2>&1; then
-    tail -n 30 "$out/build.log"
-    exit 1
-fi
+"$here/../lib/image.sh" "$image" "$here"
 chmod 777 "$out"
 
 status=0

@@ -5,7 +5,7 @@ FROM docker.io/library/debian:trixie-20260918-slim@sha256:a99cfc517144bc59b19784
 
 COPY debs.sha256 /debs/debs.sha256
 COPY debs/ /debs/
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates procps util-linux \
+RUN apt-get -o Acquire::Retries=5 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends ca-certificates procps util-linux \
     && (cd /debs && sha256sum -c debs.sha256) \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /debs/*.deb \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends /debs/*.deb \
     && rm -rf /debs /var/lib/apt/lists/*

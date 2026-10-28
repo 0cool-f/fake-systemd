@@ -709,7 +709,7 @@ The toolchain is Zig, pinned in `.zig-version` and built into a container image 
 (the Zig tarball is verified with the official minisign key):
 
 ```sh
-podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+packaging/build-toolchain.sh
 podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build -Doptimize=ReleaseSmall
 podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall
 ```

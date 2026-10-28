@@ -29,7 +29,7 @@ for mode in "$@"; do
         *) echo "unknown setup: $mode" >&2; exit 2 ;;
     esac
     echo "# setup: $mode"
-    "$engine" build -q -t "fake-systemd-e2e-s6-$image" -f "$here/$image/Containerfile" "$here/$image" >/dev/null
+    "$here/../lib/image.sh" "fake-systemd-e2e-s6-$image" "$here/$image"
     "$engine" run --rm -e "E2E_MODE=$mode" \
         -v "$prefix/bin:/opt/fake-systemd:ro,Z" \
         -v "$here:/e2e:ro,Z" \

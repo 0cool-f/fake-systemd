@@ -55,7 +55,7 @@ for mode in "$@"; do
         *) echo "unknown setup: $mode" >&2; exit 2 ;;
     esac
     image="fake-systemd-e2e-sysvinit-$mode"
-    "$engine" build -q -t "$image" -f "$here/$mode/Containerfile" "$here/$mode" >/dev/null
+    "$here/../lib/image.sh" "$image" "$here/$mode"
     rm -rf "${out:?}"/*
 
     echo "# setup: $mode, init running"

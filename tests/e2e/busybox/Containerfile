@@ -5,7 +5,7 @@
 FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS build
 
 RUN apk add --no-cache build-base linux-headers perl curl bzip2
-RUN curl -fsSL -o /busybox.tar.bz2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2 \
+RUN curl -fsSL --retry 5 --retry-all-errors -o /busybox.tar.bz2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2 \
  && echo "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4  /busybox.tar.bz2" | sha256sum -c - \
  && mkdir /src && tar -xjf /busybox.tar.bz2 -C /src --strip-components=1
 WORKDIR /src

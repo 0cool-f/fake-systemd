@@ -3,4 +3,4 @@
 # the trixie archive of the day the image is built, so the finit version is printed by the test.
 FROM docker.io/library/debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends finit procps util-linux libnss-extrausers && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=5 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends finit procps util-linux libnss-extrausers && rm -rf /var/lib/apt/lists/*

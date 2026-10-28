@@ -17,8 +17,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore the toolchain image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-cache/toolchain
+          key: toolchain-image-${{ hashFiles('Containerfile', '.zig-version', 'tests/e2e/lib/image.sh') }}
       - name: Build the toolchain image
-        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+        env:
+          IMAGE_CACHE_DIR: ${{ runner.temp }}/image-cache/toolchain
+        run: packaging/build-toolchain.sh
       - name: Check formatting
         run: podman run --rm -v "$PWD":/src:Z -w /src fake-systemd-build zig fmt --check build.zig src tests
       - name: Run unit, golden and integration tests
@@ -39,8 +46,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore the toolchain image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-cache/toolchain
+          key: toolchain-image-${{ hashFiles('Containerfile', '.zig-version', 'tests/e2e/lib/image.sh') }}
       - name: Build the toolchain image
-        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+        env:
+          IMAGE_CACHE_DIR: ${{ runner.temp }}/image-cache/toolchain
+        run: packaging/build-toolchain.sh
       - name: Build the release tarball
         env:
           TARGET: ${{ matrix.target }}
@@ -65,8 +79,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore the toolchain image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-cache/toolchain
+          key: toolchain-image-${{ hashFiles('Containerfile', '.zig-version', 'tests/e2e/lib/image.sh') }}
       - name: Build the toolchain image
-        run: podman build --build-arg ZIG_VERSION="$(cat .zig-version)" -t fake-systemd-build .
+        env:
+          IMAGE_CACHE_DIR: ${{ runner.temp }}/image-cache/toolchain
+        run: packaging/build-toolchain.sh
       - name: Cache the nosh packages
         if: matrix.suite == 'nosh'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -76,5 +97,13 @@ jobs:
       - name: Fetch the nosh packages
         if: matrix.suite == 'nosh'
         run: tests/e2e/nosh/fetch-debs.sh
+      - name: Restore the suite images
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-cache/suite
+          key: e2e-images-${{ matrix.suite }}-${{ hashFiles(format('tests/e2e/{0}/**', matrix.suite), 'tests/e2e/lib/image.sh') }}
+          restore-keys: e2e-images-${{ matrix.suite }}-
       - name: Run the ${{ matrix.suite }} end-to-end test
+        env:
+          IMAGE_CACHE_DIR: ${{ runner.temp }}/image-cache/suite
         run: tests/e2e/${{ matrix.suite }}/run.sh

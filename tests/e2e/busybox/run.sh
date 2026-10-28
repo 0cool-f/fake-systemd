@@ -19,7 +19,7 @@ prefix="$root/.zig-cache/e2e-prefix"
     zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix .zig-cache/e2e-prefix
 
 image=fake-systemd-e2e-busybox
-"$engine" build -q -t "$image" -f "$here/Containerfile" "$here" >/dev/null
+"$here/../lib/image.sh" "$image" "$here"
 
 [ "$#" -gt 0 ] || set -- runsv inittab
 

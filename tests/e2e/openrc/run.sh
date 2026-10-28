@@ -27,7 +27,7 @@ for mode in "$@"; do
         *) echo "unknown setup: $mode" >&2; exit 2 ;;
     esac
     echo "# setup: $mode"
-    "$engine" build -q -t "fake-systemd-e2e-openrc-$mode" -f "$here/$mode/Containerfile" "$here/$mode" >/dev/null
+    "$here/../lib/image.sh" "fake-systemd-e2e-openrc-$mode" "$here/$mode"
     # --init gives the container a PID 1 that reaps the daemons start-stop-daemon orphans.
     "$engine" run --rm --init \
         -v "$prefix/bin:/opt/fake-systemd:ro,Z" \
