@@ -46,6 +46,13 @@ wait_for() {
     fail "$desc" "timed out after ${secs}s: $*"
 }
 
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
+# alive PID, gone PID, changed PID OTHER  (an empty or non-numeric value fails instead of passing)
+alive() { is_pid "$1" && kill -0 "$1" 2>/dev/null; }
+gone() { is_pid "$1" && ! kill -0 "$1" 2>/dev/null; }
+changed() { is_pid "$1" && is_pid "$2" && [ "$1" != "$2" ]; }
+
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
 # nstate NAME WORD  (the State line of `system-control status` names WORD)
@@ -133,6 +140,7 @@ expect "status shows the main process" 0 "Main PID" systemctl status e2e-sleeper
 check "status shows the pid nosh has" sh -c "systemctl status e2e-sleeper | grep -q 'Main PID: $(npid e2e-sleeper)'"
 check "the main process is the unit command" cmdline_has e2e-sleeper "sleep 1000"
 first_pid=$(npid e2e-sleeper)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart succeeds" 0 "" systemctl restart e2e-sleeper
 wait_for "restart started a new process" 10 sh -c "p=\$(system-control status e2e-sleeper | sed -n 's/^[[:space:]]*Main PID: //p'); [ -n \"\$p\" ] && [ \"\$p\" != $first_pid ]"
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
@@ -168,6 +176,7 @@ RestartSec=1'
 expect "a Restart=always service starts" 0 "" systemctl start e2e-always
 wait_for "it runs" 10 active e2e-always active
 old=$(npid e2e-always)
+check "the service has a pid" is_pid "$old"
 expect "kill of the main process" 0 "" systemctl kill -s KILL e2e-always
 wait_for "nosh restarted it with a new process" 15 sh -c "p=\$(system-control status e2e-always | sed -n 's/^[[:space:]]*Main PID: //p'); [ -n \"\$p\" ] && [ \"\$p\" != $old ]"
 expect "stop succeeds" 0 "" systemctl stop e2e-always

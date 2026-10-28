@@ -50,6 +50,12 @@ wait_for() {
 
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
+# alive PID, gone PID, changed PID OTHER  (an empty or non-numeric value fails instead of passing)
+alive() { is_pid "$1" && kill -0 "$1" 2>/dev/null; }
+gone() { is_pid "$1" && ! kill -0 "$1" 2>/dev/null; }
+changed() { is_pid "$1" && is_pid "$2" && [ "$1" != "$2" ]; }
 slink() { ls /etc/rc.d/S??"$1" >/dev/null 2>&1; }
 klink() { ls /etc/rc.d/K??"$1" >/dev/null 2>&1; }
 # unit NAME BODY  (a service unit wanted by multi-user.target)
@@ -161,8 +167,9 @@ check "stopping an enabled service keeps its links" slink e2e-sleeper
 expect "restart starts a stopped service" 0 "" systemctl restart e2e-sleeper
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
 first_pid=$(instance e2e-sleeper | grep '"pid"' | tr -dc 0-9)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart of a running service succeeds" 0 "" systemctl restart e2e-sleeper
-check "restart started a new process" test "$(instance e2e-sleeper | grep '"pid"' | tr -dc 0-9)" != "$first_pid"
+check "restart started a new process" changed "$(instance e2e-sleeper | grep '"pid"' | tr -dc 0-9)" "$first_pid"
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
 expect "kill sends a signal to the service" 0 "" systemctl kill -s KILL e2e-sleeper
 wait_for "a killed service without Restart= reads failed" 5 active e2e-sleeper failed
@@ -192,6 +199,7 @@ expect "a Restart=always service starts" 0 "" systemctl start e2e-always
 check "the script has the respawn parameters of the unit" grep -q "procd_set_param respawn 10 1 5" /etc/init.d/e2e-always
 wait_for "it is active" 5 active e2e-always active
 old=$(instance e2e-always | grep '"pid"' | tr -dc 0-9)
+check "the service has a pid" is_pid "$old"
 expect "kill of the main process" 0 "" systemctl kill -s KILL e2e-always
 wait_for "procd respawned it with another pid" 10 sh -c "[ -n \"\$(ubus call service list '{\"name\": \"e2e-always\"}' | grep '\"pid\"' | tr -dc 0-9)\" ] && [ \"\$(ubus call service list '{\"name\": \"e2e-always\"}' | grep '\"pid\"' | tr -dc 0-9)\" != $old ]"
 expect "it reads active again" 0 "active" systemctl is-active e2e-always
@@ -269,9 +277,39 @@ PIDFile=/run/e2e-fork.pid
 ExecStart=/usr/local/bin/e2e-forker'
 expect "a forking unit with a pid file starts" 0 "" systemctl start e2e-fork
 wait_for "the executor follows the daemon: active" 5 active e2e-fork active
-daemon=$(cat /run/e2e-fork.pid)
+wait_for "the daemon wrote its pid file" 5 test -s /run/e2e-fork.pid
+daemon=$(cat /run/e2e-fork.pid 2>/dev/null)
+check "the pid file holds a pid" is_pid "$daemon"
+check "the daemon is alive" alive "$daemon"
 expect "stop of a forking unit succeeds" 0 "" systemctl stop e2e-fork
-wait_for "the forked daemon is gone" 5 sh -c "! kill -0 $daemon"
+wait_for "the forked daemon is gone" 5 gone "$daemon"
+
+# start and restart return once the daemon has written its pid file and the executor has read it
+cat >/usr/local/bin/e2e-slowforker <<'X'
+#!/bin/sh
+rm -f /run/e2e-slowfork.pid
+sleep 1004 </dev/null >/dev/null 2>&1 &
+pid=$!
+sleep 2
+echo $pid >/run/e2e-slowfork.pid
+X
+chmod 755 /usr/local/bin/e2e-slowforker
+unit e2e-slowfork 'Type=forking
+PIDFile=/run/e2e-slowfork.pid
+ExecStart=/usr/local/bin/e2e-slowforker'
+expect "a forking unit whose daemon is slow starts" 0 "" systemctl start e2e-slowfork
+check "start returned after the pid file was written" test -s /run/e2e-slowfork.pid
+expect "it reads active" 0 "active" systemctl is-active e2e-slowfork
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+check "the slow daemon is alive" alive "$daemon"
+rm -f /run/e2e-slowfork.pid
+expect "restart of it succeeds" 0 "" systemctl restart e2e-slowfork
+check "restart returned after the pid file was written" test -s /run/e2e-slowfork.pid
+check "restart started another daemon" changed "$(cat /run/e2e-slowfork.pid 2>/dev/null)" "$daemon"
+wait_for "the daemon of the first start is gone" 5 gone "$daemon"
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+expect "stop of it succeeds" 0 "" systemctl stop e2e-slowfork
+wait_for "the slow daemon is gone" 5 gone "$daemon"
 
 # --- Identity ---------------------------------------------------------------------------------------
 echo "e2eextra:x:1501:nobody" >>/etc/group
@@ -354,6 +392,7 @@ wait_for "the timer fired at least twice" 30 sh -c '[ "$(grep -c e2e-tick-output
 expect "journalctl -u shows the output of the timer job" 0 "e2e-tick-output" journalctl -u e2e-tick.service --no-pager
 expect "list-timers lists the timer with its service" 0 "e2e-tick.service" systemctl list-timers
 pid=$(instance fake-systemd-timers | grep '"pid"' | tr -dc 0-9)
+check "the runner has a pid" is_pid "$pid"
 expect "kill of the runner" 0 "" kill -9 "$pid"
 wait_for "procd restarted the runner, which nothing did with sysvinit" 10 sh -c "[ -n \"\$(ubus call service list '{\"name\": \"fake-systemd-timers\"}' | grep '\"running\": true')\" ]"
 expect "disable of the last built-in timer succeeds" 0 "" systemctl disable e2e-tick.timer

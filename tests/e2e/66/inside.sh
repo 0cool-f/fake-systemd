@@ -55,6 +55,13 @@ wait_for() {
     fail "$desc" "timed out after ${secs}s: $*"
 }
 
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
+# alive PID, gone PID, changed PID OTHER  (an empty or non-numeric value fails instead of passing)
+alive() { is_pid "$1" && kill -0 "$1" 2>/dev/null; }
+gone() { is_pid "$1" && ! kill -0 "$1" 2>/dev/null; }
+changed() { is_pid "$1" && is_pid "$2" && [ "$1" != "$2" ]; }
+
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
 # s66enabled NAME  (66 says the service is enabled)
@@ -150,8 +157,9 @@ check "stopping an enabled service keeps it enabled" s66enabled e2e-sleeper
 expect "restart starts a stopped service" 0 "" systemctl restart e2e-sleeper
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
 first_pid=$(s66pid e2e-sleeper)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart of a running service succeeds" 0 "" systemctl restart e2e-sleeper
-check "restart started a new process" test "$(s66pid e2e-sleeper)" != "$first_pid"
+check "restart started a new process" changed "$(s66pid e2e-sleeper)" "$first_pid"
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
 expect "kill sends a signal to the service" 0 "" systemctl kill -s KILL e2e-sleeper
 wait_for "a killed service without Restart= reads failed" 5 active e2e-sleeper failed
@@ -170,8 +178,9 @@ unit e2e-always 'ExecStart=/bin/sleep 1000
 Restart=always'
 expect "a service with Restart=always starts" 0 "" systemctl start e2e-always
 pid=$(s66pid e2e-always)
+check "the service has a pid" is_pid "$pid"
 expect "kill -s KILL ends the process" 0 "" systemctl kill -s KILL e2e-always
-wait_for "66 starts the service again" 15 sh -c "test \"\$(66 runstate -nf pid e2e-always | head -n 1)\" != $pid && test \"\$(66 runstate -nf pid e2e-always | head -n 1)\" != 0"
+wait_for "66 starts the service again" 15 sh -c "p=\$(66 runstate -nf pid e2e-always | head -n 1); [ -n \"\$p\" ] && [ \"\$p\" != 0 ] && [ \"\$p\" != $pid ]"
 expect "it is active again" 0 "active" systemctl is-active e2e-always
 expect "stop leaves it down: a restart is not a reason to start again" 0 "" systemctl stop e2e-always
 sleep 3
@@ -196,6 +205,33 @@ wait_for "it ends and reads inactive" 10 active e2e-ok3 inactive
 unit e2e-ok0 'ExecStart=/bin/sh -c "sleep 1"'
 expect "a service that exits with 0 starts" 0 "" systemctl start e2e-ok0
 wait_for "it ends and reads inactive" 10 active e2e-ok0 inactive
+
+# --- Type=forking: start returns once the executor has recorded the daemon ---------------------------------------
+cat >/usr/local/bin/e2e-slowforker <<'X'
+#!/bin/sh
+rm -f /run/e2e-slowfork.pid
+sleep 1004 </dev/null >/dev/null 2>&1 &
+pid=$!
+sleep 2
+echo $pid >/run/e2e-slowfork.pid
+X
+chmod 755 /usr/local/bin/e2e-slowforker
+unit e2e-slowfork 'Type=forking
+PIDFile=/run/e2e-slowfork.pid
+ExecStart=/usr/local/bin/e2e-slowforker'
+expect "a forking unit whose daemon is slow starts" 0 "" systemctl start e2e-slowfork
+check "start returned after the pid file was written" test -s /run/e2e-slowfork.pid
+expect "it reads active" 0 "active" systemctl is-active e2e-slowfork
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+check "the slow daemon is alive" alive "$daemon"
+rm -f /run/e2e-slowfork.pid
+expect "restart of it succeeds" 0 "" systemctl restart e2e-slowfork
+check "restart returned after the pid file was written" test -s /run/e2e-slowfork.pid
+check "restart started another daemon" changed "$(cat /run/e2e-slowfork.pid 2>/dev/null)" "$daemon"
+wait_for "the daemon of the first start is gone" 5 gone "$daemon"
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+expect "stop of it succeeds" 0 "" systemctl stop e2e-slowfork
+wait_for "the slow daemon is gone" 5 gone "$daemon"
 
 # --- Oneshots --------------------------------------------------------------------------------------------
 unit e2e-once 'Type=oneshot
@@ -262,11 +298,14 @@ cat >/usr/local/bin/e2e-signals <<'X'
 #!/bin/sh
 trap 'touch /tmp/e2e-hup' HUP
 trap 'touch /tmp/e2e-usr1' USR1
+touch /tmp/e2e-signals-ready
 while :; do sleep 1; done
 X
 chmod 755 /usr/local/bin/e2e-signals
 unit e2e-signals 'ExecStart=/usr/local/bin/e2e-signals'
+rm -f /tmp/e2e-signals-ready
 expect "a signal-handling service starts" 0 "" systemctl start e2e-signals
+wait_for "it installed its signal handlers" 30 test -e /tmp/e2e-signals-ready
 expect "kill -s HUP goes through 66 signal" 0 "" systemctl kill -s HUP e2e-signals
 wait_for "the service got SIGHUP" 5 test -e /tmp/e2e-hup
 expect "kill -s SIGUSR1 goes through 66 signal" 0 "" systemctl kill -s SIGUSR1 e2e-signals
@@ -439,6 +478,7 @@ expect "user enable --now succeeds" 0 "" as_tester systemctl --user enable --now
 check "the user service is generated in the personal directory" test -e /home/tester/.66/service/e2e-user
 expect "user is-active answers active" 0 "active" as_tester systemctl --user is-active e2e-user
 upid=$(as_tester 66 runstate -nf pid e2e-user | head -n 1)
+check "the user service has a pid" is_pid "$upid"
 check "the user service runs as the user" sh -c "ps -o user= -p $upid | grep -qx tester"
 wait_for "the user logger writes below the state directory" 5 test -s /home/tester/.local/state/fake-systemd/log/e2e-user.service/current
 expect "user stop succeeds" 0 "" as_tester systemctl --user stop e2e-user

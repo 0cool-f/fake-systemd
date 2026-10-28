@@ -48,6 +48,13 @@ wait_for() {
     fail "$desc" "timed out after ${secs}s: $*"
 }
 
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
+# alive PID, gone PID, changed PID OTHER  (an empty or non-numeric value fails instead of passing)
+alive() { is_pid "$1" && kill -0 "$1" 2>/dev/null; }
+gone() { is_pid "$1" && ! kill -0 "$1" 2>/dev/null; }
+changed() { is_pid "$1" && is_pid "$2" && [ "$1" != "$2" ]; }
+
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
 # executable FILE
@@ -148,8 +155,9 @@ check "no pid file is left" sh -c 'test ! -e /run/fake-systemd/e2e-sleeper.servi
 expect "restart starts a stopped service" 0 "" systemctl restart e2e-sleeper
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
 first_pid=$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart of a running service succeeds" 0 "" systemctl restart e2e-sleeper
-check "restart started a new process" test "$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)" != "$first_pid"
+check "restart started a new process" changed "$(cut -d" " -f1 /run/fake-systemd/e2e-sleeper.service.pid)" "$first_pid"
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
 expect "kill sends a signal to the service" 0 "" systemctl kill -s KILL e2e-sleeper
 wait_for "a killed service reads failed: nothing supervises it" 5 active e2e-sleeper failed
@@ -244,9 +252,39 @@ PIDFile=/run/e2e-fork.pid
 ExecStart=/usr/local/bin/e2e-forker'
 expect "a forking unit with a pid file starts" 0 "" systemctl start e2e-fork
 wait_for "the executor follows the daemon: active" 5 active e2e-fork active
-daemon=$(cat /run/e2e-fork.pid)
+wait_for "the daemon wrote its pid file" 5 test -s /run/e2e-fork.pid
+daemon=$(cat /run/e2e-fork.pid 2>/dev/null)
+check "the pid file holds a pid" is_pid "$daemon"
+check "the pid is a live daemon" alive "$daemon"
 expect "stop of a forking unit succeeds" 0 "" systemctl stop e2e-fork
-wait_for "the forked daemon is gone" 5 sh -c "! kill -0 $daemon"
+wait_for "the forked daemon is gone" 5 gone "$daemon"
+
+# start and restart return once the daemon has written its pid file and the executor has read it
+cat >/usr/local/bin/e2e-slowforker <<'X'
+#!/bin/sh
+rm -f /run/e2e-slowfork.pid
+sleep 1004 </dev/null >/dev/null 2>&1 &
+pid=$!
+sleep 2
+echo $pid >/run/e2e-slowfork.pid
+X
+chmod 755 /usr/local/bin/e2e-slowforker
+unit e2e-slowfork 'Type=forking
+PIDFile=/run/e2e-slowfork.pid
+ExecStart=/usr/local/bin/e2e-slowforker'
+expect "a forking unit whose daemon is slow starts" 0 "" systemctl start e2e-slowfork
+check "start returned after the pid file was written" test -s /run/e2e-slowfork.pid
+expect "it reads active" 0 "active" systemctl is-active e2e-slowfork
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+check "the slow daemon is alive" alive "$daemon"
+rm -f /run/e2e-slowfork.pid
+expect "restart of it succeeds" 0 "" systemctl restart e2e-slowfork
+check "restart returned after the pid file was written" test -s /run/e2e-slowfork.pid
+check "restart started another daemon" changed "$(cat /run/e2e-slowfork.pid 2>/dev/null)" "$daemon"
+wait_for "the daemon of the first start is gone" 5 gone "$daemon"
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+expect "stop of it succeeds" 0 "" systemctl stop e2e-slowfork
+wait_for "the slow daemon is gone" 5 gone "$daemon"
 
 # --- Dependencies: the script starts what it requires, and the hooks order them -----------------------
 unit e2e-dep 'ExecStart=/bin/sleep 1004'

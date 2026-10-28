@@ -46,6 +46,13 @@ wait_for() {
     fail "$desc" "timed out after ${secs}s: $*"
 }
 
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
+# alive PID, gone PID, changed PID OTHER  (an empty or non-numeric value fails instead of passing)
+alive() { is_pid "$1" && kill -0 "$1" 2>/dev/null; }
+gone() { is_pid "$1" && ! kill -0 "$1" 2>/dev/null; }
+changed() { is_pid "$1" && is_pid "$2" && [ "$1" != "$2" ]; }
+
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
 # hline NAME TEXT  (a line of `herd status` contains TEXT)
@@ -143,8 +150,9 @@ expect "status shows the main process" 0 "Main PID" systemctl status e2e-sleeper
 check "status shows the pid shepherd has" sh -c "systemctl status e2e-sleeper | grep -q 'Main PID: $(hpid e2e-sleeper)'"
 check "the main process is the unit command, after the executor replaced itself" cmdline_has e2e-sleeper "sleep 1000"
 first_pid=$(hpid e2e-sleeper)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart succeeds" 0 "" systemctl restart e2e-sleeper
-check "restart started a new process" sh -c "test \"\$(herd status e2e-sleeper | sed -n 's/^ *Main PID: //p')\" != $first_pid"
+check "restart started a new process" changed "$(herd status e2e-sleeper | sed -n 's/^ *Main PID: //p')" "$first_pid"
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
 expect "start of a running service succeeds" 0 "" systemctl start e2e-sleeper
 expect "stop succeeds" 0 "" systemctl stop e2e-sleeper
@@ -192,6 +200,7 @@ RestartSec=1'
 expect "a Restart=always service starts" 0 "" systemctl start e2e-always
 check "the file respawns with a delay" sh -c 'grep -q "#:respawn? #t" /etc/shepherd/available/e2e-always.scm && grep -q "#:respawn-delay 1" /etc/shepherd/available/e2e-always.scm'
 old=$(hpid e2e-always)
+check "the service has a pid" is_pid "$old"
 expect "kill of the main process" 0 "" systemctl kill -s KILL e2e-always
 wait_for "shepherd respawned it with a new process" 10 sh -c "p=\$(herd status e2e-always | sed -n 's/^ *Main PID: //p'); [ -n \"\$p\" ] && [ \"\$p\" != $old ]"
 expect "it is active again" 0 "active" systemctl is-active e2e-always
@@ -233,6 +242,33 @@ expect "start again" 0 "" systemctl start e2e-hooks
 expect "herd stop runs the same stop" 0 "" herd stop e2e-hooks
 check "ExecStop= ran for herd too" test -e /tmp/e2e-stop-alive
 check "ExecStopPost= ran for herd too" test -e /tmp/e2e-post-ran
+
+# --- Type=forking: start returns once the executor has recorded the daemon ---------------------------------------
+cat >/usr/local/bin/e2e-slowforker <<'X'
+#!/bin/sh
+rm -f /run/e2e-slowfork.pid
+sleep 1004 </dev/null >/dev/null 2>&1 &
+pid=$!
+sleep 2
+echo $pid >/run/e2e-slowfork.pid
+X
+chmod 755 /usr/local/bin/e2e-slowforker
+unit e2e-slowfork 'Type=forking
+PIDFile=/run/e2e-slowfork.pid
+ExecStart=/usr/local/bin/e2e-slowforker'
+expect "a forking unit whose daemon is slow starts" 0 "" systemctl start e2e-slowfork
+check "start returned after the pid file was written" test -s /run/e2e-slowfork.pid
+expect "it reads active" 0 "active" systemctl is-active e2e-slowfork
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+check "the slow daemon is alive" alive "$daemon"
+rm -f /run/e2e-slowfork.pid
+expect "restart of it succeeds" 0 "" systemctl restart e2e-slowfork
+check "restart returned after the pid file was written" test -s /run/e2e-slowfork.pid
+check "restart started another daemon" changed "$(cat /run/e2e-slowfork.pid 2>/dev/null)" "$daemon"
+wait_for "the daemon of the first start is gone" 5 gone "$daemon"
+daemon=$(cat /run/e2e-slowfork.pid 2>/dev/null)
+expect "stop of it succeeds" 0 "" systemctl stop e2e-slowfork
+wait_for "the slow daemon is gone" 5 gone "$daemon"
 
 # --- Reload runs ExecReload= through the executor ------------------------------------------------------
 unit e2e-reload 'ExecStart=/bin/sleep 1008

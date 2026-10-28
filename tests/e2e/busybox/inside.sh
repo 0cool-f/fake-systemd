@@ -62,6 +62,8 @@ wait_for() {
 # active NAME STATE  (systemctl is-active prints STATE)
 active() { systemctl is-active "$1" | grep -q "^$2\$"; }
 count() { [ -e "$1" ] && wc -l <"$1" | tr -d ' '; }
+# is_pid VALUE  (a number above 1)
+is_pid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ]; }
 
 install -m 755 /opt/fake-systemd/fake-systemd /usr/bin/fake-systemd
 ln -sf fake-systemd /usr/bin/systemctl
@@ -183,8 +185,9 @@ expect "stopping an enabled service keeps it enabled" 0 "enabled" systemctl is-e
 expect "restart starts a stopped service" 0 "" systemctl restart e2e-sleeper
 expect "is-active answers active after restart" 0 "active" systemctl is-active e2e-sleeper
 first_pid=$(svpid e2e-sleeper)
+check "the service has a pid" is_pid "$first_pid"
 expect "restart of a running service succeeds" 0 "" systemctl restart e2e-sleeper
-pid_changed() { new=$(svpid "$1"); [ -n "$new" ] && [ "$new" != "$2" ]; }
+pid_changed() { new=$(svpid "$1"); is_pid "$new" && [ "$new" != "$2" ]; }
 wait_for "restart started a new process" 10 pid_changed e2e-sleeper "$first_pid"
 expect "kill sends a signal to the service" 0 "" systemctl kill -s KILL e2e-sleeper
 wait_for "a killed service without Restart= is failed" 10 active e2e-sleeper failed
@@ -345,7 +348,8 @@ else
 fi
 
 # --- User services are refused with the reason ------------------------------------------------------------------
-printf '[Service]\nExecStart=/bin/sleep 1000\n[Install]\nWantedBy=default.target\n' >/usr/lib/systemd/user/e2e-user.service 2>/dev/null || { mkdir -p /usr/lib/systemd/user; printf '[Service]\nExecStart=/bin/sleep 1000\n[Install]\nWantedBy=default.target\n' >/usr/lib/systemd/user/e2e-user.service; }
+mkdir -p /usr/lib/systemd/user
+printf '[Service]\nExecStart=/bin/sleep 1000\n[Install]\nWantedBy=default.target\n' >/usr/lib/systemd/user/e2e-user.service
 expect "a user service is refused" 1 "" systemctl --user enable e2e-user
 
 # --- A runsvdir on another directory ------------------------------------------------------------------------------
@@ -413,6 +417,21 @@ if [ "$setup" = inittab ]; then
 RemainAfterExit=yes
 ExecStart=/bin/touch /tmp/e2e-boot-once-ran'
     expect "a oneshot is enabled" 0 "" systemctl enable e2e-boot-once
+fi
+if [ "$setup" = runsv ]; then
+    # Init signals every process at once at the shutdown, and a runsv that sees its service die first never runs
+    # ExecStop=, so the inittab has init stop the services through sv, whose wait it keeps, before that.
+    unit e2e-entry 'ExecStart=/bin/sleep 1000
+ExecStop=/bin/touch /tmp/e2e-entry-stop'
+    expect "a service with ExecStop= is enabled and started" 0 "" systemctl enable --now e2e-entry
+    wait_for "it runs" 20 active e2e-entry active
+    check "the inittab has the shutdown entry that stops the services through sv" grep -q '^::shutdown:sv -w [0-9]* force-stop /var/service/\*$' /etc/inittab
+    entry=$(sed -n 's/^::shutdown://p' /etc/inittab | grep 'force-stop /var/service/\*$' | sed 's|/var/service/\*$|/var/service/e2e-entry|')
+    check "the entry has a command" test -n "$entry"
+    check "the entry runs ExecStop= and waits for the service to go down" sh -c 'test -n "$1" && sh -c "$1"' sh "$entry"
+    check "ExecStop= ran" test -e /tmp/e2e-entry-stop
+    expect "the service is inactive" 3 "inactive" systemctl is-active e2e-entry
+    systemctl disable e2e-entry >/dev/null 2>&1
 fi
 printf '[Unit]\nDescription=Stopped at shutdown\n[Service]\nExecStart=/bin/sleep 1000\nExecStop=/bin/touch /out/e2e-shutdown-stop\n[Install]\nWantedBy=multi-user.target\n' >/usr/lib/systemd/system/e2e-shutdown.service
 expect "a service with ExecStop= is enabled and started for the shutdown" 0 "" systemctl enable --now e2e-shutdown
