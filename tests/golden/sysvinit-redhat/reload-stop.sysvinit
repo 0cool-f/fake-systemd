@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:4d9c89b569ea9fa8
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Daemon with reload and stop hooks
 ### BEGIN INIT INFO

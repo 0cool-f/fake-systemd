@@ -36,7 +36,7 @@ const Env = interface.Env;
 const OpenRc = @This();
 
 pub const backend_name = "openrc";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.2. `user_services` is set per instance, where OpenRC has user sessions.
 pub const capabilities: interface.Capabilities = .{

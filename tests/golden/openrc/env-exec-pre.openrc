@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:dff11a0a720cf0ae
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Web application with a prepared environment'
 command=/usr/bin/fake-systemd

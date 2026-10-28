@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:95ae15fda2efd7a6
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # Restart=on-abnormal is approximated by respawning on every exit
 description='Legacy forking daemon'
 supervisor=supervise-daemon

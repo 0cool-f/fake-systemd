@@ -39,7 +39,7 @@ const Env = interface.Env;
 const Procd = @This();
 
 pub const backend_name = "procd";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.3: dependencies start the scripts they name and order by `START`, procd
 /// supervises and respawns, and the stop links run at shutdown.

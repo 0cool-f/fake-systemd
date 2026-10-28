@@ -3,8 +3,8 @@
 # Unit: forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:fb0604a28683fd0e
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Body-Hash: xxh3:7b2d79f24cb9cce5
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Legacy forking daemon
 # Restart=on-abnormal is not honored: BSD-style rc does not supervise services, a service that dies stays dead
 # network.target: rc.local runs after rc.inet1 and rc.inet2, which bring the network up
@@ -17,7 +17,7 @@ exit_file=/run/fake-systemd/forking-pidfile.service.exit
 daemon_pid=/run/fake-systemd/forking-pidfile.service.daemon.pid
 stop_wait=100
 start_wait=30
-main_child=0
+main_child=1
 
 running() {
 	_pid=$(cat "$daemon_pid" 2>/dev/null)

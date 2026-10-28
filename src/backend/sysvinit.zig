@@ -35,7 +35,7 @@ const Env = interface.Env;
 const Sysvinit = @This();
 
 pub const backend_name = "sysvinit";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.2: dependencies as ordering only, no supervision and no restart policy.
 pub const capabilities: interface.Capabilities = .{

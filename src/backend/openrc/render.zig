@@ -384,7 +384,7 @@ fn writeBackgroundWait(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     try w.writeAll(" ] && return 0\n\t\t\t\tbreak\n\t\t\tfi\n\t\t\tif [ -s ");
     try writeWord(w, in.exec_pid_file, false);
     try w.writeAll(" ]; then\n");
-    if (sysv.mainIsChild(in.unit)) {
+    if (sysv.replacesOwnPid(in.unit)) {
         try w.writeAll("\t\t\t\tread _main _ < ");
         try writeWord(w, in.exec_pid_file, false);
         try w.writeAll("\n\t\t\t\t[ \"$_main\" != \"$_pid\" ] && return 0\n");

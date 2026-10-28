@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:4f7d18c3e2961c7f
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          user-ldap
 # Required-Start:    $remote_fs

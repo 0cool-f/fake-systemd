@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/runtime-dir.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:546cb9eddaeb8263
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          runtime-dir
 # Required-Start:    $remote_fs

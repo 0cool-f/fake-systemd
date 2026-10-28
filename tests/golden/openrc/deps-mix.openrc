@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0942bd9e55590779
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Service with many dependency kinds'
 command=/usr/bin/fake-systemd

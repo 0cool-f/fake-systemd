@@ -93,7 +93,7 @@ test "enable generates a disabled script, makes it executable and lists it in bo
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read(rc_d ++ "/rc.foo")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 bsd-rc/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 bsd-rc/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("#!/bin/sh\n", parsed.shebang);
     try testing.expectEqual(@as(u16, 0o755), (try t.fs.stat(rc_d ++ "/rc.foo")).mode);

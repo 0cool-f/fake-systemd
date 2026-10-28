@@ -989,3 +989,64 @@ test "a service generated before the meta file existed is generated again at dae
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
     _ = try f.link("b");
 }
+
+// ---- start of a forking unit waits for the daemon the executor records -------------------------------
+
+const daemon_start_time = "987654";
+
+/// A running process `pid` named `comm`, started at `daemon_start_time` by the user of the test.
+fn writeProcess(t: *h.Harness, pid: u32, comm: []const u8) !void {
+    const dir = try std.fmt.allocPrint(t.a(), "/proc/{d}", .{pid});
+    try t.write(try std.fmt.allocPrint(t.a(), "{s}/comm", .{dir}), try std.fmt.allocPrint(t.a(), "{s}\n", .{comm}), 0o644);
+    try t.write(try std.fmt.allocPrint(t.a(), "{s}/stat", .{dir}), try std.fmt.allocPrint(t.a(), "{d} ({s}) S 1 {d} {d} 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 {s} 0 0\n", .{ pid, comm, pid, pid, daemon_start_time }), 0o644);
+    const uid = std.os.linux.geteuid();
+    try t.write(try std.fmt.allocPrint(t.a(), "{s}/status", .{dir}), try std.fmt.allocPrint(t.a(), "Name:\t{s}\nUid:\t{d}\t{d}\t{d}\t{d}\n", .{ comm, uid, uid, uid, uid }), 0o644);
+}
+
+/// The executor of `fork.service` runs as pid 4242 and has recorded `recorded` as its main process.
+fn forkingFixture(f: *Fixture, timeout: []const u8, recorded: u32) !void {
+    const t = &f.t;
+    try t.write("/usr/lib/systemd/system/fork.service", try std.fmt.allocPrint(t.a(), "[Service]\nType=forking\nPIDFile=/run/fork.pid\nExecStart=/usr/bin/fork\n{s}\n[Install]\nWantedBy=multi-user.target\n", .{timeout}), 0o644);
+    try t.write("/usr/bin/fork", "#!/bin/sh\n", 0o755);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "fork" }));
+    try writeProcess(t, 4242, "fake-systemd");
+    try writeProcess(t, 4300, "daemon");
+    try t.write("/run/fake-systemd/fork.service.pid", try std.fmt.allocPrint(t.a(), "{d} {s}\n", .{ recorded, daemon_start_time }), 0o644);
+    t.rec.stdout = "run: fork: (pid 4242) 1s\n";
+    t.rec.calls.clearRetainingCapacity();
+}
+
+test "start of a forking unit returns once the executor has recorded the daemon as its main process" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try forkingFixture(&f, "", 4300);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "fork" }));
+    try testing.expect(t.rec.callIs(t.rec.calls.items.len - 1, &.{ "sv", "status", "fork" }));
+}
+
+test "start of a forking unit fails when the executor has recorded nothing but itself within TimeoutStartSec" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try forkingFixture(&f, "TimeoutStartSec=1", 4242);
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "start", "fork" }));
+    try h.expectContains(t.stderr(), "Failed to start fork.service: no daemon was recorded within TimeoutStartSec=");
+    try testing.expectEqual(@as(u8, 1), t.run(&.{ "restart", "fork" }));
+    try h.expectContains(t.stderr(), "Failed to restart fork.service: no daemon was recorded within TimeoutStartSec=");
+}
+
+test "start of a forking unit without a pid file is not waited for" {
+    var f: Fixture = .{};
+    try f.init();
+    defer f.deinit();
+    const t = &f.t;
+    try forkingFixture(&f, "TimeoutStartSec=1", 4242);
+    try t.write("/usr/lib/systemd/system/nopid.service", "[Service]\nType=forking\nExecStart=/usr/bin/fork\nTimeoutStartSec=1\n[Install]\nWantedBy=multi-user.target\n", 0o644);
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "nopid" }));
+    t.rec.calls.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "nopid" }));
+    try testing.expect(t.rec.callIs(t.rec.calls.items.len - 1, &.{ "sv", "-w", "1", "start", "nopid" }));
+}

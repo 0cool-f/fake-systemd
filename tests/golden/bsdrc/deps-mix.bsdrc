@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0488696a73268de8
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Service with many dependency kinds
 # Requires: dbus postgresql
 # Wants: syslog

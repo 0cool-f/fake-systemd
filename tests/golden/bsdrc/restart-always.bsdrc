@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/restart-always.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:75bce956f3b96309
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Always restarted worker
 # Restart=always is not honored: BSD-style rc does not supervise services, a service that dies stays dead
 

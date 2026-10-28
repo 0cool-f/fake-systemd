@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/simple-daemon.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:3611dd2cb796bd7b
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # Restart=on-failure is approximated by respawning on every exit
 description='Example metrics exporter'
 supervisor=supervise-daemon

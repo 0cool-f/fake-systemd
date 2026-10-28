@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/dbus-activated.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:bb7e7ce9433d8588
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Bus-activated helper
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

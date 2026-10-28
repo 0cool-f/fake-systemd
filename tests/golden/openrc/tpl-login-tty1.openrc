@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/tpl-login@.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:c1fc2d180b070c7d
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 description='Login prompt on tty1'
 supervisor=supervise-daemon
 command=/usr/sbin/agetty

@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:772326409229772d
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Notify-style database'
 extra_started_commands="reload"

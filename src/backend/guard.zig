@@ -321,6 +321,14 @@ fn readUnsized(ctx: *const core.Context, path: []const u8, buf: []u8) ?[]const u
     return buf[0..len];
 }
 
+/// True when process `pid` has the name `comm` in `/proc/<pid>/comm`.
+pub fn hasName(ctx: *const core.Context, pid: u32, comm: []const u8) bool {
+    const path = std.fmt.allocPrint(ctx.gpa, "/proc/{d}/comm", .{pid}) catch return false;
+    var buf: [64]u8 = undefined;
+    const text = readUnsized(ctx, path, &buf) orelse return false;
+    return std.mem.eql(u8, std.mem.trim(u8, text, " \r\n"), comm);
+}
+
 /// Real uid of process `pid` from `/proc/<pid>/status`; null when there is no such process.
 pub fn processUid(ctx: *const core.Context, pid: u32) ?u32 {
     const path = std.fmt.allocPrint(ctx.gpa, "/proc/{d}/status", .{pid}) catch return null;

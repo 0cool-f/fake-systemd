@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-vars.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:865e2cdb0be5b423
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          exec-vars
 # Required-Start:    $remote_fs

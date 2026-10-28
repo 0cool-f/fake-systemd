@@ -3,8 +3,8 @@
 # Unit: forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:2a7ba4e6b6f2a0c4
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Body-Hash: xxh3:2e6ef3131f666361
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Legacy forking daemon
 ### BEGIN INIT INFO
@@ -27,7 +27,7 @@ exit_file=/run/fake-systemd/forking-pidfile.service.exit
 daemon_pid=/run/fake-systemd/forking-pidfile.service.daemon.pid
 stop_wait=100
 start_wait=30
-main_child=0
+main_child=1
 lock_file=/var/lock/subsys/forking-pidfile
 
 running() {

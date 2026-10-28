@@ -9,6 +9,7 @@ const pipeline = @import("pipeline.zig");
 const lifecycle = @import("lifecycle.zig");
 const units = @import("units.zig");
 const timers = @import("timers.zig");
+const started = @import("started.zig");
 
 const Name = unit.name.Name;
 const Verb = cli.systemctl.Verb;
@@ -42,6 +43,12 @@ fn call(s: *Session, verb: Verb, plan: *const pipeline.Plan, service: []const u8
         else => unreachable,
     };
     result catch |e| return s.backendFailed(verb.name(), plan.name.full, e);
+    const restarted = switch (verb) {
+        .start, .restart, .try_restart => true,
+        .reload_or_restart, .try_reload_or_restart => plan.unit.?.exec_reload.len == 0,
+        else => false,
+    };
+    if (restarted) return started.awaitDaemon(s, verb.name(), plan, service);
     return Exit.success;
 }
 

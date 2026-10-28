@@ -123,7 +123,7 @@ test "Debian enable generates the script and enables it with update-rc.d without
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read(init_d ++ "/foo")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 sysvinit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 sysvinit/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("#!/bin/sh\n", parsed.shebang);
     try testing.expectEqual(@as(u16, 0o755), (try t.fs.stat(init_d ++ "/foo")).mode);

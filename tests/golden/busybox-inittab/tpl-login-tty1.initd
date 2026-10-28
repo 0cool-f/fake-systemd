@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/tpl-login@.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:483399c23c44a559
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Login prompt on tty1
 ### BEGIN INIT INFO

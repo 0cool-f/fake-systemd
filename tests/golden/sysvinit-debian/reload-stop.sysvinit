@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:efed2c45e09b983b
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          reload-stop
 # Required-Start:    $remote_fs

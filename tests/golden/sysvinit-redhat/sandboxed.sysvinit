@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/sandboxed.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:2b4916e67a8bbdce
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Heavily sandboxed daemon
 ### BEGIN INIT INFO

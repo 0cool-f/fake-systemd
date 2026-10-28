@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/forking-nopid.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:08ff8bdf12f121bf
-# Generator: fake-systemd 0.1.0 procd/1
+# Generator: fake-systemd 0.1.0 procd/2
 # Forking daemon without a pid file
 # Type=forking without PIDFile=: the daemon is started but not followed, and stop cannot signal it
 

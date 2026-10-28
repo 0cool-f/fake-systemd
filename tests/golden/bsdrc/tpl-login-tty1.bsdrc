@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/tpl-login@.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:29e0bc8fda13485e
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Login prompt on tty1
 # Restart=always is not honored: BSD-style rc does not supervise services, a service that dies stays dead
 

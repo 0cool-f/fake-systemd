@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-vars.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:5a9ff4ad5c7b6dce
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Command lines with variable expansion
 ### BEGIN INIT INFO

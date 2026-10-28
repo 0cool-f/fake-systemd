@@ -4,7 +4,7 @@
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0726804a734a8408
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Unit written by the administrator'
 command=/usr/bin/fake-systemd

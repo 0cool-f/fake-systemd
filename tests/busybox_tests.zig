@@ -61,6 +61,25 @@ test "with runsvdir in the inittab the services are runit service directories li
     try testing.expect(!t.exists("/var/service/foo"));
 }
 
+test "with runsvdir an enabled service has init stop the services through sv before it signals every process" {
+    var f: Fixture = .{};
+    try f.init(.runsv);
+    defer f.deinit();
+    const t = &f.t;
+    const before = try f.inittab();
+    try t.expectRun(0, &.{ "--dry-run", "enable", "foo" });
+    try testing.expectEqualStrings(before, try f.inittab());
+    try t.expectRun(0, &.{ "enable", "foo" });
+    try testing.expectEqualStrings(try std.mem.concat(t.a(), u8, &.{ before, "# BEGIN fake-systemd\n::shutdown:sv -w 90 force-stop /var/service/*\n# END fake-systemd\n" }), try f.inittab());
+    var told = false;
+    for (0..t.rec.calls.items.len) |i| told = told or t.rec.callIs(i, &.{ "kill", "-HUP", "1" });
+    try testing.expect(told);
+    try t.expectRun(0, &.{ "enable", "foo" });
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, try f.inittab(), "force-stop"));
+    try t.expectRun(0, &.{ "disable", "foo" });
+    try testing.expectEqualStrings(before, try f.inittab());
+}
+
 test "the scan directory of the inittab is where services are linked, and sv and the run scripts are told" {
     var f: Fixture = .{};
     try f.init(.runsv_etc);
@@ -171,7 +190,7 @@ test "without runsvdir the services are init scripts of the sysvinit kind" {
     try t.expectRun(0, &.{ "enable", "foo" });
     const parsed = marker.parse(try t.read("/etc/init.d/foo")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 sysvinit/1", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 sysvinit/2", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqual(@as(u16, 0o755), (try t.fs.stat("/etc/init.d/foo")).mode);
     try h.expectContains(t.stderr(), "foo: listed in /etc/inittab");

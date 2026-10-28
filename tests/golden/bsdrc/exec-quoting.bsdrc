@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:63959378a4416d6e
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Command lines that need quoting
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

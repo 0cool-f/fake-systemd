@@ -39,7 +39,7 @@ const Env = interface.Env;
 const BsdRc = @This();
 
 pub const backend_name = "bsd-rc";
-pub const generator_number = 1;
+pub const generator_number = 2;
 
 /// Capabilities of §11.3: the scripts of the dependencies are started first, the boot order is
 /// that of the managed block, nothing supervises, and `rc.local_shutdown` runs at shutdown.

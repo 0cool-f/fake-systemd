@@ -6,11 +6,12 @@
 //! the terminal. Entries of the block use the actions `wait`, which init runs one after the
 //! other at boot in the order of the file, and `shutdown`, which it runs before it stops
 //! everything. Neither runs on a reload of the file, so changing the block never starts or stops
-//! anything.
+//! anything. With `runsvdir` the block holds the one `shutdown` entry that stops its services.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const execline = @import("../../unit/execline.zig");
 const core_block = @import("../../core/block.zig");
+const shell = @import("../shell.zig");
 
 pub const begin_marker = "# BEGIN fake-systemd";
 pub const end_marker = "# END fake-systemd";
@@ -127,6 +128,30 @@ pub fn withServices(gpa: Allocator, text: []const u8, services: []const []const 
         text_block = aw.written();
     }
     return core_block.replace(gpa, text, begin_marker, end_marker, text_block, fault);
+}
+
+/// Seconds the entry of `withShutdownStop` waits for each service to go down.
+const shutdown_stop_wait = 90;
+
+/// `text` with the entry that makes `sv` stop every service of `scan_dir` at the shutdown, or
+/// without it when `wanted` is false. Init runs it before it signals every process at once, and a
+/// `runsv` whose service died of that signal first never runs `ExecStop=`. The rules of
+/// `withServices` for the block apply.
+pub fn withShutdownStop(gpa: Allocator, text: []const u8, scan_dir: []const u8, wanted: bool, fault: *core_block.Fault) (core_block.Error || Allocator.Error)![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var text_block: ?[]const u8 = null;
+    if (wanted) {
+        writeShutdownStop(&aw.writer, scan_dir) catch return error.OutOfMemory;
+        text_block = aw.written();
+    }
+    return core_block.replace(gpa, text, begin_marker, end_marker, text_block, fault);
+}
+
+fn writeShutdownStop(w: *std.Io.Writer, scan_dir: []const u8) std.Io.Writer.Error!void {
+    try w.print("{s}\n::shutdown:sv -w {d} force-stop ", .{ begin_marker, shutdown_stop_wait });
+    try shell.writeWord(w, scan_dir, false);
+    try w.print("/*\n{s}\n", .{end_marker});
 }
 
 const testing = std.testing;
@@ -246,4 +271,23 @@ test "a block that is not closed exactly once is not rewritten" {
     try testing.expectError(error.MalformedBlock, withServices(a, nested, &.{"app"}, "/etc/init.d", &fault));
     try testing.expectEqual(@as(usize, 2), fault.line);
     try testing.expectEqual(@as(usize, 0), (try enabledServices(a, open, "/etc/init.d")).len);
+}
+
+test "the shutdown entry stops the services of the scan directory, and goes when none is left" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var fault: core_block.Fault = undefined;
+    const plain = "::sysinit:/bin/mkdir -p /var/service\n::respawn:/bin/runsvdir /var/service\n";
+    const added = try withShutdownStop(a, plain, "/var/service", true, &fault);
+    try testing.expectEqualStrings(plain ++
+        \\# BEGIN fake-systemd
+        \\::shutdown:sv -w 90 force-stop /var/service/*
+        \\# END fake-systemd
+        \\
+    , added);
+    try testing.expectEqualStrings(added, try withShutdownStop(a, added, "/var/service", true, &fault));
+    try testing.expectEqualStrings("::sysinit:/bin/mkdir -p /var/service\n::respawn:/bin/runsvdir /var/service\n# BEGIN fake-systemd\n::shutdown:sv -w 90 force-stop '/srv/my services'/*\n# END fake-systemd\n", try withShutdownStop(a, added, "/srv/my services", true, &fault));
+    try testing.expectEqualStrings(plain, try withShutdownStop(a, added, "/var/service", false, &fault));
+    try testing.expectEqualStrings("/var/service", (try runsvdirDir(a, added)).?);
 }

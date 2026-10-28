@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:0d32b544fffe77a3
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Daemon with reload and stop hooks'
 extra_started_commands="reload"

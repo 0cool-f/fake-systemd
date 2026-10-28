@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:9b50624bb4fa5e22
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          env-exec-pre
 # Required-Start:    $remote_fs

@@ -109,18 +109,20 @@ pub fn startWait(u: *const model.Unit) u64 {
     return @min(@max(secs, 1), unlimited_wait);
 }
 
-/// True when the executor runs the main process as its own child, so that the pid it records
-/// first (its own) is replaced by the child's: `start` waits for the replacement.
-pub fn mainIsChild(u: *const model.Unit) bool {
-    return u.exec_start_pre.len == 0 and switch (u.service_type) {
-        .oneshot, .forking => false,
-        else => true,
+/// True when the executor replaces the pid it records first (its own) with the one of the main
+/// process, which `start` waits for: the child it runs, or the daemon that a forking unit names
+/// in `PIDFile=`.
+pub fn replacesOwnPid(u: *const model.Unit) bool {
+    return switch (u.service_type) {
+        .oneshot => false,
+        .forking => true,
+        else => u.exec_start_pre.len == 0,
     };
 }
 
 /// The variables `wait_started` reads.
 pub fn writeStartVariables(w: *Io.Writer, u: *const model.Unit) Io.Writer.Error!void {
-    try w.print("start_wait={d}\nmain_child={d}\n", .{ startWait(u), @intFromBool(mainIsChild(u)) });
+    try w.print("start_wait={d}\nmain_child={d}\n", .{ startWait(u), @intFromBool(replacesOwnPid(u)) });
 }
 
 /// `wait_started`: returns once the detached executor has recorded the main process or the end of
@@ -580,7 +582,7 @@ fn runSh(a: Allocator, argv: []const []const u8) !struct { code: u8, stderr: []c
 /// process that holds the daemon pid; `tail` ends in `exec sleep`, so the process keeps the name
 /// `sleep`, which stands in for `fake-systemd` in the script. A Debian script runs the executor
 /// under a `start-stop-daemon` that returns at once, a Red Hat script detaches it with `--daemon`.
-fn startOutcome(a: Allocator, variant: Variant, start_timeout_us: ?u64, setup: []const u8, tail: []const u8) !Outcome {
+fn startOutcome(a: Allocator, variant: Variant, kind: model.ServiceType, start_timeout_us: ?u64, setup: []const u8, tail: []const u8) !Outcome {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const fs: Fs = .initDir(testing.io, tmp.dir);
@@ -595,6 +597,7 @@ fn startOutcome(a: Allocator, variant: Variant, start_timeout_us: ?u64, setup: [
     const path = try std.fmt.allocPrint(a, "{s}/foo", .{dir});
 
     var u = try testUnit(a, "/usr/bin/foo");
+    u.service_type = kind;
     u.timeout_start_sec = start_timeout_us;
     const text = try script(a, .{
         .unit = &u,
@@ -651,7 +654,7 @@ test "start returns once a slow executor has recorded the main process, for both
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     for ([_]Variant{ .debian, .redhat }) |variant| {
-        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, slow_setup, "exec sleep 10");
+        const out = try startOutcome(arena.allocator(), variant, .simple, 20 * std.time.us_per_s, slow_setup, "exec sleep 10");
         if (out.start_code != 0 or out.status_code != 0) std.debug.print("{t}: start {d}, status {d}: {s}\n", .{ variant, out.start_code, out.status_code, out.stderr });
         try testing.expectEqual(@as(u8, 0), out.start_code);
         try testing.expect(out.main_recorded);
@@ -660,11 +663,24 @@ test "start returns once a slow executor has recorded the main process, for both
     }
 }
 
+const forking_setup = "echo \"$$ 1\" > \"$MAIN\"; sleep 0.4; sleep 12 & echo \"$! 1\" > \"$MAIN\"";
+
+test "start of a forking unit waits until the executor has replaced its own pid with the daemon's" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Variant{ .debian, .redhat }) |variant| {
+        const out = try startOutcome(arena.allocator(), variant, .forking, 20 * std.time.us_per_s, forking_setup, "exec sleep 10");
+        try testing.expectEqual(@as(u8, 0), out.start_code);
+        try testing.expect(out.main_recorded);
+        try testing.expect(!out.main_is_executor);
+    }
+}
+
 test "start fails when the executor dies before it recorded anything" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     for ([_]Variant{ .debian, .redhat }) |variant| {
-        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, ":", "exit 1");
+        const out = try startOutcome(arena.allocator(), variant, .simple, 20 * std.time.us_per_s, ":", "exit 1");
         try testing.expectEqual(@as(u8, 1), out.start_code);
         try testing.expect(std.mem.find(u8, out.stderr, "did not come up") != null);
     }
@@ -674,7 +690,7 @@ test "start fails when the executor does not record within TimeoutStartSec" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     for ([_]Variant{ .debian, .redhat }) |variant| {
-        const out = try startOutcome(arena.allocator(), variant, 1 * std.time.us_per_s, ":", "exec sleep 3");
+        const out = try startOutcome(arena.allocator(), variant, .simple, 1 * std.time.us_per_s, ":", "exec sleep 3");
         try testing.expectEqual(@as(u8, 1), out.start_code);
     }
 }
@@ -683,7 +699,7 @@ test "start succeeds for a service that ended before the script looked, once its
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     for ([_]Variant{ .debian, .redhat }) |variant| {
-        const out = try startOutcome(arena.allocator(), variant, 20 * std.time.us_per_s, ":", "echo 'failed 3' > \"$EXIT\"; exit 3");
+        const out = try startOutcome(arena.allocator(), variant, .simple, 20 * std.time.us_per_s, ":", "echo 'failed 3' > \"$EXIT\"; exit 3");
         try testing.expectEqual(@as(u8, 0), out.start_code);
     }
 }

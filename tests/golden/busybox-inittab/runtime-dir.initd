@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/runtime-dir.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:202d84d939dadad2
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Service with managed directories
 ### BEGIN INIT INFO

@@ -40,7 +40,7 @@ const Env = interface.Env;
 const Busybox = @This();
 
 pub const backend_name = "busybox";
-pub const generator_number = 2;
+pub const generator_number = 3;
 
 pub const Mode = enum { runsvdir, inittab };
 
@@ -279,8 +279,18 @@ fn addOrdered(self: *Busybox, list: *std.ArrayList([]const u8), service: []const
     return true;
 }
 
-/// Writes the inittab with the block listing `list`, keeping the mode of the file, and tells a
-/// running init to read it again so that its shutdown entries are the new ones.
+/// Writes `updated` as the inittab, keeping the mode of the file, and tells a running init to
+/// read it again so that its shutdown entries are the new ones.
+fn writeInittab(self: *Busybox, env: Env, updated: []const u8) !void {
+    const mode: u16 = if (self.ctx.fs.stat(inittab_path)) |st| st.mode else |_| 0o644;
+    try self.ctx.fs.writeFileAtomic(inittab_path, updated, mode);
+    if (env.online) {
+        const res = try env.runner.run(env.ctx.gpa, &.{ "kill", "-HUP", "1" }, .quiet);
+        if (res.code != 0) env.ctx.diag.warn("init did not take SIGHUP, it reads {s} at the next boot", .{inittab_path});
+    }
+}
+
+/// Writes the inittab with the block listing `list`.
 fn commit(self: *Busybox, env: Env, list: []const []const u8) !void {
     const gpa = env.ctx.gpa;
     const text = try self.readInittab();
@@ -290,17 +300,34 @@ fn commit(self: *Busybox, env: Env, list: []const []const u8) !void {
         return e;
     };
     if (env.ctx.dry_run) return;
-    const mode: u16 = if (self.ctx.fs.stat(inittab_path)) |st| st.mode else |_| 0o644;
-    try self.ctx.fs.writeFileAtomic(inittab_path, updated, mode);
-    if (env.online) {
-        const res = try env.runner.run(gpa, &.{ "kill", "-HUP", "1" }, .quiet);
-        if (res.code != 0) env.ctx.diag.warn("init did not take SIGHUP, it reads {s} at the next boot", .{inittab_path});
-    }
+    try self.writeInittab(env, updated);
+}
+
+/// With `runsvdir`, init signals every process at once at the shutdown, and a `runsv` that has
+/// seen its service die of the signal before it handles it never runs `ExecStop=`. While a
+/// service is enabled, the inittab holds the entry that has `sv` stop the services first.
+fn syncShutdownStop(self: *Busybox, env: Env) void {
+    if (env.ctx.dry_run) return;
+    // runsvdir skips the names that start with a dot.
+    var services: usize = 0;
+    for (guard.iterateOrEmpty(self.ctx, self.scan_dir) catch return) |e| services += @intFromBool(e.name.len > 0 and e.name[0] != '.');
+    const text = self.readInittab() catch return;
+    var fault: core.block.Fault = undefined;
+    const updated = inittab.withShutdownStop(env.ctx.gpa, text, self.scan_dir, services > 0, &fault) catch |e| {
+        if (e == error.MalformedBlock) core.block.report(env.ctx.diag, inittab_path, fault) else env.ctx.diag.warn("cannot update {s}: {t}", .{ inittab_path, e });
+        return;
+    };
+    if (std.mem.eql(u8, updated, text)) return;
+    self.writeInittab(env, updated) catch |e| env.ctx.diag.warn("cannot write {s}: {t}", .{ inittab_path, e });
 }
 
 fn enable(ptr: *anyopaque, env: Env, service: []const u8, opts: interface.EnableOptions) anyerror![]const interface.Change {
     const self = me(ptr);
-    if (self.mode == .runsvdir) return self.inner.enable(self.envFor(env), service, opts);
+    if (self.mode == .runsvdir) {
+        const changes = try self.inner.enable(self.envFor(env), service, opts);
+        self.syncShutdownStop(env);
+        return changes;
+    }
     if (!env.ctx.dry_run and !self.ctx.fs.exists(try self.scriptPath(service))) {
         env.ctx.diag.err("{s}: no init script found", .{service});
         return error.Unsupported;
@@ -317,7 +344,11 @@ fn enable(ptr: *anyopaque, env: Env, service: []const u8, opts: interface.Enable
 
 fn disable(ptr: *anyopaque, env: Env, service: []const u8, opts: interface.EnableOptions) anyerror![]const interface.Change {
     const self = me(ptr);
-    if (self.mode == .runsvdir) return self.inner.disable(self.envFor(env), service, opts);
+    if (self.mode == .runsvdir) {
+        const changes = try self.inner.disable(self.envFor(env), service, opts);
+        self.syncShutdownStop(env);
+        return changes;
+    }
     var list = self.enabledList();
     const at = indexOf(list.items, service) orelse return &.{};
     _ = list.orderedRemove(at);
@@ -335,7 +366,11 @@ fn isEnabled(ptr: *anyopaque, env: Env, service: []const u8) anyerror!output.Ena
 /// Entries of services whose script is gone are dropped, as when a unit is removed.
 fn reloadManager(ptr: *anyopaque, env: Env) anyerror!void {
     const self = me(ptr);
-    if (self.mode == .runsvdir) return self.inner.reloadManager(self.envFor(env));
+    if (self.mode == .runsvdir) {
+        try self.inner.reloadManager(self.envFor(env));
+        self.syncShutdownStop(env);
+        return;
+    }
     if (env.ctx.dry_run) return;
     var list = self.enabledList();
     var i: usize = 0;

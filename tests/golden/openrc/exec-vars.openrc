@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-vars.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:75a1311ce79146e8
-# Generator: fake-systemd 0.1.0 openrc/1
+# Generator: fake-systemd 0.1.0 openrc/2
 # flags: record-exit
 description='Command lines with variable expansion'
 command=/usr/bin/fake-systemd

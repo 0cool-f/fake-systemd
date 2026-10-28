@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/simple-daemon.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:f2d56a571497c93a
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Example metrics exporter
 # Restart=on-failure is not honored: BSD-style rc does not supervise services, a service that dies stays dead
 # network.target: rc.local runs after rc.inet1 and rc.inet2, which bring the network up

@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-vars.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:819a3c9b86ced5f9
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Command lines with variable expansion
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

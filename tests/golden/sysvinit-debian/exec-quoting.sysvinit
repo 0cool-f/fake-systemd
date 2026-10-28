@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/exec-quoting.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:a609bf27fe4f6540
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          exec-quoting
 # Required-Start:    $remote_fs

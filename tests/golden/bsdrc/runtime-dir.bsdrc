@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/runtime-dir.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:fd30d6c90d696291
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Service with managed directories
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:ee0cb00a1079c02a
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 ### BEGIN INIT INFO
 # Provides:          deps-mix
 # Required-Start:    $remote_fs

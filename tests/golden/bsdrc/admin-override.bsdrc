@@ -4,7 +4,7 @@
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:2c3a35da905b1bd3
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Unit written by the administrator
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

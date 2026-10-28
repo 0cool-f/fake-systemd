@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:446b832420f94e32
-# Generator: fake-systemd 0.1.0 sysvinit/1
+# Generator: fake-systemd 0.1.0 sysvinit/2
 # chkconfig: 2345 80 20
 # description: Notify-style database
 ### BEGIN INIT INFO

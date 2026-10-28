@@ -11,6 +11,7 @@ const pipeline = @import("pipeline.zig");
 const units = @import("units.zig");
 const timers = @import("timers.zig");
 const pending = @import("pending.zig");
+const started = @import("started.zig");
 
 const Name = unit.name.Name;
 const Exit = cli.output.Exit;
@@ -61,7 +62,7 @@ pub fn earlyOutcome(s: *Session, verb: []const u8, plan: *const pipeline.Plan) !
     }
 }
 
-fn stopAfterNow(s: *Session, verb: []const u8, name: []const u8, service: []const u8) u8 {
+fn stopAfterNow(s: *Session, verb: []const u8, name: []const u8, service: []const u8, plan: *const pipeline.Plan) u8 {
     if (s.ctx.offline) {
         s.offlineNotice(verb, name);
         return Exit.success;
@@ -69,6 +70,7 @@ fn stopAfterNow(s: *Session, verb: []const u8, name: []const u8, service: []cons
     const start = std.mem.eql(u8, verb, "start");
     const result = if (start) s.deps.backend.start(s.env(), service) else s.deps.backend.stop(s.env(), service);
     result catch |e| return s.backendFailed(verb, name, e);
+    if (start) return started.awaitDaemon(s, verb, plan, service);
     return Exit.success;
 }
 
@@ -131,7 +133,7 @@ pub fn enableUnit(s: *Session, name: Name, visited: *Visited, depth: usize) !u8 
         try s.printChanges(changes);
     }
     if (s.req.options.now) {
-        const c = stopAfterNow(s, "start", name.full, service);
+        const c = stopAfterNow(s, "start", name.full, service, &plan);
         if (c != 0) code = c;
     }
     if (depth < max_also_depth) {
@@ -186,7 +188,7 @@ fn disableOne(s: *Session, name: Name, plan: *const pipeline.Plan, stop_now: boo
     }
     const changes = s.deps.backend.disable(s.env(), service, enableOptions(s)) catch |e| return s.backendFailed("disable", name.full, e);
     try s.printChanges(changes);
-    if (stop_now and s.req.options.now) return stopAfterNow(s, "stop", name.full, service);
+    if (stop_now and s.req.options.now) return stopAfterNow(s, "stop", name.full, service, plan);
     return Exit.success;
 }
 

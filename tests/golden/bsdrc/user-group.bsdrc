@@ -4,7 +4,7 @@
 # Source: /usr/lib/systemd/system/user-group.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:632df29a3447787c
-# Generator: fake-systemd 0.1.0 bsd-rc/1
+# Generator: fake-systemd 0.1.0 bsd-rc/2
 # Daemon with user, group and supplementary groups
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin

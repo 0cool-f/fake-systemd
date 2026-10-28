@@ -3,20 +3,49 @@
 # Unit: tpl-login@tty1.service
 # Source: /usr/lib/systemd/system/tpl-login@.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:e338950ffd85f238
-# Generator: fake-systemd 0.1.0 procd/1
+# Body-Hash: xxh3:d34f9afda5acc202
+# Generator: fake-systemd 0.1.0 procd/2
 # Login prompt on tty1
 
 USE_PROCD=1
 START=50
 STOP=50
 
+main_pid=/run/fake-systemd/tpl-login@tty1.service.pid
+start_wait=90
+main_replaced=0
+
 start_service() {
+	procd_running tpl-login.tty1 || rm -f "$main_pid"
 	procd_open_instance
 	procd_set_param command /usr/bin/fake-systemd --exec tpl-login@tty1.service --log
 	procd_set_param respawn 10 1 5
 	procd_set_param term_timeout 90
 	procd_close_instance
+}
+
+service_started() {
+	_end=$(($(date +%s) + start_wait))
+	_i=0
+	while [ "$(date +%s)" -le "$_end" ]; do
+		_list=$(ubus call service list '{"name": "tpl-login.tty1"}')
+		_pid=$(echo "$_list" | jsonfilter -e '@["tpl-login.tty1"].instances[*].pid')
+		if [ -s "$main_pid" ]; then
+			[ "$main_replaced" -eq 0 ] && return 0
+			if [ -n "$_pid" ]; then
+				read _main _ < "$main_pid"
+				[ "$_main" != "$_pid" ] && return 0
+			fi
+		fi
+		if [ -z "$_pid" ]; then
+			_code=$(echo "$_list" | jsonfilter -e '@["tpl-login.tty1"].instances[*].exit_code')
+			case $_code in 0) return 0 ;; ?*) break ;; esac
+		fi
+		_i=$((_i + 1))
+		[ "$_i" -lt 20 ] || sleep 0.05 2>/dev/null || sleep 1
+	done
+	echo "tpl-login@tty1.service did not come up" >&2
+	return 1
 }
 
 service_stopped() {
