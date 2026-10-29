@@ -22,7 +22,7 @@ It does not implement D-Bus, socket activation, cgroups, sandboxing, or the othe
 
 ## Supported init systems
 
-| Init | Status | User services |
+| Init | System services | User services |
 |---|---|---|
 | [dinit](#dinit) | supported | yes (`dinit --user`) |
 | [runit](#runit) (Void, Artix) | supported | with turnstile |
@@ -204,6 +204,8 @@ options (`--user`, `-p`, `-o json`, ...) as unknown or invalid.
 
 ### dinit
 
+Project: [davmac314/dinit](https://github.com/davmac314/dinit).
+
 A unit becomes one service description file, named after the unit (`foo.service` becomes `foo`), in the
 directory of its tier: `/etc/dinit.d` for administrator units, `/usr/lib/dinit.d` for vendor units
 (`/usr/local/lib/dinit.d` when the unit comes from `/usr/local`), and `/run/dinit.d` for runtime units
@@ -265,6 +267,8 @@ observed with dinit 0.22. The image installs the package of Chimera without a pi
 
 ### runit
 
+Project: [smarden.org/runit](https://smarden.org/runit/).
+
 A unit becomes a service directory with `run`, `log/run`, and when the unit needs them `finish`,
 `control/t` and `fake-systemd.meta`: in `/etc/sv` on Void and in `/etc/runit/sv` on Artix, or in
 `~/.config/sv` for a user (the other distributions use the layout of Void). `enable` links the directory
@@ -319,6 +323,8 @@ layout is covered by the profile tests only, and the version of runit is that of
 
 ### s6 and s6-rc
 
+Projects: [skarnet/s6](https://github.com/skarnet/s6) and [skarnet/s6-rc](https://github.com/skarnet/s6-rc).
+
 A unit becomes the source directories of an s6-rc longrun `foo-srv` whose output feeds the logger
 `foo-log` of a pipeline named `foo` (a oneshot unit becomes an s6-rc oneshot with `up` and `down` in
 execline), or, on plain s6, a service directory linked into the scan directory. On Artix the `s6`
@@ -344,6 +350,8 @@ builds it again.
 - There are no user services.
 
 ### OpenRC
+
+Project: [OpenRC/openrc](https://github.com/OpenRC/openrc).
 
 A unit becomes an `openrc-run` script in `/etc/init.d` (`foo@bar.service` becomes `foo.bar`), and
 `enable` adds a link to it in the `default` runlevel with `rc-update`. Verified on Alpine (OpenRC
@@ -377,6 +385,8 @@ first or `TimeoutStartSec=` runs out.
 - User services need OpenRC 0.60 or later with a user session (`openrc-user`).
 
 ### sysvinit
+
+Project: [slicer69/sysvinit](https://github.com/slicer69/sysvinit).
 
 A unit becomes an LSB init script in `/etc/init.d` (`foo@bar.service` becomes `foo.bar`) with the LSB
 header that `insserv` reads, and on Red Hat the `chkconfig:` header as well. `enable` links it with
@@ -431,6 +441,8 @@ initscripts 9.03.61) was read for the lock files, not run.
 
 ### BSD-style rc (Slackware)
 
+Project: [Slackware init](https://www.slackware.com/config/init.php).
+
 A unit becomes the script `/etc/rc.d/rc.<name>` (`foo@bar.service` becomes `rc.foo.bar`), which takes
 the verbs `start`, `stop`, `restart`, `reload` and `status` and answers `status` with the exit statuses
 of the LSB. Slackware has no mechanism for a new service: `rc.M` starts a fixed list of scripts and then
@@ -464,6 +476,8 @@ of the release installed by `slackpkg`): a boot starts the enabled services from
 - There are no user services.
 
 ### procd (OpenWrt)
+
+Project: [openwrt/procd](https://github.com/openwrt/procd).
 
 A unit becomes an init script `/etc/init.d/<name>` that starts with `#!/bin/sh /etc/rc.common` and
 sets `USE_PROCD=1`, and `enable` runs `/etc/init.d/<name> enable`, which writes `S<START><name>` and
@@ -504,6 +518,8 @@ stop links.
 
 ### 66 (Obarun)
 
+Project: [Obarun/66](https://git.obarun.org/Obarun/66).
+
 A unit becomes a frontend file in 66's own format: `/usr/share/66/service` for a vendor unit,
 `/etc/66/service` for an administrator unit, `~/.66/service` for a user unit (root writes the user
 directories of the system, `/usr/share/66/service/user` and `/etc/66/service/user`, an account that is not
@@ -540,6 +556,8 @@ as PID 1 (`66 boot -c`), after a restart of the container, at shutdown, and offl
 
 ### BusyBox init
 
+Project: [BusyBox init](https://github.com/vda-linux/busybox_mirror/blob/master/init/init.c).
+
 BusyBox init runs the entries of `/etc/inittab` and has no control interface: nothing starts or stops one
 entry, and a `respawn` entry would be started again when it is stopped. The backend therefore serves what
 the system runs next to init:
@@ -571,6 +589,8 @@ the system runs next to init:
 
 ### finit
 
+Project: [finit-project/finit](https://github.com/finit-project/finit).
+
 A unit becomes `/etc/finit.d/available/<name>.conf` (`foo@bar.service` becomes `foo-bar`) with one
 `service` stanza (a `task` for a oneshot), and `enable` links it into `/etc/finit.d/enabled`, which
 finit loads at boot. Dependencies are start conditions: `Requires=` and `BindsTo=` become
@@ -596,6 +616,8 @@ it into `/run/finit/system` and reloads, and `systemctl stop` removes the link a
 
 ### GNU Shepherd
 
+Project: [shepherd/shepherd](https://codeberg.org/shepherd/shepherd).
+
 A unit becomes `/etc/shepherd/available/<name>.scm` (`~/.config/shepherd/available` for a user), Scheme
 that registers one service, and `enable` links it into `init.d`, which the configuration of `shepherd`
 loads at startup and starts. When `/etc/shepherd.scm` (`~/.config/shepherd/init.scm`) does not exist it
@@ -619,6 +641,8 @@ the stop hooks run.
   up when the service starts; the executor stays root and switches itself.
 
 ### nosh (experimental)
+
+Project: [jdebp/nosh](https://github.com/jdebp/nosh).
 
 fake-systemd translates nothing itself. A unit becomes a record in `/etc/service-bundles/fake-systemd`
 that names the unit and the directory it is in, and `system-control convert-systemd-units` of nosh makes
