@@ -7,6 +7,9 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: docker
     directories:
       - /
@@ -32,3 +35,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    # One pull request per image, covering every directory that uses it.
+    groups:
+      images:
+        group-by: dependency-name
+        patterns: ["*"]
