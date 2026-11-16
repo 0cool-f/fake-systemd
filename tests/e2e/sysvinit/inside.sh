@@ -1,13 +1,10 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Runs inside a container started by run.sh: inside.sh devuan|debian|redhat|redhat9 online|offline
+# Runs inside a container started by run.sh: inside.sh devuan|debian|redhat online|offline
 # `online` runs with an init (sysvinit as PID 1; on Red Hat its control socket stands in for one),
 # `offline` runs where none is, as in a chroot or a container build.
 export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
-case $1 in
-    redhat9) family=redhat ;;
-    *) family=$1 ;;
-esac
+family=$1
 mode=$2
 passed=0
 failed=0

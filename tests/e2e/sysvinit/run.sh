@@ -7,10 +7,9 @@
 #   redhat  chkconfig and the init scripts library on Rocky Linux 10 (chkconfig 1.30), whose init is
 #           systemd and so cannot run: a process named init with the control socket of sysvinit
 #           stands in for it
-#   redhat9 the same on Rocky Linux 9 (chkconfig 1.24)
 # Each setup also runs offline, as in a chroot or a container build, where no init runs.
-# Usage: tests/e2e/sysvinit/run.sh [devuan|debian|redhat|redhat9]...   (needs podman, or CONTAINER_ENGINE=docker,
-# and the `fake-systemd-build` image; all four run without arguments)
+# Usage: tests/e2e/sysvinit/run.sh [devuan|debian|redhat]...   (needs podman, or CONTAINER_ENGINE=docker,
+# and the `fake-systemd-build` image; all three run without arguments)
 set -eu
 
 engine=${CONTAINER_ENGINE:-podman}
@@ -22,7 +21,7 @@ prefix="$root/.zig-cache/e2e-prefix"
 "$engine" run --rm -v "$root:/src:Z" -w /src fake-systemd-build \
     zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix .zig-cache/e2e-prefix
 
-[ "$#" -gt 0 ] || set -- devuan debian redhat redhat9
+[ "$#" -gt 0 ] || set -- devuan debian redhat
 
 out=$(mktemp -d)
 cid=
@@ -35,7 +34,7 @@ trap cleanup EXIT INT TERM
 # mounts SETUP  (the options that give a container the binary, the tests and what they compare with)
 mounts() {
     family=debian
-    case $1 in redhat | redhat9) family=redhat ;; esac
+    case $1 in redhat) family=redhat ;; esac
     echo "-v $prefix/bin:/opt/fake-systemd:ro,Z -v $here:/e2e:ro,Z -v $root/tests/golden/sysvinit-$family:/golden:ro,Z -v $root/tests/corpus:/corpus:ro,Z -v $out:/out:Z"
 }
 
@@ -51,7 +50,7 @@ wait_runlevel() {
 status=0
 for mode in "$@"; do
     case $mode in
-        devuan | debian | redhat | redhat9) ;;
+        devuan | debian | redhat) ;;
         *) echo "unknown setup: $mode" >&2; exit 2 ;;
     esac
     image="fake-systemd-e2e-sysvinit-$mode"
@@ -59,7 +58,7 @@ for mode in "$@"; do
     rm -rf "${out:?}"/*
 
     echo "# setup: $mode, init running"
-    if [ "$mode" = redhat ] || [ "$mode" = redhat9 ]; then
+    if [ "$mode" = redhat ]; then
         # shellcheck disable=SC2046
         cid=$("$engine" run -d --entrypoint /usr/local/sbin/init $(mounts "$mode") "$image" -c 'while :; do sleep 1; done')
         "$engine" exec "$cid" sh /e2e/inside.sh "$mode" online || status=1

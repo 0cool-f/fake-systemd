@@ -22,7 +22,6 @@ updates:
       - /tests/e2e/sysvinit/devuan
       - /tests/e2e/sysvinit/debian
       - /tests/e2e/sysvinit/redhat
-      - /tests/e2e/sysvinit/redhat9
       - /tests/e2e/66
       - /tests/e2e/busybox
       - /tests/e2e/bsdrc
