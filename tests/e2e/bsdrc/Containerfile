@@ -2,7 +2,7 @@
 # Slackware 15.0 with sysvinit and the Slackware boot scripts, which the minimal image lacks, and
 # the system logger whose script is a native service. The image is a rolling tag (rebuilt from the
 # release and its patches), pinned by digest; slackpkg installs the packages of the release.
-FROM docker.io/aclemons/slackware:15.0@sha256:40f9b0b511e46933ff1ed5a32270c8099d6a84b98c41832a9aed480239fc5213
+FROM docker.io/aclemons/slackware:15.0@sha256:f3744d806955e2616e9239a5e7c6ae39bbffddb8bc3a9cd3e5f37a5ac8ac1775
 
 RUN slackpkg -batch=on -default_answer=y update \
     && slackpkg -batch=on -default_answer=y install sysvinit sysvinit-scripts sysvinit-functions procps-ng util-linux libcap-ng sysklogd \
