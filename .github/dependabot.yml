@@ -5,6 +5,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: docker
     directories:
       - /
@@ -28,3 +30,5 @@ updates:
       - /packaging/aur
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

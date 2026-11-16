@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Dependabot has no ecosystem for .zig-version, so this opens the bump PR instead.
+# Dependabot has no ecosystem for .zig-version, so this opens the bump PR instead and dispatches ci on
+# it, since pull requests opened with GITHUB_TOKEN start no workflow.
 name: zig-update
 
 on:
@@ -11,10 +12,11 @@ permissions: {}
 
 jobs:
   bump:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           current=$(cat .zig-version)
-          cutoff=$(date -u -d '14 days ago' +%F)
+          cutoff=$(date -u -d '7 days ago' +%F)
           latest=$(curl -fsSL https://ziglang.org/download/index.json |
               jq -r --arg cutoff "$cutoff" '
                   to_entries
@@ -44,7 +46,8 @@ jobs:
           echo "$latest" > .zig-version
           sed -i "s/^\( *\.minimum_zig_version = \)\".*\"/\1\"$latest\"/" build.zig.zon
           git -c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
-              commit -am "Bump Zig to $latest"
+              commit -am "build(deps): bump Zig to $latest"
           git push origin "$branch"
-          gh pr create --base main --head "$branch" --title "Bump Zig to $latest" \
-              --body "Zig $latest is a stable release at least 14 days old. CI validates the toolchain bump."
+          gh pr create --base main --head "$branch" --title "build(deps): bump Zig to $latest" \
+              --body "Zig $latest is a stable release at least 7 days old. CI validates the toolchain bump."
+          gh workflow run ci.yml --ref "$branch"

@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   verify-tag:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -32,7 +32,7 @@ jobs:
 
   publish:
     needs: ci
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
@@ -61,7 +61,7 @@ jobs:
   aur:
     needs: publish
     if: "!contains(github.ref_name, '-')"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     environment: aur
     permissions:
       contents: read
