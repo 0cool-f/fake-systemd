@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Rocky Linux 9 carries chkconfig 1.24, the version before the one of Rocky 10; see ../redhat.
-FROM docker.io/rockylinux/rockylinux:9.8@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+FROM docker.io/rockylinux/rockylinux:10.2@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 
 RUN dnf install -y -q chkconfig initscripts initscripts-service procps-ng util-linux findutils && dnf clean all -q
 RUN cp /usr/bin/bash /usr/local/sbin/init
