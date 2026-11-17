@@ -5,7 +5,7 @@
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:588fd275b1a629a7
-# Generator: fake-systemd 0.1.0 runit/2
+# Generator: fake-systemd 0.1.0 runit/3
 exec 2>&1
 exec /usr/bin/fake-systemd --exec env-exec-pre.service
 === finish 0755
@@ -14,8 +14,8 @@ exec /usr/bin/fake-systemd --exec env-exec-pre.service
 # Unit: env-exec-pre.service
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:c88ec85b0ca99732
-# Generator: fake-systemd 0.1.0 runit/2
+# Body-Hash: xxh3:1af116393d855203
+# Generator: fake-systemd 0.1.0 runit/3
 clean=
 case "$1" in
 -1) case $(($2 & 127)) in 1|2|13|15) clean=1 ;; esac ;;
@@ -23,7 +23,7 @@ case "$1" in
 esac
 if [ -n "$clean" ]; then verdict=ok; else verdict=failed; fi
 printf '%s %s %s\n' "$verdict" "$1" "$2" > ./supervise/exit-status
-case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
+case "$(cat supervise/stat)" in *"want "*) ;; *) sv down . ;; esac
 === log/run 0755
 #!/bin/sh
 # Generated automatically by fake-systemd. Remove this block to take ownership of the file.
@@ -31,5 +31,5 @@ case "$(cat supervise/stat)" in *"want "*) ;; *) sv once . ;; esac
 # Source: /usr/lib/systemd/system/env-exec-pre.service
 # Source-Hash: xxh3:0123456789abcdef
 # Body-Hash: xxh3:18468a7f77eb8bb1
-# Generator: fake-systemd 0.1.0 runit/2
+# Generator: fake-systemd 0.1.0 runit/3
 exec /usr/bin/fake-systemd --log env-exec-pre.service

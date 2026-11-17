@@ -50,7 +50,7 @@ test "with runsvdir in the inittab the services are runit service directories li
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read("/etc/sv/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/3", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     var buf: [256]u8 = undefined;
     try testing.expectEqualStrings("/etc/sv/foo", try t.fs.readLink("/var/service/foo", &buf));
@@ -95,7 +95,7 @@ test "the scan directory of the inittab is where services are linked, and sv and
     try h.expectContains(run, "\nexport SVDIR=/etc/service\nexec 2>&1\n");
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/3", parsed.marker.generator);
     try testing.expect(!std.mem.startsWith(u8, try t.read("/etc/sv/foo/log/run"), "export"));
     var saw_sv = false;
     for (t.rec.calls.items) |call| {
@@ -386,7 +386,7 @@ test "finish brings the service down with sv down, which BusyBox's runsv takes i
     const parsed = marker.parse(finish).?;
     try testing.expect(parsed.bodyIntact());
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/3", parsed.marker.generator);
 }
 
 test "an inittab whose block is not closed is left untouched" {

@@ -59,7 +59,7 @@ test "enable generates the service directory, links it and never calls sv" {
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "enable", "foo" }));
     const parsed = marker.parse(try t.read("/etc/sv/foo/run")).?;
     try testing.expectEqualStrings("foo.service", parsed.marker.unit);
-    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/2", parsed.marker.generator);
+    try testing.expectEqualStrings("fake-systemd 0.1.0 runit/3", parsed.marker.generator);
     try testing.expect(parsed.bodyIntact());
     try testing.expect(t.exists("/etc/sv/foo/finish"));
     try testing.expect(t.exists("/etc/sv/foo/log/run"));
@@ -572,7 +572,7 @@ test "ExecStop, ExecStopPost and KillSignal land in control/t and finish" {
     const fin = try generatedFile(t, "/etc/sv/hooked/finish");
     try h.expectContains(fin, "-1) case $(($2 & 127)) in 1|2|13|15|10) clean=1 ;; esac ;;\n0|3) clean=1 ;;\n");
     try h.expectContains(fin, "/usr/bin/fake-systemd --exec hooked.service --phase stop-post\n");
-    try h.expectContains(fin, "if [ -n \"$clean\" ]; then\n    case \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv once . ;; esac\nelse\n    case \"$(cat supervise/stat)\" in *\"want down\"*) ;; *) sleep 5 ;; esac\nfi\n");
+    try h.expectContains(fin, "if [ -n \"$clean\" ]; then\n    case \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv down . ;; esac\nelse\n    case \"$(cat supervise/stat)\" in *\"want down\"*) ;; *) sleep 5 ;; esac\nfi\n");
 }
 
 test "Restart=always without hooks has no finish script" {
@@ -689,7 +689,7 @@ test "a oneshot with RemainAfterExit keeps a process so that it stays active and
         "exec 2>&1\n/usr/bin/fake-systemd --exec fw.service || exit $?\nexec /usr/bin/sleep 2147483647\n",
         try generatedFile(t, "/etc/sv/fw/run"),
     );
-    try h.expectContains(try generatedFile(t, "/etc/sv/fw/finish"), "\ncase \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv once . ;; esac\n");
+    try h.expectContains(try generatedFile(t, "/etc/sv/fw/finish"), "\ncase \"$(cat supervise/stat)\" in *\"want \"*) ;; *) sv down . ;; esac\n");
 }
 
 // ---- user services ----
@@ -978,14 +978,14 @@ test "a service generated before the meta file existed is generated again at dae
     try t.fs.deleteFile("/etc/sv/a/fake-systemd.meta");
     try t.fs.deleteFile(enable_dir ++ "/b");
     const index_path = "/var/lib/fake-systemd/runit/index";
-    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=2", "generator=1");
+    var old = try std.mem.replaceOwned(u8, t.a(), try t.read(index_path), "generator=3", "generator=2");
     const at = std.mem.find(u8, old, ",/etc/sv/a/fake-systemd.meta=").?;
     const end = std.mem.findAnyPos(u8, old, at + 1, ",\t\n").?;
     old = try std.mem.concat(t.a(), u8, &.{ old[0..at], old[end..] });
     try t.write(index_path, old, 0o644);
     try testing.expectEqual(@as(u8, 0), t.run(&.{"daemon-reload"}));
     try h.expectContains(try t.read("/etc/sv/a/fake-systemd.meta"), "\nStarts: b\n");
-    try h.expectContains(try t.read(index_path), "generator=2");
+    try h.expectContains(try t.read(index_path), "generator=3");
     try testing.expectEqual(@as(u8, 0), t.run(&.{ "start", "a" }));
     _ = try f.link("b");
 }

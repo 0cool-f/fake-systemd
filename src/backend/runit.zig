@@ -38,7 +38,7 @@ const Env = interface.Env;
 const Runit = @This();
 
 pub const backend_name = "runit";
-pub const generator_number = 2;
+pub const generator_number = 3;
 
 /// Capabilities of §11.2. `user_services` is set per instance, where a user service manager
 /// is installed.

@@ -142,10 +142,9 @@ fn scanDirs(ptr: *anyopaque, gpa: Allocator, scope: core.Scope) anyerror![]const
     return me(ptr).inner.scanDirs(gpa, scope);
 }
 
-/// `finish` ends with `sv once .` to keep the service from starting again. The `runsv` of BusyBox
-/// takes the byte that command sends after it has seen `finish` exit when it is quick, and `once`
-/// then starts the service that just ended; `down` only sets what is wanted, whatever the state.
-const finish_once = runit_render.once_line;
+/// The `finish` of the runit backend ends with a guarded `sv down .` to keep the service from
+/// starting again; BusyBox gets the plain command, which needs no guard.
+const finish_guarded = runit_render.down_line;
 const finish_down = "sv down .\n";
 
 /// The text of a generated run or finish script as BusyBox needs it: a run script finds the
@@ -162,10 +161,10 @@ fn adaptScript(self: *Busybox, gpa: Allocator, path: []const u8, content: []cons
         try shell.writeWord(&body.writer, self.scan_dir, false);
         try body.writer.writeByte('\n');
         try body.writer.writeAll(parsed.rest);
-    } else if (std.mem.eql(u8, leaf, "finish") and std.mem.find(u8, parsed.rest, finish_once) != null) {
-        const size = std.mem.replacementSize(u8, parsed.rest, finish_once, finish_down);
+    } else if (std.mem.eql(u8, leaf, "finish") and std.mem.find(u8, parsed.rest, finish_guarded) != null) {
+        const size = std.mem.replacementSize(u8, parsed.rest, finish_guarded, finish_down);
         const text = try gpa.alloc(u8, size);
-        _ = std.mem.replace(u8, parsed.rest, finish_once, finish_down, text);
+        _ = std.mem.replace(u8, parsed.rest, finish_guarded, finish_down, text);
         try body.writer.writeAll(text);
     } else return null;
     return try marker.compose(gpa, parsed.marker.unit, parsed.marker.source, parsed.marker.source_hash, parsed.marker.generator, body.written());

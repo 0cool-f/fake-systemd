@@ -303,8 +303,8 @@ layout is covered by the profile tests only, and the version of runit is that of
   others, a oneshot, `ExecStopPost=` and a `RestartSec=` of 2 s or more (up to 24 h) get a `finish` that
   records how the process ended in `supervise/exit-status` (`status` reads `failed` from it), runs
   `ExecStopPost=` through the executor, sleeps for `RestartSec=`, and keeps the service down
-  (`sv once .`) after the exits that `Restart=` does not restart on. It sends `sv once .` only while the service is wanted up, since a
-  control byte still queued after a stop would start it again. `restart` is a stop and a start, because
+  (`sv down .`) after the exits that `Restart=` does not restart on; `runsv` may read that byte after it
+  has reaped `finish`, so it only sets what is wanted and never starts the service. `restart` is a stop and a start, because
   `sv restart` would ignore what `finish` decided.
 - `ExecStop=` is `control/t`: it runs the executor with `--phase stop-main` and the pid of the main process
   as `MAINPID`. Without `ExecStop=`, a `KillSignal=` other than `SIGTERM` is a `control/t` that sends it
@@ -567,9 +567,7 @@ the system runs next to init:
   the directory that `runsvdir` scans taken from the inittab (`/var/service` by default) and the `sv`
   applet of BusyBox behind an adapter: its messages differ, and it looks in `/var/service` unless
   `SVDIR` says otherwise, which a generated `run` that starts a requirement is told when the directory
-  is another. `finish` brings a service down with `sv down .` where runit's would use `sv once .`: the
-  `runsv` of BusyBox, when it sees `finish` exit before it reads that byte, starts the service that
-  just ended. Supervision, logger per service and restart policy are those of runit.
+  is another. `finish` there brings a service down with the plain `sv down .`, without the guard of runit's `finish`. Supervision, logger per service and restart policy are those of runit.
 - Without it the services are the init scripts of the sysvinit backend (Red Hat flavour, whose scripts run
   the executor in the background with `--daemon`), and `enable` lists the script in a block of the inittab:
   `::wait:` entries at boot, in dependency order, and `::shutdown:` entries in the reverse order. BusyBox
