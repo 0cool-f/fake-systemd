@@ -3,8 +3,8 @@
 # Unit: simple-daemon.service
 # Source: /usr/lib/systemd/system/simple-daemon.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:e6d54f07a980ec9c
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:7196b82f68ed38da
+# Generator: fake-systemd 0.1.0 procd/3
 # Example metrics exporter
 # Restart=on-failure is approximated by respawning on every exit
 
@@ -50,10 +50,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running simple-daemon && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running simple-daemon && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

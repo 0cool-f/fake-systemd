@@ -3,8 +3,8 @@
 # Unit: user-ldap.service
 # Source: /usr/lib/systemd/system/user-ldap.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:2dfe0e9d0e259378
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:dcdc69ff347e97c7
+# Generator: fake-systemd 0.1.0 procd/3
 # Daemon that runs as a directory-service account
 # User=svc-directory is not in /etc/passwd: the executor cannot switch to it
 
@@ -50,10 +50,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running user-ldap && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running user-ldap && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

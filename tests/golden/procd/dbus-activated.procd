@@ -3,8 +3,8 @@
 # Unit: dbus-activated.service
 # Source: /usr/lib/systemd/system/dbus-activated.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:377efa13e25b3bce
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:d885d6f5513a5c82
+# Generator: fake-systemd 0.1.0 procd/3
 # Bus-activated helper
 
 USE_PROCD=1
@@ -48,10 +48,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running dbus-activated && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running dbus-activated && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

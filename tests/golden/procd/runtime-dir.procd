@@ -3,8 +3,8 @@
 # Unit: runtime-dir.service
 # Source: /usr/lib/systemd/system/runtime-dir.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:54bcfc4c901d2c39
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:d0f40d2730173781
+# Generator: fake-systemd 0.1.0 procd/3
 # Service with managed directories
 
 USE_PROCD=1
@@ -56,10 +56,11 @@ stop_service() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running runtime-dir && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running runtime-dir && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 	[ -n "$_was_up" ] && /usr/bin/fake-systemd --exec runtime-dir.service --phase stop-post
 }

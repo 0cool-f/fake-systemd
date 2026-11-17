@@ -209,12 +209,13 @@ fn writeDaemonStop(w: *Io.Writer, in: Input) Io.Writer.Error!void {
     }
     try w.print(
         "\nservice_stopped() {{\n" ++
-            "\t_n=0\n" ++
-            "\twhile procd_running {s} && [ \"$_n\" -lt {d} ]; do\n" ++
-            "\t\tsleep 1\n" ++
-            "\t\t_n=$((_n + 1))\n" ++
+            "\t_end=$(($(date +%s) + {d}))\n" ++
+            "\t_i=0\n" ++
+            "\twhile procd_running {s} && [ \"$(date +%s)\" -le \"$_end\" ]; do\n" ++
+            "\t\t_i=$((_i + 1))\n" ++
+            "\t\t[ \"$_i\" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1\n" ++
             "\tdone\n",
-        .{ in.service, in.term_timeout + stop_slack },
+        .{ in.term_timeout + stop_slack, in.service },
     );
     if (needsStopPost(in)) {
         try w.writeAll("\t[ -n \"$_was_up\" ] && ");

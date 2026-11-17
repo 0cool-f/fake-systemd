@@ -3,8 +3,8 @@
 # Unit: admin-override.service
 # Source: /etc/systemd/system/admin-override.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:387c593a2e8dddb7
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:e1aeee8c24c3629d
+# Generator: fake-systemd 0.1.0 procd/3
 # Unit written by the administrator
 
 USE_PROCD=1
@@ -48,10 +48,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running admin-override && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running admin-override && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

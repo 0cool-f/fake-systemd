@@ -3,8 +3,8 @@
 # Unit: reload-stop.service
 # Source: /usr/lib/systemd/system/reload-stop.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:ad0e8393c332db72
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:039d2daa8bb96ad4
+# Generator: fake-systemd 0.1.0 procd/3
 # Daemon with reload and stop hooks
 
 USE_PROCD=1
@@ -56,10 +56,11 @@ stop_service() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running reload-stop && [ "$_n" -lt 105 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 105))
+	_i=0
+	while procd_running reload-stop && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 	[ -n "$_was_up" ] && /usr/bin/fake-systemd --exec reload-stop.service --phase stop-post
 }

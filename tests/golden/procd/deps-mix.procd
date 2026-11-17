@@ -3,8 +3,8 @@
 # Unit: deps-mix.service
 # Source: /usr/lib/systemd/system/deps-mix.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:e41c6c00ad77cf6b
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:c2401a1a350c8dc7
+# Generator: fake-systemd 0.1.0 procd/3
 # Service with many dependency kinds
 # Requires: dbus postgresql
 
@@ -57,10 +57,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running deps-mix && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running deps-mix && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

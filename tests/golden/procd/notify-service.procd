@@ -3,8 +3,8 @@
 # Unit: notify-service.service
 # Source: /usr/lib/systemd/system/notify-service.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:c9dc1127c02bec48
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:de52f69fb5dae8bc
+# Generator: fake-systemd 0.1.0 procd/3
 # Notify-style database
 # KillSignal= is not honored: procd stops an instance with SIGTERM
 
@@ -53,10 +53,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running notify-service && [ "$_n" -lt 50 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 50))
+	_i=0
+	while procd_running notify-service && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 

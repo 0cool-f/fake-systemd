@@ -3,8 +3,8 @@
 # Unit: forking-pidfile.service
 # Source: /usr/lib/systemd/system/forking-pidfile.service
 # Source-Hash: xxh3:0123456789abcdef
-# Body-Hash: xxh3:37fd7133af4d9e00
-# Generator: fake-systemd 0.1.0 procd/2
+# Body-Hash: xxh3:cc178a9b4c821791
+# Generator: fake-systemd 0.1.0 procd/3
 # Legacy forking daemon
 # Restart=on-abnormal is approximated by respawning on every exit
 
@@ -50,10 +50,11 @@ service_started() {
 }
 
 service_stopped() {
-	_n=0
-	while procd_running forking-pidfile && [ "$_n" -lt 95 ]; do
-		sleep 1
-		_n=$((_n + 1))
+	_end=$(($(date +%s) + 95))
+	_i=0
+	while procd_running forking-pidfile && [ "$(date +%s)" -le "$_end" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 100 ] || sleep 0.05 2>/dev/null || sleep 1
 	done
 }
 
