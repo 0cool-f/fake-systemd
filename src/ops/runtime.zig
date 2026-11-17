@@ -31,6 +31,11 @@ fn isActive(s: *Session, service: []const u8) bool {
 fn call(s: *Session, verb: Verb, plan: *const pipeline.Plan, service: []const u8) u8 {
     const b = s.deps.backend;
     const env = s.env();
+    const stale = switch (verb) {
+        .restart, .try_restart => started.recordedDaemon(s, plan),
+        .reload_or_restart, .try_reload_or_restart => if (plan.unit.?.exec_reload.len == 0) started.recordedDaemon(s, plan) else null,
+        else => null,
+    };
     const result = switch (verb) {
         .start => b.start(env, service),
         .stop => b.stop(env, service),
@@ -48,7 +53,7 @@ fn call(s: *Session, verb: Verb, plan: *const pipeline.Plan, service: []const u8
         .reload_or_restart, .try_reload_or_restart => plan.unit.?.exec_reload.len == 0,
         else => false,
     };
-    if (restarted) return started.awaitDaemon(s, verb.name(), plan, service);
+    if (restarted) return started.awaitDaemon(s, verb.name(), plan, service, stale);
     return Exit.success;
 }
 

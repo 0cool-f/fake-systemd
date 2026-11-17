@@ -70,7 +70,7 @@ fn stopAfterNow(s: *Session, verb: []const u8, name: []const u8, service: []cons
     const start = std.mem.eql(u8, verb, "start");
     const result = if (start) s.deps.backend.start(s.env(), service) else s.deps.backend.stop(s.env(), service);
     result catch |e| return s.backendFailed(verb, name, e);
-    if (start) return started.awaitDaemon(s, verb, plan, service);
+    if (start) return started.awaitDaemon(s, verb, plan, service, null);
     return Exit.success;
 }
 

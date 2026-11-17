@@ -43,10 +43,19 @@ fn runsExecutor(plan: *const pipeline.Plan, u: *const unit.model.Unit) bool {
     return false;
 }
 
+/// Daemon the executor has recorded for the unit of `plan`, taken before a restart. An init that
+/// restarts asynchronously keeps it recorded for a while, so it must not count as the new daemon.
+pub fn recordedDaemon(s: *Session, plan: *const pipeline.Plan) ?u32 {
+    const u = &(plan.unit orelse return null);
+    const record = executor.execPidPath(s.ctx, u.name.full) catch return null;
+    return backend_pkg.guard.recordedPid(s.ctx, record);
+}
+
 /// Waits for the executor to have recorded the daemon of `service`, for at most
 /// `TimeoutStartSec=`, and returns the exit code of the verb. A unit that is not forking with a
-/// pid file, whose init follows the pid file itself, or that is not running is left alone.
-pub fn awaitDaemon(s: *Session, verb: []const u8, plan: *const pipeline.Plan, service: []const u8) u8 {
+/// pid file, whose init follows the pid file itself, or that is not running is left alone; the
+/// recorded process `stale` is not accepted as the new daemon.
+pub fn awaitDaemon(s: *Session, verb: []const u8, plan: *const pipeline.Plan, service: []const u8, stale: ?u32) u8 {
     const u = &(plan.unit orelse return Exit.success);
     if (u.service_type != .forking or u.pid_file == null or s.ctx.dry_run or !runsExecutor(plan, u)) return Exit.success;
     const record = executor.execPidPath(s.ctx, u.name.full) catch return Exit.success;
@@ -63,7 +72,7 @@ pub fn awaitDaemon(s: *Session, verb: []const u8, plan: *const pipeline.Plan, se
             else => return Exit.success,
         }
         if (backend_pkg.guard.recordedPid(s.ctx, record)) |main| {
-            if (!backend_pkg.guard.hasName(s.ctx, main, executor_comm)) return Exit.success;
+            if (main != stale and !backend_pkg.guard.hasName(s.ctx, main, executor_comm)) return Exit.success;
         }
         if (waited >= budget) {
             s.ctx.diag.err("Failed to {s} {s}: no daemon was recorded within TimeoutStartSec=", .{ verb, u.name.full });
