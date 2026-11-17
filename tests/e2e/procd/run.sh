@@ -36,10 +36,10 @@ wait_booted() {
     return 1
 }
 
-# wait_for_file PATH  (the file exists on the host)
-wait_for_file() {
-    for _ in $(seq 1 100); do
-        if [ -e "$1" ]; then return 0; fi
+# wait_for_marks COUNT  (the stop hooks of the shutdown have written COUNT lines to the marks file)
+wait_for_marks() {
+    for _ in $(seq 1 150); do
+        [ "$(grep -c -E '^(boot-stop|dep-stop|remain-stop|manual-stop)$' "$out/marks")" -ge "$1" ] && return 0
         sleep 0.2
     done
     return 1
@@ -57,7 +57,7 @@ if wait_booted; then
     # A shutdown runs the stop links, ExecStop= included, for the service that was only started
     # by hand and for the requirement of another one as well.
     "$engine" exec "$cid" systemctl poweroff >/dev/null 2>&1 || true
-    if wait_for_file "$out/marks" && sleep 8 && [ "$(grep -c -E '^(boot-stop|dep-stop|remain-stop|manual-stop)$' "$out/marks")" -eq 4 ]; then
+    if wait_for_marks 4; then
         echo "ok - systemctl poweroff ran ExecStop= of every service through the stop links"
     else
         echo "not ok - systemctl poweroff did not run ExecStop= of every service"
