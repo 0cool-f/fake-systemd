@@ -265,6 +265,23 @@ check "Restart=no does not restart" test "$(count /tmp/e2e-rno.count)" = 1
 expect "a service that exited cleanly is inactive" 3 "inactive" systemctl is-active e2e-rclean
 systemctl stop e2e-rf >/dev/null 2>&1
 
+# --- A finish that ends before runsv reads what it sent does not start the service again ----------
+rm -f /tmp/e2e-late.count
+cat >/usr/local/bin/e2e-hold-late <<'X'
+#!/bin/sh
+r=$(pgrep -f '^runsv e2e-late$')
+( sleep 0.4; kill -CONT "$r" ) >/dev/null 2>&1 &
+kill -STOP "$r"
+X
+chmod 755 /usr/local/bin/e2e-hold-late
+unit e2e-late 'ExecStart=/bin/sh -c "echo x >>/tmp/e2e-late.count; exit 1"
+Restart=no
+ExecStopPost=/usr/local/bin/e2e-hold-late'
+systemctl start e2e-late >/dev/null 2>&1
+sleep 3
+check "a finish that ends before runsv reads its byte does not rerun the service" test "$(count /tmp/e2e-late.count)" = 1
+expect "such a service is failed, not running" 3 "failed" systemctl is-active e2e-late
+
 # --- Oneshot -------------------------------------------------------------------------------------
 unit e2e-once 'Type=oneshot
 ExecStart=/bin/touch /tmp/e2e-once-ran'
